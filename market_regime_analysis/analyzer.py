@@ -11,9 +11,9 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
 
 from .data_classes import RegimeAnalysis
+from .data_provider import MarketDataProvider, YFinanceProvider
 from .enums import MarketRegime, TradingStrategy
 from .hmm_detector import HiddenMarkovRegimeDetector
 
@@ -30,7 +30,10 @@ class MarketRegimeAnalyzer:
     """
 
     def __init__(
-        self, symbol: str = "SPY", periods: dict[str, str] | None = None
+        self,
+        symbol: str = "SPY",
+        periods: dict[str, str] | None = None,
+        provider_flag: str = "yfinance",
     ) -> None:
         """
         Initialize the Market Regime Analyzer.
@@ -62,6 +65,12 @@ class MarketRegimeAnalyzer:
             MarketRegime.UNKNOWN: 0.2,
         }
 
+        # Data provider selection
+        if provider_flag == "yfinance":
+            self.provider: MarketDataProvider = YFinanceProvider()
+        else:
+            raise ValueError(f"Unknown provider: {provider_flag}")
+
         # Initialize data and models
         self._load_data()
         self._calculate_indicators()
@@ -69,7 +78,7 @@ class MarketRegimeAnalyzer:
 
     def _load_data(self) -> None:
         """
-        Fetch market data using yfinance for all timeframes.
+        Fetch market data using the selected provider for all timeframes.
 
         Raises:
             ValueError: If data download fails
@@ -78,8 +87,7 @@ class MarketRegimeAnalyzer:
 
         for timeframe, period in self.periods.items():
             try:
-                ticker = yf.Ticker(self.symbol)
-                df = ticker.history(period=period, interval=timeframe.lower())
+                df = self.provider.fetch(self.symbol, period, timeframe.lower())
 
                 if df.empty:
                     raise ValueError(f"No data available for {self.symbol} {timeframe}")
