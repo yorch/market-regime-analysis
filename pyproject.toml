@@ -9,16 +9,11 @@ dependencies = [
     "numpy>=2.3.1",
     "pandas>=2.3.1",
     "scikit-learn>=1.7.1",
-    "scipy>=1.16.0",
-    "seaborn>=0.13.2",
     "yfinance>=0.2.65",
 ]
 
 [dependency-groups]
-dev = [
-    "pre-commit>=4.2.0",
-    "ruff>=0.12.4",
-]
+dev = ["pre-commit>=4.2.0", "pytest>=8.4.1", "ruff>=0.12.4"]
 
 [tool.ruff]
 line-length = 100
