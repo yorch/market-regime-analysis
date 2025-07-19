@@ -1,0 +1,9 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff
+    rev: v0.12.4
+    hooks:
+      - id: ruff
+        name: Ruff Lint
+        args: ["--fix"]
+      - id: ruff-format
+        name: Ruff Format

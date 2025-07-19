@@ -4,4 +4,37 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "matplotlib>=3.10.3",
+    "numpy>=2.3.1",
+    "pandas>=2.3.1",
+    "scikit-learn>=1.7.1",
+    "scipy>=1.16.0",
+    "seaborn>=0.13.2",
+    "yfinance>=0.2.65",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.2.0",
+    "ruff>=0.12.4",
+]
+
+[tool.ruff]
+line-length = 100
+exclude = [".venv", "__pycache__", "build", "dist"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# Enable import sorting (replaces isort)
+[tool.ruff.isort]
+combine-as-imports = true
+known-first-party = ["market_regime_analysis"]
+
+# Enable recommended linting rules
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "T20", "SIM", "PL", "RUF"]
+ignore = ["E501"]                                                    # Ignore line length for docstrings
+fixable = ["ALL"]
