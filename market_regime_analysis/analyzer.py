@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 
 from .data_classes import RegimeAnalysis
-from .data_provider import MarketDataProvider, YFinanceProvider
+from .data_provider import AlphaVantageProvider, MarketDataProvider, YFinanceProvider
 from .enums import MarketRegime, TradingStrategy
 from .hmm_detector import HiddenMarkovRegimeDetector
 
@@ -34,6 +34,7 @@ class MarketRegimeAnalyzer:
         symbol: str = "SPY",
         periods: dict[str, str] | None = None,
         provider_flag: str = "yfinance",
+        api_key: str | None = None,
     ) -> None:
         """
         Initialize the Market Regime Analyzer.
@@ -41,6 +42,8 @@ class MarketRegimeAnalyzer:
         Args:
             symbol: Trading symbol to analyze
             periods: Dictionary mapping timeframes to data periods
+            provider_flag: 'yfinance' or 'alphavantage'
+            api_key: API key for Alpha Vantage (if needed)
         """
         self.symbol = symbol
         self.periods = periods or {
@@ -68,6 +71,12 @@ class MarketRegimeAnalyzer:
         # Data provider selection
         if provider_flag == "yfinance":
             self.provider: MarketDataProvider = YFinanceProvider()
+        elif provider_flag == "alphavantage":
+            if not api_key or not isinstance(api_key, str):
+                raise ValueError(
+                    "Alpha Vantage API key required for alphavantage provider."
+                )
+            self.provider: MarketDataProvider = AlphaVantageProvider(api_key)
         else:
             raise ValueError(f"Unknown provider: {provider_flag}")
 

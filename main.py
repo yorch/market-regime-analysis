@@ -9,15 +9,16 @@ implementing Jim Simons' Hidden Markov Model methodology for quantitative tradin
 import os
 import sys
 
-# Add the package to the path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 from market_regime_analysis import (
     MarketRegime,
     MarketRegimeAnalyzer,
     PortfolioHMMAnalyzer,
     SimonsRiskCalculator,
 )
+from market_regime_analysis.data_provider import AlphaVantageProvider
+
+# Add the package to the path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 class MarketRegimeApp:
@@ -39,6 +40,13 @@ class MarketRegimeApp:
         print("JIM SIMONS MARKET REGIME ANALYSIS SYSTEM")
         print("Hidden Markov Model Implementation")
         print("Following Renaissance Technologies Methodology")
+        print("=" * 80)
+        print(
+            "Data Provider Options: Yahoo Finance (yfinance), Alpha Vantage (recommended)"
+        )
+        print(
+            "Alpha Vantage API key required. Set ALPHA_VANTAGE_API_KEY env variable or enter at prompt."
+        )
         print("=" * 80)
 
     def print_menu(self) -> None:
@@ -90,17 +98,48 @@ class MarketRegimeApp:
             else:
                 print("Invalid choice. Please select 1, 2, or 3.")
 
+    def get_provider_input(self) -> tuple[str, str | None]:
+        """
+        Prompt user to select data provider and enter API key if needed.
+
+        Returns:
+            provider_flag: 'yfinance' or 'alphavantage'
+            api_key: API key for Alpha Vantage or None
+        """
+        print("\nSelect data provider:")
+        print("1. Yahoo Finance (yfinance)")
+        print("2. Alpha Vantage (recommended)")
+        while True:
+            choice = input("Provider (1-2, default 2): ").strip()
+            if choice in ["", "2"]:
+                provider_flag = "alphavantage"
+                api_key = os.getenv("ALPHA_VANTAGE_API_KEY")
+                if not api_key:
+                    api_key = input("Enter Alpha Vantage API key: ").strip()
+                if not api_key or not isinstance(api_key, str):
+                    print("API key required for Alpha Vantage.")
+                    continue
+                return provider_flag, api_key
+            elif choice == "1":
+                return "yfinance", None
+            else:
+                print("Invalid choice. Please select 1 or 2.")
+
     def option_1_current_analysis(self) -> None:
         """Option 1: Current HMM Regime Analysis (All Timeframes)."""
         print("\n" + "=" * 60)
         print("CURRENT HMM REGIME ANALYSIS (ALL TIMEFRAMES)")
         print("=" * 60)
 
+        provider_flag, api_key = self.get_provider_input()
         symbol = self.get_symbol_input()
-
         try:
             print(f"\nInitializing analyzer for {symbol}...")
-            analyzer = MarketRegimeAnalyzer(symbol)
+            if provider_flag == "alphavantage":
+                analyzer = MarketRegimeAnalyzer(symbol, provider_flag=provider_flag)
+                analyzer.provider = AlphaVantageProvider(api_key)
+            else:
+                analyzer = MarketRegimeAnalyzer(symbol, provider_flag=provider_flag)
             self.current_analyzer = analyzer
 
             # Analyze all timeframes
@@ -122,12 +161,17 @@ class MarketRegimeApp:
         print("DETAILED HMM ANALYSIS (SINGLE TIMEFRAME)")
         print("=" * 60)
 
+        provider_flag, api_key = self.get_provider_input()
         symbol = self.get_symbol_input()
         timeframe = self.get_timeframe_input()
 
         try:
             print(f"\nInitializing detailed analysis for {symbol} ({timeframe})...")
-            analyzer = MarketRegimeAnalyzer(symbol)
+            if provider_flag == "alphavantage":
+                analyzer = MarketRegimeAnalyzer(symbol, provider_flag=provider_flag)
+                analyzer.provider = AlphaVantageProvider(api_key)
+            else:
+                analyzer = MarketRegimeAnalyzer(symbol, provider_flag=provider_flag)
             self.current_analyzer = analyzer
 
             # Get detailed analysis
@@ -159,11 +203,20 @@ class MarketRegimeApp:
         print("GENERATE HMM CHARTS")
         print("=" * 60)
 
+        provider_flag, api_key = self.get_provider_input()
         if self.current_analyzer is None:
             symbol = self.get_symbol_input()
             try:
                 print(f"Initializing analyzer for {symbol}...")
-                self.current_analyzer = MarketRegimeAnalyzer(symbol)
+                if provider_flag == "alphavantage":
+                    self.current_analyzer = MarketRegimeAnalyzer(
+                        symbol, provider_flag=provider_flag
+                    )
+                    self.current_analyzer.provider = AlphaVantageProvider(api_key)
+                else:
+                    self.current_analyzer = MarketRegimeAnalyzer(
+                        symbol, provider_flag=provider_flag
+                    )
             except Exception as e:
                 print(f"Error initializing analyzer: {e!s}")
                 return
@@ -186,11 +239,20 @@ class MarketRegimeApp:
         print("EXPORT HMM ANALYSIS TO CSV")
         print("=" * 60)
 
+        provider_flag, api_key = self.get_provider_input()
         if self.current_analyzer is None:
             symbol = self.get_symbol_input()
             try:
                 print(f"Initializing analyzer for {symbol}...")
-                self.current_analyzer = MarketRegimeAnalyzer(symbol)
+                if provider_flag == "alphavantage":
+                    self.current_analyzer = MarketRegimeAnalyzer(
+                        symbol, provider_flag=provider_flag
+                    )
+                    self.current_analyzer.provider = AlphaVantageProvider(api_key)
+                else:
+                    self.current_analyzer = MarketRegimeAnalyzer(
+                        symbol, provider_flag=provider_flag
+                    )
             except Exception as e:
                 print(f"Error initializing analyzer: {e!s}")
                 return
@@ -213,18 +275,20 @@ class MarketRegimeApp:
         print("CONTINUOUS HMM MONITORING")
         print("=" * 60)
 
+        provider_flag, api_key = self.get_provider_input()
         symbol = self.get_symbol_input()
-
         try:
             interval_str = input(
                 "Enter refresh interval in seconds (default: 300): "
             ).strip()
             interval = int(interval_str) if interval_str.isdigit() else 300
-
             print(f"Starting continuous monitoring for {symbol}...")
-            analyzer = MarketRegimeAnalyzer(symbol)
+            if provider_flag == "alphavantage":
+                analyzer = MarketRegimeAnalyzer(symbol, provider_flag=provider_flag)
+                analyzer.provider = AlphaVantageProvider(api_key)
+            else:
+                analyzer = MarketRegimeAnalyzer(symbol, provider_flag=provider_flag)
             analyzer.run_continuous_monitoring(interval)
-
         except Exception as e:
             print(f"Error in continuous monitoring: {e!s}")
 
@@ -234,18 +298,22 @@ class MarketRegimeApp:
         print("MULTI-SYMBOL HMM ANALYSIS")
         print("=" * 60)
 
+        provider_flag, api_key = self.get_provider_input()
         print("Enter symbols separated by commas (e.g., SPY,QQQ,IWM):")
         symbols_input = input("Symbols: ").strip().upper()
-
         if not symbols_input:
             symbols = ["SPY", "QQQ", "IWM"]
             print("Using default symbols: SPY, QQQ, IWM")
         else:
             symbols = [s.strip() for s in symbols_input.split(",")]
-
         try:
             print(f"Initializing portfolio analysis for {len(symbols)} symbols...")
-            portfolio = PortfolioHMMAnalyzer(symbols)
+            if provider_flag == "alphavantage":
+                portfolio = PortfolioHMMAnalyzer(
+                    symbols, provider_flag=provider_flag, api_key=api_key
+                )
+            else:
+                portfolio = PortfolioHMMAnalyzer(symbols, provider_flag=provider_flag)
             self.current_portfolio = portfolio
 
             # Print comprehensive portfolio analysis

@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from .analyzer import MarketRegimeAnalyzer
+from .data_provider import AlphaVantageProvider
 from .enums import MarketRegime
 
 
@@ -24,7 +25,11 @@ class PortfolioHMMAnalyzer:
     """
 
     def __init__(
-        self, symbols: list[str], periods: dict[str, str] | None = None
+        self,
+        symbols: list[str],
+        periods: dict[str, str] | None = None,
+        provider_flag: str = "yfinance",
+        api_key: str | None = None,
     ) -> None:
         """
         Initialize portfolio analyzer.
@@ -32,6 +37,8 @@ class PortfolioHMMAnalyzer:
         Args:
             symbols: List of trading symbols to analyze
             periods: Dictionary mapping timeframes to data periods
+            provider_flag: 'yfinance' or 'alphavantage'
+            api_key: API key for Alpha Vantage (if needed)
         """
         self.symbols = symbols
         self.periods = periods
@@ -43,7 +50,15 @@ class PortfolioHMMAnalyzer:
         # Initialize individual analyzers
         for symbol in symbols:
             try:
-                analyzer = MarketRegimeAnalyzer(symbol, periods)
+                analyzer = MarketRegimeAnalyzer(
+                    symbol, periods, provider_flag=provider_flag
+                )
+                if (
+                    provider_flag == "alphavantage"
+                    and api_key
+                    and isinstance(api_key, str)
+                ):
+                    analyzer.provider = AlphaVantageProvider(api_key)
                 self.analyzers[symbol] = analyzer
                 print(f"✓ Initialized {symbol}")
             except Exception as e:
