@@ -13,9 +13,9 @@ import numpy as np
 import pandas as pd
 
 from .data_classes import RegimeAnalysis
-from .data_provider import AlphaVantageProvider, MarketDataProvider, YFinanceProvider
 from .enums import MarketRegime, TradingStrategy
 from .hmm_detector import HiddenMarkovRegimeDetector
+from .providers import MarketDataProvider, ProviderConfig
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -68,15 +68,17 @@ class MarketRegimeAnalyzer:
             MarketRegime.UNKNOWN: 0.2,
         }
 
-        # Data provider selection
-        if provider_flag == "yfinance":
-            self.provider: MarketDataProvider = YFinanceProvider()
-        elif provider_flag == "alphavantage":
-            if not api_key or not isinstance(api_key, str):
-                raise ValueError("Alpha Vantage API key required for alphavantage provider.")
-            self.provider: MarketDataProvider = AlphaVantageProvider(api_key)
-        else:
-            raise ValueError(f"Unknown provider: {provider_flag}")
+        # Data provider selection using factory pattern
+        config = ProviderConfig(api_key=api_key) if api_key else ProviderConfig()
+        try:
+            self.provider: MarketDataProvider = MarketDataProvider.create_provider(
+                provider_flag, **config.__dict__
+            )
+        except ValueError as e:
+            available_providers = list(MarketDataProvider.get_available_providers().keys())
+            raise ValueError(
+                f"Unknown provider: {provider_flag}. Available: {available_providers}"
+            ) from e
 
         # Initialize data and models
         self._load_data()

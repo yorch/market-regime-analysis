@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 
 from .analyzer import MarketRegimeAnalyzer
-from .data_provider import AlphaVantageProvider
 from .enums import MarketRegime
 
 
@@ -50,9 +49,9 @@ class PortfolioHMMAnalyzer:
         # Initialize individual analyzers
         for symbol in symbols:
             try:
-                analyzer = MarketRegimeAnalyzer(symbol, periods, provider_flag=provider_flag)
-                if provider_flag == "alphavantage" and api_key and isinstance(api_key, str):
-                    analyzer.provider = AlphaVantageProvider(api_key)
+                analyzer = MarketRegimeAnalyzer(
+                    symbol, periods, provider_flag=provider_flag, api_key=api_key
+                )
                 self.analyzers[symbol] = analyzer
                 print(f"✓ Initialized {symbol}")
             except Exception as e:

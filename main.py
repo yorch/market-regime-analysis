@@ -7,6 +7,8 @@ This is the main entry point for the comprehensive market regime analysis system
 implementing Jim Simons' Hidden Markov Model methodology for quantitative trading.
 """
 
+import os
+
 import click
 
 from market_regime_analysis import (
@@ -15,6 +17,7 @@ from market_regime_analysis import (
     PortfolioHMMAnalyzer,
     SimonsRiskCalculator,
 )
+from market_regime_analysis.providers import MarketDataProvider
 
 
 @click.group()
@@ -38,14 +41,18 @@ def cli() -> None:
     default="1D",
     help="Timeframe",
 )
-def detailed_analysis(provider: str, api_key: str, symbol: str, timeframe: str) -> None:
+def detailed_analysis(provider: str, api_key: str | None, symbol: str, timeframe: str) -> None:
     """Run detailed HMM analysis for a single timeframe."""
     try:
         print(f"\nInitializing detailed analysis for {symbol} ({timeframe})...")
         if provider == "alphavantage" and not api_key:
-            raise click.ClickException(
-                "Alpha Vantage API key is required when using alphavantage provider"
-            )
+            # Try to get API key from environment variables
+            api_key = os.getenv("ALPHA_VANTAGE_API_KEY") or os.getenv("ALPHAVANTAGE_API_KEY")
+            if not api_key:
+                raise click.ClickException(
+                    "Alpha Vantage API key is required when using alphavantage provider. "
+                    "Set ALPHA_VANTAGE_API_KEY environment variable or use --api-key option."
+                )
 
         analyzer = MarketRegimeAnalyzer(symbol, provider_flag=provider, api_key=api_key)
         analysis = analyzer.analyze_current_regime(timeframe)
@@ -73,14 +80,18 @@ def detailed_analysis(provider: str, api_key: str, symbol: str, timeframe: str) 
 )
 @click.option("--api-key", type=str, required=False, help="Alpha Vantage API key")
 @click.option("--symbol", type=str, default="SPY", help="Trading symbol")
-def current_analysis(provider: str, api_key: str, symbol: str) -> None:
+def current_analysis(provider: str, api_key: str | None, symbol: str) -> None:
     """Run current HMM regime analysis for all timeframes."""
     try:
         print(f"\nInitializing analyzer for {symbol}...")
         if provider == "alphavantage" and not api_key:
-            raise click.ClickException(
-                "Alpha Vantage API key is required when using alphavantage provider"
-            )
+            # Try to get API key from environment variables
+            api_key = os.getenv("ALPHA_VANTAGE_API_KEY") or os.getenv("ALPHAVANTAGE_API_KEY")
+            if not api_key:
+                raise click.ClickException(
+                    "Alpha Vantage API key is required when using alphavantage provider. "
+                    "Set ALPHA_VANTAGE_API_KEY environment variable or use --api-key option."
+                )
 
         analyzer = MarketRegimeAnalyzer(symbol, provider_flag=provider, api_key=api_key)
         for timeframe in ["1D", "1H", "15m"]:
@@ -111,7 +122,9 @@ def current_analysis(provider: str, api_key: str, symbol: str) -> None:
     help="Timeframe",
 )
 @click.option("--days", type=int, default=60, help="Number of days to plot")
-def generate_charts(provider: str, api_key: str, symbol: str, timeframe: str, days: int) -> None:
+def generate_charts(
+    provider: str, api_key: str | None, symbol: str, timeframe: str, days: int
+) -> None:
     """Generate HMM charts for a given symbol and timeframe."""
     try:
         print(f"Initializing analyzer for {symbol}...")
@@ -137,7 +150,7 @@ def generate_charts(provider: str, api_key: str, symbol: str, timeframe: str, da
 @click.option("--api-key", type=str, required=False, help="Alpha Vantage API key")
 @click.option("--symbol", type=str, default="SPY", help="Trading symbol")
 @click.option("--filename", type=str, default=None, help="Filename for CSV export")
-def export_csv(provider: str, api_key: str, symbol: str, filename: str | None) -> None:
+def export_csv(provider: str, api_key: str | None, symbol: str, filename: str | None) -> None:
     """Export HMM analysis to CSV for a given symbol."""
     try:
         print(f"Initializing analyzer for {symbol}...")
@@ -151,6 +164,28 @@ def export_csv(provider: str, api_key: str, symbol: str, filename: str | None) -
         analyzer.export_analysis_to_csv(filename)
     except Exception as e:
         print(f"Error exporting data: {e!s}")
+
+
+@cli.command()
+def list_providers() -> None:
+    """List all available data providers and their capabilities."""
+    providers = MarketDataProvider.get_available_providers()
+
+    print("\n📡 AVAILABLE DATA PROVIDERS:")
+    print("=" * 50)
+
+    for name, info in providers.items():
+        print(f"\n🔹 {name.upper()}")
+        print(f"   Description: {info['description']}")
+        print(f"   Requires API Key: {'Yes' if info['requires_api_key'] else 'No'}")
+        print(f"   Rate Limit: {info['rate_limit_per_minute']} req/min")
+        print(f"   Supported Intervals: {', '.join(sorted(info['supported_intervals']))}")
+        print(f"   Supported Periods: {', '.join(sorted(info['supported_periods']))}")
+
+    print("\n💡 USAGE EXAMPLES:")
+    print("   --provider yfinance")
+    print("   --provider alphavantage --api-key YOUR_KEY")
+    print("   export ALPHA_VANTAGE_API_KEY=your_key")
 
 
 @cli.command()
@@ -210,7 +245,7 @@ def position_sizing(
     default="1D",
     help="Timeframe",
 )
-def multi_symbol_analysis(provider: str, api_key: str, symbols: str, timeframe: str) -> None:
+def multi_symbol_analysis(provider: str, api_key: str | None, symbols: str, timeframe: str) -> None:
     """Run multi-symbol HMM analysis (portfolio)."""
     try:
         symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
@@ -241,7 +276,7 @@ def multi_symbol_analysis(provider: str, api_key: str, symbols: str, timeframe: 
     default=300,
     help="Refresh interval in seconds (default: 300)",
 )
-def continuous_monitoring(provider: str, api_key: str, symbol: str, interval: int) -> None:
+def continuous_monitoring(provider: str, api_key: str | None, symbol: str, interval: int) -> None:
     """Start continuous HMM monitoring for a symbol."""
     try:
         print(f"Starting continuous monitoring for {symbol}...")
