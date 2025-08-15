@@ -37,6 +37,32 @@ class AlphaVantageProvider(MarketDataProvider):
         # Map yfinance period/interval to Alpha Vantage parameters
         # Alpha Vantage supports '1min', '5min', '15min', '30min', '60min' for intraday
         # For daily, weekly, monthly use get_daily, get_weekly, get_monthly
+
+        # Map common interval formats to Alpha Vantage format
+        interval_mapping = {
+            "1h": "60min",
+            "1hour": "60min",
+            "60min": "60min",
+            "15m": "15min",
+            "15min": "15min",
+            "5m": "5min",
+            "5min": "5min",
+            "1m": "1min",
+            "1min": "1min",
+            "1d": "1d",
+            "1day": "1d",
+            "daily": "1d",
+            "1w": "1wk",
+            "1week": "1wk",
+            "weekly": "1wk",
+            "1mo": "1mo",
+            "1month": "1mo",
+            "monthly": "1mo",
+        }
+
+        # Normalize interval
+        interval = interval_mapping.get(interval.lower(), interval)
+
         if interval in ["1min", "5min", "15min", "30min", "60min"]:
             # Intraday
             outputsize = "full" if period not in ["1d", "5d", "1mo"] else "compact"
@@ -50,4 +76,18 @@ class AlphaVantageProvider(MarketDataProvider):
             data, _ = self.ts.get_monthly(symbol=symbol)
         else:
             raise ValueError(f"Unsupported interval: {interval}")
+
+        # Normalize column names to match yfinance format
+        column_mapping = {
+            "1. open": "Open",
+            "2. high": "High",
+            "3. low": "Low",
+            "4. close": "Close",
+            "5. volume": "Volume",
+        }
+
+        # Rename columns if they exist (Alpha Vantage format)
+        if any(col in data.columns for col in column_mapping):
+            data = data.rename(columns=column_mapping)
+
         return data
