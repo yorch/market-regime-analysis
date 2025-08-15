@@ -50,14 +50,8 @@ class PortfolioHMMAnalyzer:
         # Initialize individual analyzers
         for symbol in symbols:
             try:
-                analyzer = MarketRegimeAnalyzer(
-                    symbol, periods, provider_flag=provider_flag
-                )
-                if (
-                    provider_flag == "alphavantage"
-                    and api_key
-                    and isinstance(api_key, str)
-                ):
+                analyzer = MarketRegimeAnalyzer(symbol, periods, provider_flag=provider_flag)
+                if provider_flag == "alphavantage" and api_key and isinstance(api_key, str):
                     analyzer.provider = AlphaVantageProvider(api_key)
                 self.analyzers[symbol] = analyzer
                 print(f"✓ Initialized {symbol}")
@@ -88,9 +82,7 @@ class PortfolioHMMAnalyzer:
                 portfolio_df["portfolio_volatility"] = returns.std(axis=1)
 
                 self.portfolio_data[timeframe] = portfolio_df
-                print(
-                    f"✓ Prepared {timeframe} portfolio data: {len(portfolio_df)} periods"
-                )
+                print(f"✓ Prepared {timeframe} portfolio data: {len(portfolio_df)} periods")
 
     def calculate_regime_correlations(self, timeframe: str = "1D") -> pd.DataFrame:
         """
@@ -190,9 +182,7 @@ class PortfolioHMMAnalyzer:
                 if analysis.current_regime == MarketRegime.HIGH_VOLATILITY
             )
             unknown_count = sum(
-                1
-                for _, analysis in analyses
-                if analysis.current_regime == MarketRegime.UNKNOWN
+                1 for _, analysis in analyses if analysis.current_regime == MarketRegime.UNKNOWN
             )
 
             total_assets = len(analyses)
@@ -204,14 +194,9 @@ class PortfolioHMMAnalyzer:
                 summary["risk_level"] = "Low"
 
             # Calculate correlation risk if we have portfolio data
-            if (
-                timeframe in self.portfolio_data
-                and len(self.portfolio_data[timeframe].columns) > 2
-            ):
+            if timeframe in self.portfolio_data and len(self.portfolio_data[timeframe].columns) > 2:
                 symbols_in_data = [
-                    s
-                    for s, _ in analyses
-                    if s in self.portfolio_data[timeframe].columns
+                    s for s, _ in analyses if s in self.portfolio_data[timeframe].columns
                 ]
                 if len(symbols_in_data) > 1:
                     price_data = self.portfolio_data[timeframe][symbols_in_data]
@@ -296,30 +281,22 @@ class PortfolioHMMAnalyzer:
                 if abs(current_zscore) > 2.0 and not pd.isna(current_zscore):
                     # Get regime analyses for both symbols
                     try:
-                        analysis1 = self.analyzers[symbol1].analyze_current_regime(
-                            timeframe
-                        )
-                        analysis2 = self.analyzers[symbol2].analyze_current_regime(
-                            timeframe
-                        )
+                        analysis1 = self.analyzers[symbol1].analyze_current_regime(timeframe)
+                        analysis2 = self.analyzers[symbol2].analyze_current_regime(timeframe)
 
                         opportunity = {
                             "pair": f"{symbol1}/{symbol2}",
                             "correlation": correlation,
                             "spread_zscore": current_zscore,
                             "signal": (
-                                "LONG_1_SHORT_2"
-                                if current_zscore < -2
-                                else "SHORT_1_LONG_2"
+                                "LONG_1_SHORT_2" if current_zscore < -2 else "SHORT_1_LONG_2"
                             ),
                             "confidence_1": analysis1.regime_confidence,
                             "confidence_2": analysis2.regime_confidence,
                             "regime_1": analysis1.current_regime.value,
                             "regime_2": analysis2.current_regime.value,
                             "opportunity_strength": abs(current_zscore)
-                            * min(
-                                analysis1.regime_confidence, analysis2.regime_confidence
-                            ),
+                            * min(analysis1.regime_confidence, analysis2.regime_confidence),
                         }
 
                         opportunities.append(opportunity)
@@ -402,9 +379,7 @@ class PortfolioHMMAnalyzer:
 
             # Find highest and lowest correlations
             if len(correlations) > 1:
-                price_corr_cols = [
-                    col for col in correlations.columns if "_price_corr" in col
-                ]
+                price_corr_cols = [col for col in correlations.columns if "_price_corr" in col]
                 if price_corr_cols:
                     print("   High correlation pairs (potential risk concentration)")
                     print("   Low correlation pairs (diversification opportunities)")

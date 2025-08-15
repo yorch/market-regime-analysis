@@ -126,9 +126,7 @@ def example_comprehensive_analysis():
                 print(f"  Risk Level: {analysis.risk_level}")
 
                 if analysis.arbitrage_opportunities:
-                    print(
-                        f"  Arbitrage Opportunities: {len(analysis.arbitrage_opportunities)}"
-                    )
+                    print(f"  Arbitrage Opportunities: {len(analysis.arbitrage_opportunities)}")
 
             except Exception as e:
                 print(f"  Error in {timeframe}: {e!s}")

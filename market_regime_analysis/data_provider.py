@@ -40,9 +40,7 @@ class AlphaVantageProvider(MarketDataProvider):
         if interval in ["1min", "5min", "15min", "30min", "60min"]:
             # Intraday
             outputsize = "full" if period not in ["1d", "5d", "1mo"] else "compact"
-            data, _ = self.ts.get_intraday(
-                symbol=symbol, interval=interval, outputsize=outputsize
-            )
+            data, _ = self.ts.get_intraday(symbol=symbol, interval=interval, outputsize=outputsize)
         elif interval == "1d":
             outputsize = "full" if period not in ["1d", "5d", "1mo"] else "compact"
             data, _ = self.ts.get_daily(symbol=symbol, outputsize=outputsize)

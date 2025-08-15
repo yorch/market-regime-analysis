@@ -6,7 +6,6 @@ and risk management, including Kelly Criterion optimization and regime-adjusted
 position sizing.
 """
 
-
 from .enums import MarketRegime
 
 
@@ -142,9 +141,7 @@ class SimonsRiskCalculator:
         return max(0.01, min(0.5, adjusted_size))
 
     @staticmethod
-    def calculate_correlation_adjusted_size(
-        base_size: float, correlation: float
-    ) -> float:
+    def calculate_correlation_adjusted_size(base_size: float, correlation: float) -> float:
         """
         Adjust position size based on correlation with existing positions.
 

@@ -73,9 +73,7 @@ class MarketRegimeAnalyzer:
             self.provider: MarketDataProvider = YFinanceProvider()
         elif provider_flag == "alphavantage":
             if not api_key or not isinstance(api_key, str):
-                raise ValueError(
-                    "Alpha Vantage API key required for alphavantage provider."
-                )
+                raise ValueError("Alpha Vantage API key required for alphavantage provider.")
             self.provider: MarketDataProvider = AlphaVantageProvider(api_key)
         else:
             raise ValueError(f"Unknown provider: {provider_flag}")
@@ -152,9 +150,9 @@ class MarketRegimeAnalyzer:
         indicators["bb_upper"] = sma_20 + (2 * std_20)
         indicators["bb_middle"] = sma_20
         indicators["bb_lower"] = sma_20 - (2 * std_20)
-        indicators["bb_width"] = (
-            indicators["bb_upper"] - indicators["bb_lower"]
-        ) / indicators["bb_middle"]
+        indicators["bb_width"] = (indicators["bb_upper"] - indicators["bb_lower"]) / indicators[
+            "bb_middle"
+        ]
 
         # RSI calculation
         delta = df["Close"].diff()
@@ -171,18 +169,14 @@ class MarketRegimeAnalyzer:
         indicators["macd_histogram"] = indicators["macd"] - indicators["macd_signal"]
 
         # Volatility measures
-        indicators["volatility"] = indicators["returns"].rolling(20).std() * np.sqrt(
-            252
-        )
+        indicators["volatility"] = indicators["returns"].rolling(20).std() * np.sqrt(252)
         indicators["vol_rank"] = indicators["volatility"].rolling(252).rank(pct=True)
 
         # Volume analysis
         if df["Volume"].sum() > 0:
             indicators["volume_ma"] = df["Volume"].rolling(20).mean()
             indicators["volume_ratio"] = df["Volume"] / indicators["volume_ma"]
-            indicators["price_volume"] = indicators["returns"] * np.log(
-                df["Volume"] + 1
-            )
+            indicators["price_volume"] = indicators["returns"] * np.log(df["Volume"] + 1)
         else:
             indicators["volume_ma"] = pd.Series(1, index=df.index)
             indicators["volume_ratio"] = pd.Series(1, index=df.index)
@@ -199,9 +193,7 @@ class MarketRegimeAnalyzer:
         # Return autocorrelation (momentum persistence)
         for lag in [1, 2, 5]:
             indicators[f"autocorr_{lag}"] = (
-                indicators["returns"]
-                .rolling(20)
-                .apply(lambda x: x.autocorr(lag=lag), raw=False)
+                indicators["returns"].rolling(20).apply(lambda x: x.autocorr(lag=lag), raw=False)
             )
 
         # Mean reversion signals
@@ -254,9 +246,7 @@ class MarketRegimeAnalyzer:
 
         return strategy_map.get(regime, TradingStrategy.AVOID)
 
-    def _get_position_sizing_multiplier(
-        self, regime: MarketRegime, confidence: float
-    ) -> float:
+    def _get_position_sizing_multiplier(self, regime: MarketRegime, confidence: float) -> float:
         """
         Calculate risk-adjusted position sizing multiplier.
 
@@ -306,9 +296,7 @@ class MarketRegimeAnalyzer:
         if hasattr(latest, "autocorr_1"):
             autocorr = latest["autocorr_1"]
             if not pd.isna(autocorr) and abs(autocorr) < 0.1:
-                opportunities.append(
-                    f"Momentum Breakdown: Low autocorr ({autocorr:.3f})"
-                )
+                opportunities.append(f"Momentum Breakdown: Low autocorr ({autocorr:.3f})")
 
         # Volatility regime changes
         if hasattr(latest, "vol_rank"):
@@ -321,9 +309,7 @@ class MarketRegimeAnalyzer:
 
         return opportunities
 
-    def _generate_statistical_signals(
-        self, df: pd.DataFrame, regime: MarketRegime
-    ) -> list[str]:
+    def _generate_statistical_signals(self, df: pd.DataFrame, regime: MarketRegime) -> list[str]:
         """
         Generate regime-specific statistical signals.
 
@@ -461,9 +447,7 @@ class MarketRegimeAnalyzer:
                 _, temp_state, _ = hmm.predict_regime(window_df)
                 recent_predictions.append(temp_state)
 
-        persistence = hmm.calculate_regime_persistence(
-            np.array(recent_predictions + [state])
-        )
+        persistence = hmm.calculate_regime_persistence(np.array(recent_predictions + [state]))
 
         # Get transition probability
         if len(recent_predictions) > 0:
@@ -574,20 +558,9 @@ class MarketRegimeAnalyzer:
                 return
 
             # Create regime predictions for the period
-            regime_colors = {
-                MarketRegime.BULL_TRENDING: "green",
-                MarketRegime.BEAR_TRENDING: "red",
-                MarketRegime.MEAN_REVERTING: "blue",
-                MarketRegime.HIGH_VOLATILITY: "orange",
-                MarketRegime.LOW_VOLATILITY: "purple",
-                MarketRegime.BREAKOUT: "yellow",
-                MarketRegime.UNKNOWN: "gray",
-            }
 
             fig, axes = plt.subplots(5, 1, figsize=(15, 20))
-            fig.suptitle(
-                f"{self.symbol} HMM Regime Analysis ({timeframe})", fontsize=16
-            )
+            fig.suptitle(f"{self.symbol} HMM Regime Analysis ({timeframe})", fontsize=16)
 
             # Panel 1: Price with regime background
             ax1 = axes[0]
@@ -606,12 +579,8 @@ class MarketRegimeAnalyzer:
             ax2 = axes[1]
             if "price_zscore" in indicators.columns:
                 ax2.plot(df.index, indicators["price_zscore"], label="Price Z-Score")
-                ax2.axhline(
-                    y=2, color="r", linestyle="--", alpha=0.7, label="Overbought"
-                )
-                ax2.axhline(
-                    y=-2, color="g", linestyle="--", alpha=0.7, label="Oversold"
-                )
+                ax2.axhline(y=2, color="r", linestyle="--", alpha=0.7, label="Overbought")
+                ax2.axhline(y=-2, color="g", linestyle="--", alpha=0.7, label="Oversold")
                 ax2.axhline(y=0, color="k", linestyle="-", alpha=0.3)
 
             ax2.set_title("Statistical Arbitrage Signals")
@@ -674,9 +643,7 @@ class MarketRegimeAnalyzer:
 
         try:
             while True:
-                print(
-                    f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Refreshing..."
-                )
+                print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Refreshing...")
 
                 # Reload data and retrain models
                 self._load_data()

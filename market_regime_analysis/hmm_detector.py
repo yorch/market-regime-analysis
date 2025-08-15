@@ -66,9 +66,7 @@ class HiddenMarkovRegimeDetector:
             ValueError: If insufficient data for feature calculation
         """
         if len(df) < 50:
-            raise ValueError(
-                "Insufficient data for feature calculation (minimum 50 bars)"
-            )
+            raise ValueError("Insufficient data for feature calculation (minimum 50 bars)")
 
         features = pd.DataFrame(index=df.index)
 
@@ -101,17 +99,13 @@ class HiddenMarkovRegimeDetector:
         features["sma_21"] = df["Close"].rolling(21).mean()
         features["sma_50"] = df["Close"].rolling(50).mean()
 
-        features["trend_strength"] = (features["sma_9"] - features["sma_21"]) / df[
-            "Close"
-        ]
+        features["trend_strength"] = (features["sma_9"] - features["sma_21"]) / df["Close"]
         features["long_trend"] = (features["sma_21"] - features["sma_50"]) / df["Close"]
 
         # Autocorrelation features (momentum persistence)
         for lag in [1, 2, 5]:
             features[f"autocorr_{lag}"] = (
-                features["returns"]
-                .rolling(20)
-                .apply(lambda x: x.autocorr(lag=lag), raw=False)
+                features["returns"].rolling(20).apply(lambda x: x.autocorr(lag=lag), raw=False)
             )
 
         # Volume features (if available)
@@ -259,9 +253,7 @@ class HiddenMarkovRegimeDetector:
         # Extract key features for regime classification
         avg_returns = recent_data[:, 0].mean()  # returns
         avg_volatility = recent_data[:, 4].mean()  # volatility
-        avg_trend = (
-            recent_data[:, 9].mean() if recent_data.shape[1] > 9 else 0
-        )  # trend_strength
+        avg_trend = recent_data[:, 9].mean() if recent_data.shape[1] > 9 else 0  # trend_strength
 
         # Regime classification logic
         vol_threshold_high = np.percentile(X[:, 4], 75)
@@ -318,9 +310,7 @@ class HiddenMarkovRegimeDetector:
         except Exception as e:
             raise ValueError(f"Regime prediction failed: {e!s}")
 
-    def get_transition_probability(
-        self, current_state: int, target_state: int
-    ) -> float:
+    def get_transition_probability(self, current_state: int, target_state: int) -> float:
         """
         Get the probability of transitioning from current to target state.
 
@@ -344,9 +334,7 @@ class HiddenMarkovRegimeDetector:
 
         return float(self.transition_matrix[current_state, target_state])
 
-    def calculate_regime_persistence(
-        self, states: np.ndarray, lookback: int = 20
-    ) -> float:
+    def calculate_regime_persistence(self, states: np.ndarray, lookback: int = 20) -> float:
         """
         Calculate regime stability metric.
 
