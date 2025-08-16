@@ -97,7 +97,6 @@ market_regime_analysis/
 ├── __init__.py          # Main exports
 ├── analyzer.py          # MarketRegimeAnalyzer - main analysis engine
 ├── data_classes.py      # RegimeAnalysis dataclass
-├── data_provider.py     # Legacy compatibility module (re-exports from providers)
 ├── enums.py            # MarketRegime, TradingStrategy enums
 ├── hmm_detector.py     # HiddenMarkovRegimeDetector - HMM implementation
 ├── portfolio.py        # PortfolioHMMAnalyzer - multi-asset analysis
@@ -126,7 +125,6 @@ The system uses a plug-and-play provider architecture with:
 - **Abstract Base Class**: `MarketDataProvider` defines the interface for all providers
 - **Auto-Discovery**: Providers are automatically registered on import
 - **Factory Pattern**: `MarketDataProvider.create_provider()` creates provider instances
-- **Backward Compatibility**: Legacy `data_provider.py` re-exports for existing code
 - **Extensibility**: Easy to add new providers by implementing the base interface
 
 ### Data Flow
@@ -237,7 +235,7 @@ uv run main.py list-providers
 
 ### Adding New Data Providers
 
-1. Implement provider interface in `data_provider.py`
+1. Implement provider interface in `providers/` package
 2. Add provider choice to CLI options in `main.py`
 3. Update initialization logic in `analyzer.py`
 4. Add integration tests

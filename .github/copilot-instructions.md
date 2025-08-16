@@ -33,7 +33,7 @@
 
 ## Integration & External Dependencies
 
-- Data providers: `yfinance` (default), `alpha-vantage` (see `data_provider.py`).
+- Data providers: `yfinance`, `alpha-vantage`, `polygon` (see `providers/` package).
 - Core dependencies: pandas, numpy, scikit-learn, matplotlib, yfinance, alpha-vantage.
 - Optional: TA-Lib for technical indicators (fallbacks provided).
 

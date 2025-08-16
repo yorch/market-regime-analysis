@@ -9,7 +9,7 @@ providers/
 ├── __init__.py              # Auto-discovery and registration
 ├── base.py                  # Base interfaces and configuration
 ├── yfinance_provider.py     # Yahoo Finance provider
-├── alphavantage_provider.py # Alpha Vantage provider  
+├── alphavantage_provider.py # Alpha Vantage provider
 ├── mock_provider.py         # Mock data for testing
 ├── example_new_provider.py  # Example of adding new providers
 └── README.md               # This file
@@ -42,7 +42,7 @@ class MyProvider(MarketDataProvider):
     requires_api_key = True  # or False
     rate_limit_per_minute = 60
     description = "My custom data provider"
-    
+
     def fetch(self, symbol: str, period: str, interval: str) -> pd.DataFrame:
         # Your implementation here
         # Must return DataFrame with Open, High, Low, Close, Volume columns
@@ -79,7 +79,7 @@ Providers can accept configuration via `ProviderConfig`:
 ```python
 from market_regime_analysis.providers import create_provider
 
-provider = create_provider("alphavantage", 
+provider = create_provider("alphavantage",
                          api_key="your_key",
                          timeout=60,
                          retries=5,
@@ -104,7 +104,3 @@ Each provider should define these class attributes:
 - `requires_api_key`: Whether API key is required (boolean)
 - `rate_limit_per_minute`: API rate limit (integer)
 - `description`: Human-readable description (string)
-
-## Backward Compatibility
-
-The old `data_provider.py` module still works and re-exports everything from this package, ensuring existing code continues to function without changes.
