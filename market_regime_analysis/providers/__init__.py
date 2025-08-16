@@ -10,11 +10,13 @@ from .base import MarketDataProvider, ProviderConfig
 
 # Import mock provider but don't auto-register (for development/testing only)
 from .mock_provider import MockDataProvider
+from .polygon_provider import PolygonProvider
 from .yfinance_provider import YFinanceProvider
 
 # Auto-register core providers
 MarketDataProvider.register(YFinanceProvider)
 MarketDataProvider.register(AlphaVantageProvider)
+MarketDataProvider.register(PolygonProvider)
 
 # Uncomment the line below to enable mock provider for testing:
 # MarketDataProvider.register(MockDataProvider)
@@ -24,6 +26,7 @@ __all__ = [
     "AlphaVantageProvider",
     "MarketDataProvider",
     "MockDataProvider",
+    "PolygonProvider",
     "ProviderConfig",
     "YFinanceProvider",
 ]

@@ -39,8 +39,9 @@ The main application uses Click CLI with these key commands:
 # Current regime analysis for all timeframes
 uv run main.py current-analysis --symbol SPY --provider alphavantage
 
-# Detailed single timeframe analysis
+# Detailed single timeframe analysis (with different providers)
 uv run main.py detailed-analysis --symbol SPY --timeframe 1D --provider alphavantage
+uv run main.py detailed-analysis --symbol SPY --timeframe 1D --provider polygon
 
 # Generate HMM visualization charts
 uv run main.py generate-charts --symbol SPY --timeframe 1D --days 60
@@ -80,11 +81,6 @@ uv run pytest
 # Basic system functionality test
 uv run test_system.py
 
-# Test data providers
-uv run test_alpha_vantage.py        # Alpha Vantage API test
-uv run test_alpha_vantage_provider.py  # Provider integration test
-uv run test_yf_aapl.py             # Yahoo Finance test (currently broken)
-
 # Mock data testing
 uv run test_mock.py
 
@@ -96,25 +92,42 @@ uv run pytest
 
 ### Core Package Structure
 
-```
+```bash
 market_regime_analysis/
 ├── __init__.py          # Main exports
 ├── analyzer.py          # MarketRegimeAnalyzer - main analysis engine
 ├── data_classes.py      # RegimeAnalysis dataclass
-├── data_provider.py     # AlphaVantageProvider, YFinanceProvider
+├── data_provider.py     # Legacy compatibility module (re-exports from providers)
 ├── enums.py            # MarketRegime, TradingStrategy enums
 ├── hmm_detector.py     # HiddenMarkovRegimeDetector - HMM implementation
 ├── portfolio.py        # PortfolioHMMAnalyzer - multi-asset analysis
-└── risk_calculator.py  # SimonsRiskCalculator - position sizing
+├── risk_calculator.py  # SimonsRiskCalculator - position sizing
+└── providers/          # Plug-and-play data provider architecture
+    ├── __init__.py         # Auto-discovery and registration
+    ├── base.py            # MarketDataProvider base class
+    ├── alphavantage_provider.py  # Alpha Vantage implementation
+    ├── polygon_provider.py      # Polygon.io implementation
+    ├── yfinance_provider.py     # Yahoo Finance implementation
+    └── mock_provider.py         # Mock provider for testing
 ```
 
 ### Key Components
 
 1. **MarketRegimeAnalyzer** (`analyzer.py`): Central analysis engine that coordinates data fetching, regime detection, and reporting
 2. **HiddenMarkovRegimeDetector** (`hmm_detector.py`): Core HMM implementation using Gaussian Mixture Models with 6-state regime classification
-3. **Data Providers** (`data_provider.py`): Abstracted data access supporting Alpha Vantage and Yahoo Finance (with fallback due to current outages)
+3. **Data Providers** (`providers/`): Plug-and-play architecture supporting Alpha Vantage, Polygon.io, and Yahoo Finance with automatic provider discovery
 4. **Portfolio Analysis** (`portfolio.py`): Multi-symbol correlation and regime analysis
 5. **Risk Management** (`risk_calculator.py`): Kelly Criterion-based position sizing with regime adjustments
+
+### Provider Architecture
+
+The system uses a plug-and-play provider architecture with:
+
+- **Abstract Base Class**: `MarketDataProvider` defines the interface for all providers
+- **Auto-Discovery**: Providers are automatically registered on import
+- **Factory Pattern**: `MarketDataProvider.create_provider()` creates provider instances
+- **Backward Compatibility**: Legacy `data_provider.py` re-exports for existing code
+- **Extensibility**: Easy to add new providers by implementing the base interface
 
 ### Data Flow
 
@@ -127,17 +140,47 @@ market_regime_analysis/
 
 ## Data Provider Configuration
 
-### Alpha Vantage (Recommended)
+The system now supports three data providers with automatic provider detection and plug-and-play architecture:
 
-The system defaults to Alpha Vantage due to Yahoo Finance outages (July 2025):
+### Alpha Vantage (Default)
+
+Professional-grade data provider with good coverage:
 
 ```bash
 export ALPHA_VANTAGE_API_KEY=your_key_here
+uv run main.py current-analysis --provider alphavantage --symbol SPY
 ```
 
-### Yahoo Finance (Currently Broken)
+### Polygon.io (Professional)
 
-Yahoo Finance is experiencing widespread outages. Use Alpha Vantage as primary data source.
+High-quality institutional-grade data with tick-level precision:
+
+```bash
+export POLYGON_API_KEY=your_key_here
+uv run main.py current-analysis --provider polygon --symbol SPY
+```
+
+### Yahoo Finance (Free but Limited)
+
+Free data provider experiencing intermittent outages:
+
+```bash
+uv run main.py current-analysis --provider yfinance --symbol SPY
+```
+
+### Provider Comparison
+
+| Provider | API Key | Rate Limit | Data Quality | Cost |
+|----------|---------|------------|--------------|------|
+| Alpha Vantage | Required | 5 req/min | Professional | Free tier available |
+| Polygon.io | Required | 60 req/min | Institutional | Premium (basic tier available) |
+| Yahoo Finance | None | 60 req/min | Community | Free |
+
+### List Available Providers
+
+```bash
+uv run main.py list-providers
+```
 
 ## Important Implementation Details
 

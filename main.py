@@ -29,11 +29,11 @@ def cli() -> None:
 @cli.command()
 @click.option(
     "--provider",
-    type=click.Choice(["yfinance", "alphavantage"]),
+    type=click.Choice(["yfinance", "alphavantage", "polygon"]),
     default="alphavantage",
     help="Data provider",
 )
-@click.option("--api-key", type=str, required=False, help="Alpha Vantage API key")
+@click.option("--api-key", type=str, required=False, help="API key (Alpha Vantage or Polygon.io)")
 @click.option("--symbol", type=str, default="SPY", help="Trading symbol")
 @click.option(
     "--timeframe",
@@ -45,14 +45,22 @@ def detailed_analysis(provider: str, api_key: str | None, symbol: str, timeframe
     """Run detailed HMM analysis for a single timeframe."""
     try:
         print(f"\nInitializing detailed analysis for {symbol} ({timeframe})...")
-        if provider == "alphavantage" and not api_key:
+        if provider in ["alphavantage", "polygon"] and not api_key:
             # Try to get API key from environment variables
-            api_key = os.getenv("ALPHA_VANTAGE_API_KEY") or os.getenv("ALPHAVANTAGE_API_KEY")
-            if not api_key:
-                raise click.ClickException(
-                    "Alpha Vantage API key is required when using alphavantage provider. "
-                    "Set ALPHA_VANTAGE_API_KEY environment variable or use --api-key option."
-                )
+            if provider == "alphavantage":
+                api_key = os.getenv("ALPHA_VANTAGE_API_KEY") or os.getenv("ALPHAVANTAGE_API_KEY")
+                if not api_key:
+                    raise click.ClickException(
+                        "Alpha Vantage API key is required when using alphavantage provider. "
+                        "Set ALPHA_VANTAGE_API_KEY environment variable or use --api-key option."
+                    )
+            elif provider == "polygon":
+                api_key = os.getenv("POLYGON_API_KEY")
+                if not api_key:
+                    raise click.ClickException(
+                        "Polygon.io API key is required when using polygon provider. "
+                        "Set POLYGON_API_KEY environment variable or use --api-key option."
+                    )
 
         analyzer = MarketRegimeAnalyzer(symbol, provider_flag=provider, api_key=api_key)
         analysis = analyzer.analyze_current_regime(timeframe)
@@ -74,24 +82,32 @@ def detailed_analysis(provider: str, api_key: str | None, symbol: str, timeframe
 @cli.command()
 @click.option(
     "--provider",
-    type=click.Choice(["yfinance", "alphavantage"]),
+    type=click.Choice(["yfinance", "alphavantage", "polygon"]),
     default="alphavantage",
     help="Data provider",
 )
-@click.option("--api-key", type=str, required=False, help="Alpha Vantage API key")
+@click.option("--api-key", type=str, required=False, help="API key (Alpha Vantage or Polygon.io)")
 @click.option("--symbol", type=str, default="SPY", help="Trading symbol")
 def current_analysis(provider: str, api_key: str | None, symbol: str) -> None:
     """Run current HMM regime analysis for all timeframes."""
     try:
         print(f"\nInitializing analyzer for {symbol}...")
-        if provider == "alphavantage" and not api_key:
+        if provider in ["alphavantage", "polygon"] and not api_key:
             # Try to get API key from environment variables
-            api_key = os.getenv("ALPHA_VANTAGE_API_KEY") or os.getenv("ALPHAVANTAGE_API_KEY")
-            if not api_key:
-                raise click.ClickException(
-                    "Alpha Vantage API key is required when using alphavantage provider. "
-                    "Set ALPHA_VANTAGE_API_KEY environment variable or use --api-key option."
-                )
+            if provider == "alphavantage":
+                api_key = os.getenv("ALPHA_VANTAGE_API_KEY") or os.getenv("ALPHAVANTAGE_API_KEY")
+                if not api_key:
+                    raise click.ClickException(
+                        "Alpha Vantage API key is required when using alphavantage provider. "
+                        "Set ALPHA_VANTAGE_API_KEY environment variable or use --api-key option."
+                    )
+            elif provider == "polygon":
+                api_key = os.getenv("POLYGON_API_KEY")
+                if not api_key:
+                    raise click.ClickException(
+                        "Polygon.io API key is required when using polygon provider. "
+                        "Set POLYGON_API_KEY environment variable or use --api-key option."
+                    )
 
         analyzer = MarketRegimeAnalyzer(symbol, provider_flag=provider, api_key=api_key)
         for timeframe in ["1D", "1H", "15m"]:
@@ -109,11 +125,11 @@ def current_analysis(provider: str, api_key: str | None, symbol: str) -> None:
 @cli.command()
 @click.option(
     "--provider",
-    type=click.Choice(["yfinance", "alphavantage"]),
+    type=click.Choice(["yfinance", "alphavantage", "polygon"]),
     default="alphavantage",
     help="Data provider",
 )
-@click.option("--api-key", type=str, required=False, help="Alpha Vantage API key")
+@click.option("--api-key", type=str, required=False, help="API key (Alpha Vantage or Polygon.io)")
 @click.option("--symbol", type=str, default="SPY", help="Trading symbol")
 @click.option(
     "--timeframe",
@@ -128,10 +144,15 @@ def generate_charts(
     """Generate HMM charts for a given symbol and timeframe."""
     try:
         print(f"Initializing analyzer for {symbol}...")
-        if provider == "alphavantage" and not api_key:
-            raise click.ClickException(
-                "Alpha Vantage API key is required when using alphavantage provider"
-            )
+        if provider in ["alphavantage", "polygon"] and not api_key:
+            if provider == "alphavantage":
+                raise click.ClickException(
+                    "Alpha Vantage API key is required when using alphavantage provider"
+                )
+            elif provider == "polygon":
+                raise click.ClickException(
+                    "Polygon.io API key is required when using polygon provider"
+                )
 
         analyzer = MarketRegimeAnalyzer(symbol, provider_flag=provider, api_key=api_key)
         print(f"Generating charts for {timeframe} ({days} days)...")
@@ -143,21 +164,26 @@ def generate_charts(
 @cli.command()
 @click.option(
     "--provider",
-    type=click.Choice(["yfinance", "alphavantage"]),
+    type=click.Choice(["yfinance", "alphavantage", "polygon"]),
     default="alphavantage",
     help="Data provider",
 )
-@click.option("--api-key", type=str, required=False, help="Alpha Vantage API key")
+@click.option("--api-key", type=str, required=False, help="API key (Alpha Vantage or Polygon.io)")
 @click.option("--symbol", type=str, default="SPY", help="Trading symbol")
 @click.option("--filename", type=str, default=None, help="Filename for CSV export")
 def export_csv(provider: str, api_key: str | None, symbol: str, filename: str | None) -> None:
     """Export HMM analysis to CSV for a given symbol."""
     try:
         print(f"Initializing analyzer for {symbol}...")
-        if provider == "alphavantage" and not api_key:
-            raise click.ClickException(
-                "Alpha Vantage API key is required when using alphavantage provider"
-            )
+        if provider in ["alphavantage", "polygon"] and not api_key:
+            if provider == "alphavantage":
+                raise click.ClickException(
+                    "Alpha Vantage API key is required when using alphavantage provider"
+                )
+            elif provider == "polygon":
+                raise click.ClickException(
+                    "Polygon.io API key is required when using polygon provider"
+                )
 
         analyzer = MarketRegimeAnalyzer(symbol, provider_flag=provider, api_key=api_key)
         print("Exporting analysis data...")
@@ -185,7 +211,9 @@ def list_providers() -> None:
     print("\n💡 USAGE EXAMPLES:")
     print("   --provider yfinance")
     print("   --provider alphavantage --api-key YOUR_KEY")
+    print("   --provider polygon --api-key YOUR_KEY")
     print("   export ALPHA_VANTAGE_API_KEY=your_key")
+    print("   export POLYGON_API_KEY=your_key")
 
 
 @cli.command()
@@ -228,11 +256,11 @@ def position_sizing(
 @cli.command()
 @click.option(
     "--provider",
-    type=click.Choice(["yfinance", "alphavantage"]),
+    type=click.Choice(["yfinance", "alphavantage", "polygon"]),
     default="alphavantage",
     help="Data provider",
 )
-@click.option("--api-key", type=str, required=False, help="Alpha Vantage API key")
+@click.option("--api-key", type=str, required=False, help="API key (Alpha Vantage or Polygon.io)")
 @click.option(
     "--symbols",
     type=str,
@@ -250,7 +278,7 @@ def multi_symbol_analysis(provider: str, api_key: str | None, symbols: str, time
     try:
         symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
         print(f"Initializing portfolio analysis for {len(symbol_list)} symbols...")
-        if provider == "alphavantage":
+        if provider in ["alphavantage", "polygon"]:
             portfolio = PortfolioHMMAnalyzer(
                 symbol_list, provider_flag=provider, api_key=api_key or ""
             )
@@ -264,11 +292,11 @@ def multi_symbol_analysis(provider: str, api_key: str | None, symbols: str, time
 @cli.command()
 @click.option(
     "--provider",
-    type=click.Choice(["yfinance", "alphavantage"]),
+    type=click.Choice(["yfinance", "alphavantage", "polygon"]),
     default="alphavantage",
     help="Data provider",
 )
-@click.option("--api-key", type=str, required=False, help="Alpha Vantage API key")
+@click.option("--api-key", type=str, required=False, help="API key (Alpha Vantage or Polygon.io)")
 @click.option("--symbol", type=str, default="SPY", help="Trading symbol")
 @click.option(
     "--interval",
@@ -280,10 +308,15 @@ def continuous_monitoring(provider: str, api_key: str | None, symbol: str, inter
     """Start continuous HMM monitoring for a symbol."""
     try:
         print(f"Starting continuous monitoring for {symbol}...")
-        if provider == "alphavantage" and not api_key:
-            raise click.ClickException(
-                "Alpha Vantage API key is required when using alphavantage provider"
-            )
+        if provider in ["alphavantage", "polygon"] and not api_key:
+            if provider == "alphavantage":
+                raise click.ClickException(
+                    "Alpha Vantage API key is required when using alphavantage provider"
+                )
+            elif provider == "polygon":
+                raise click.ClickException(
+                    "Polygon.io API key is required when using polygon provider"
+                )
 
         analyzer = MarketRegimeAnalyzer(symbol, provider_flag=provider, api_key=api_key)
         analyzer.run_continuous_monitoring(interval)
