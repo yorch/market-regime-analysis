@@ -8,14 +8,14 @@ Create a professional-grade Python application that implements Jim Simons' Hidde
 
 ### 1. System Architecture
 
-```
+```text
 Market Regime Analysis System
 ├── Hidden Markov Model Implementation
 ├── Multi-Timeframe Analysis Engine
 ├── Statistical Arbitrage Detection
 ├── Risk Management Calculator
 ├── Portfolio Analysis Tools
-└── Interactive User Interface
+└── Click-based CLI
 ```
 
 ### 2. Dependencies and Imports
@@ -235,17 +235,18 @@ regime_multipliers = {
 - Correlation reduction for similar positions
 - Safety caps (1% to 50% maximum)
 
-### 9. User Interface Requirements
+### 9. Command-Line Interface (Click)
 
-#### Interactive Menu System
+The application exposes a Click-based CLI with the following commands:
 
-1. Current HMM Regime Analysis (All Timeframes)
-2. Detailed HMM Analysis (Single Timeframe)
-3. Generate HMM Charts
-4. Export HMM Analysis to CSV
-5. Start Continuous HMM Monitoring
-6. Multi-Symbol HMM Analysis
-7. Exit
+- `current-analysis`: Run current HMM regime analysis for all timeframes
+- `detailed-analysis`: Detailed HMM analysis for a single timeframe
+- `generate-charts`: Generate HMM visualization charts
+- `export-csv`: Export HMM analysis to CSV
+- `continuous-monitoring`: Start continuous HMM monitoring
+- `multi-symbol-analysis`: Multi-symbol HMM analysis
+- `position-sizing`: Position sizing calculator
+- `list-providers`: List available data providers
 
 #### Comprehensive Reporting
 

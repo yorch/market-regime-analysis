@@ -1,12 +1,11 @@
 # Jim Simons Market Regime Analysis System
 
-A professional-grade Python application implementing Jim Simons' Hidden Markov Model methodology for market regime detection and quantitative trading analysis, following the exact approach used by Renaissance Technologies.
+A professional-grade Python application implementing Jim Simons' Hidden Markov Model methodology for market regime detection and quantitative trading analysis.
 
 ## 🎯 Overview
 
 This system implements sophisticated market regime detection using Hidden Markov Models (HMMs) with the mathematical rigor and approach pioneered by Jim Simons at Renaissance Technologies. The system provides:
 
-- **True HMM Implementation**: Gaussian Mixture Models with proper transition matrices
 - **Multi-Timeframe Analysis**: Daily, hourly, and 15-minute regime detection
 - **Statistical Arbitrage**: Core Renaissance strategy identification
 - **Risk Management**: Kelly Criterion and regime-adjusted position sizing
@@ -14,14 +13,14 @@ This system implements sophisticated market regime detection using Hidden Markov
 
 ## 🏗️ System Architecture
 
-```
+```text
 Market Regime Analysis System
 ├── Hidden Markov Model Implementation
 ├── Multi-Timeframe Analysis Engine
 ├── Statistical Arbitrage Detection
 ├── Risk Management Calculator
 ├── Portfolio Analysis Tools
-└── Interactive User Interface
+└── Click-based CLI
 ```
 
 ## 🚀 Quick Start
@@ -35,7 +34,7 @@ git clone <repository-url>
 cd market-regime-analysis
 ```
 
-2. **Install dependencies:**
+1. **Install dependencies:**
 
 ```bash
 uv sync
@@ -43,19 +42,25 @@ uv sync
 
 ### Basic Usage
 
-1. **Run the interactive application:**
+1. **View CLI help (Click-based CLI):**
 
 ```bash
-uv run main.py
+uv run main.py --help
 ```
 
-2. **Or test the system:**
+1. **Run a quick analysis (no API key required, uses Yahoo Finance):**
+
+```bash
+uv run main.py current-analysis --provider yfinance --symbol SPY
+```
+
+1. **Test the system:**
 
 ```bash
 uv run test_system.py
 ```
 
-3. **Or use programmatically:**
+1. **Use programmatically:**
 
 ```python
 from market_regime_analysis import MarketRegimeAnalyzer
@@ -70,6 +75,11 @@ from market_regime_analysis import PortfolioHMMAnalyzer
 portfolio = PortfolioHMMAnalyzer(["SPY", "QQQ", "IWM"])
 portfolio.print_portfolio_summary()
 ```
+
+Notes:
+
+- CLI default provider is Alpha Vantage (requires API key). Pass `--provider yfinance` to avoid API keys for quick tests.
+- Programmatic default provider is Yahoo Finance. You can select Alpha Vantage or Polygon by passing `provider_flag` and `api_key`.
 
 ## 📊 Core Features
 
@@ -100,22 +110,22 @@ portfolio.print_portfolio_summary()
 - **Hourly (1H)**: Medium-term regime shifts (6 months of data)
 - **15-Minute (15m)**: Short-term regime changes (2 months of data)
 
-## 🖥️ Interactive Menu System
+## 🖥️ CLI Commands (Click)
 
-The application provides a comprehensive menu system:
+Run `uv run main.py --help` to see all commands. Common commands:
 
-1. **Current HMM Regime Analysis (All Timeframes)**
-2. **Detailed HMM Analysis (Single Timeframe)**
-3. **Generate HMM Charts** - 5-panel visualization
-4. **Export HMM Analysis to CSV** - Backtesting data
-5. **Start Continuous HMM Monitoring** - Real-time analysis
-6. **Multi-Symbol HMM Analysis** - Portfolio analysis
-7. **Position Sizing Calculator** - Risk management
-8. **Exit**
+- Current regime analysis (all timeframes): `uv run main.py current-analysis --symbol SPY --provider yfinance`
+- Detailed single timeframe analysis: `uv run main.py detailed-analysis --symbol SPY --timeframe 1D --provider alphavantage --api-key YOUR_KEY`
+- Generate charts (5 panels): `uv run main.py generate-charts --symbol SPY --timeframe 1D --days 60 --provider yfinance`
+- Export analysis to CSV: `uv run main.py export-csv --symbol SPY --filename analysis.csv --provider yfinance`
+- Continuous monitoring: `uv run main.py continuous-monitoring --symbol SPY --interval 300 --provider alphavantage --api-key YOUR_KEY`
+- Multi-symbol portfolio analysis: `uv run main.py multi-symbol-analysis --symbols "SPY,QQQ,IWM" --timeframe 1D --provider yfinance`
+- Position sizing calculator: `uv run main.py position-sizing --base-size 0.02 --regime "Bull Trending" --confidence 0.8 --persistence 0.7 --correlation 0.0`
+- List available data providers and capabilities: `uv run main.py list-providers`
 
 ## 📈 Example Analysis Output
 
-```
+```text
 ================================================================================
 HMM MARKET REGIME ANALYSIS - SPY (1D)
 ================================================================================
@@ -198,8 +208,13 @@ The system uses Gaussian Mixture Models as HMM approximations with:
 - **pandas**: Data manipulation and analysis
 - **numpy**: Numerical computing
 - **scikit-learn**: Machine learning (Gaussian Mixture Models)
-- **yfinance**: Market data retrieval
+- **click**: CLI framework
+- **yfinance**: Market data retrieval (free)
+- **alpha-vantage**: Market data retrieval (API key required)
+- **polygon-api-client**: Market data retrieval (API key required)
 - **matplotlib**: Visualization and charting
+
+Python: 3.13+
 
 ## 🧪 Testing
 
@@ -207,6 +222,12 @@ Run the test suite to verify system functionality:
 
 ```bash
 uv run test_system.py
+```
+
+Or run all tests with pytest:
+
+```bash
+uv run pytest
 ```
 
 The test covers:
@@ -229,6 +250,17 @@ periods = {
 }
 
 analyzer = MarketRegimeAnalyzer("SPY", periods=periods)
+```
+
+### Data Providers and API Keys
+
+- Default CLI provider: Alpha Vantage (set `ALPHA_VANTAGE_API_KEY` or pass `--api-key`).
+- Other providers: Yahoo Finance (free): `--provider yfinance` (no API key); Polygon.io (pro): set `POLYGON_API_KEY` or pass `--api-key` and use `--provider polygon`.
+
+List providers and their capabilities:
+
+```bash
+uv run main.py list-providers
 ```
 
 ## 📈 Performance Considerations

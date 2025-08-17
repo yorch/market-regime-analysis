@@ -21,9 +21,6 @@ source venv/bin/activate
 ### Running the Application
 
 ```bash
-# Interactive CLI application with all features
-uv run main.py
-
 # Get help menu
 uv run main.py --help
 

@@ -4,12 +4,13 @@ This package contains the plug-and-play architecture for market data providers i
 
 ## Structure
 
-```
+```text
 providers/
 ├── __init__.py              # Auto-discovery and registration
 ├── base.py                  # Base interfaces and configuration
 ├── yfinance_provider.py     # Yahoo Finance provider
 ├── alphavantage_provider.py # Alpha Vantage provider
+├── polygon_provider.py      # Polygon.io provider
 ├── mock_provider.py         # Mock data for testing
 ├── example_new_provider.py  # Example of adding new providers
 └── README.md               # This file
@@ -17,8 +18,9 @@ providers/
 
 ## Available Providers
 
-- **YFinance**: Free Yahoo Finance data with comprehensive market coverage
-- **Alpha Vantage**: Professional API with real-time and historical data (requires API key)
+- **Yahoo Finance (yfinance)**: Free data with broad coverage (no API key)
+- **Alpha Vantage (alphavantage)**: Professional API with real-time and historical data (API key)
+- **Polygon.io (polygon)**: Institutional-grade data (API key)
 - **Mock**: Synthetic data for testing and development
 - **Example**: Template showing how to add new providers
 
