@@ -206,7 +206,7 @@ The system uses Gaussian Mixture Models as HMM approximations with:
 Run the test suite to verify system functionality:
 
 ```bash
-python test_system.py
+uv run test_system.py
 ```
 
 The test covers:

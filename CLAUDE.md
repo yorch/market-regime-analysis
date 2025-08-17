@@ -24,8 +24,8 @@ source venv/bin/activate
 # Interactive CLI application with all features
 uv run main.py
 
-# Direct module execution for testing
-uv run python main.py --help
+# Get help menu
+uv run main.py --help
 
 # Basic system test
 uv run test_system.py
