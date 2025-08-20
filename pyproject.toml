@@ -11,6 +11,7 @@ dependencies = [
     "matplotlib>=3.10.3",
     "numpy>=2.3.1",
     "pandas>=2.3.1",
+    "requests>=2.32.0",
     "polygon-api-client>=1.15.3",
     "pydantic>=2.5.0",
     "python-jose[cryptography]>=3.3.0",
