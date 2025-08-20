@@ -1,5 +1,7 @@
 # Jim Simons Market Regime Analysis System
 
+[![CI](https://github.com/yorch/market-regime-analysis/actions/workflows/ci.yml/badge.svg)](https://github.com/yorch/market-regime-analysis/actions/workflows/ci.yml)
+
 A professional-grade Python application implementing Jim Simons' Hidden Markov Model methodology for market regime detection and quantitative trading analysis.
 
 ## 🎯 Overview
