@@ -1,0 +1,27 @@
+# Git
+.git
+.gitignore
+
+# Virtualenv
+.venv
+venv
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+
+# IDE
+.vscode
+.idea
+
+# Ruff cache
+.ruff_cache
+
+# Pytest cache
+.pytest_cache
+
+# Docker
+Dockerfile
+.dockerignore
