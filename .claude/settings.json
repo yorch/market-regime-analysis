@@ -4,6 +4,8 @@
       "Bash(env)",
       "Bash(find:*)",
       "Bash(grep:*)",
+      "Bash(mkdir:*)",
+      "Bash(mv:*)",
       "Bash(rm:*)",
       "Bash(uv:*)",
       "mcp__ide__getDiagnostics",
