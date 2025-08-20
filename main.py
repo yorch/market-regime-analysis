@@ -146,7 +146,18 @@ def analyze_timeframe_parallel(
 )
 @click.pass_context
 def cli(ctx: click.Context, debug: bool, provider: str, api_key: str | None) -> None:
-    """Jim Simons Market Regime Analysis System CLI."""
+    """
+    Jim Simons Market Regime Analysis System CLI.
+
+    This system implements Hidden Markov Model methodology for quantitative trading analysis,
+    detecting market regimes and providing statistical arbitrage signals.
+
+    🌐 WEB API AVAILABLE: Run 'python start_api.py --dev' to start the REST API server
+    📚 API Documentation: http://localhost:8000/docs (when API server is running)
+    🔌 WebSocket Monitoring: ws://localhost:8000/ws/monitoring/{symbol}
+
+    For programmatic access, see examples_api.py for Python client usage.
+    """
     ctx.ensure_object(dict)
     ctx.obj["debug"] = debug
     ctx.obj["provider"] = provider
@@ -448,6 +459,55 @@ def continuous_monitoring(ctx: click.Context, symbol: str, interval: int) -> Non
 
     analyzer = MarketRegimeAnalyzer(symbol, provider_flag=provider, api_key=api_key)
     analyzer.run_continuous_monitoring(interval)
+
+
+@cli.command()
+@click.option("--host", default="0.0.0.0", help="API server host")
+@click.option("--port", default=8000, help="API server port")
+@click.option("--dev/--no-dev", default=False, help="Development mode with auto-reload")
+@handle_exceptions
+def start_api(host: str, port: int, dev: bool) -> None:
+    """Start the REST API server for web access.
+
+    This command starts the FastAPI server providing REST API endpoints
+    for all CLI functionality plus WebSocket monitoring.
+
+    Examples:
+        uv run main.py start-api --dev              # Development mode
+        uv run main.py start-api --host 0.0.0.0     # Production mode
+    """
+    try:
+        import uvicorn  # noqa: PLC0415
+
+        # Validate api_server module is available
+        import api_server  # noqa: F401, PLC0415
+
+        print("🚀 Starting Market Regime Analysis API Server")
+        print(f"🌐 Host: {host}")
+        print(f"🔌 Port: {port}")
+        print(f"🔄 Development mode: {dev}")
+
+        if dev:
+            print(f"📖 API Documentation: http://{host}:{port}/docs")
+            print(f"📊 Health Check: http://{host}:{port}/health")
+            print(f"📈 Metrics: http://{host}:{port}/metrics")
+
+        # Start the server
+        uvicorn.run(
+            "api_server:app",
+            host=host,
+            port=port,
+            reload=dev,
+            log_level="debug" if dev else "info",
+        )
+
+    except ImportError:
+        print("❌ API server dependencies not available.")
+        print("   Install with: uv sync")
+        raise click.Abort() from None
+    except Exception as e:
+        print(f"❌ Failed to start API server: {e}")
+        raise click.Abort() from e
 
 
 if __name__ == "__main__":
