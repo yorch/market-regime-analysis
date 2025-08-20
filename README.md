@@ -60,20 +60,13 @@ uv run main.py current-analysis --provider yfinance --symbol SPY
 uv run test_system.py
 ```
 
-1. **Use programmatically:**
+1. **Programmatic examples:**
 
 ```python
-from market_regime_analysis import MarketRegimeAnalyzer
+uv run examples/programmatic.py
 
-# Single symbol analysis
-analyzer = MarketRegimeAnalyzer("SPY")
-analysis = analyzer.analyze_current_regime("1D")
-analyzer.print_analysis_report("1D")
-
-# Portfolio analysis
-from market_regime_analysis import PortfolioHMMAnalyzer
-portfolio = PortfolioHMMAnalyzer(["SPY", "QQQ", "IWM"])
-portfolio.print_portfolio_summary()
+# Or the API client examples (requires running the API server)
+uv run examples/api_client.py
 ```
 
 Notes:

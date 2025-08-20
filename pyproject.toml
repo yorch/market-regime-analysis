@@ -50,9 +50,7 @@ fixable = ["ALL"]
 "market_regime_analysis/risk_calculator.py" = ["T201", "PLR2004", "PLR0913"]  # Allow prints and magic values in risk calculator
 "market_regime_analysis/hmm_detector.py" = ["PLR2004", "B904", "B023", "PLR0911"]  # Allow magic values and complex patterns in HMM detector
 "test_*.py" = ["T201", "PLC0415"]  # Allow print statements and imports in tests
-"examples.py" = ["T201"]  # Allow print statements
-"example_*.py" = ["T201", "PLR2004"]
-"examples_*.py" = ["T201", "PLR2004"]
+"examples/*.py" = ["T201", "PLR2004"]
 "*.ipynb" = ["E402", "PLR2004", "RUF001", "T201"]
 
 # Enable import sorting (replaces isort)

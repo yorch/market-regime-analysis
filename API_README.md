@@ -232,10 +232,10 @@ print(f"Recommended size: {sizing['final_recommendation']:.1%}")
 
 ```bash
 # Run all API examples
-python examples_api.py
+uv run examples/api_client.py
 
 # Test WebSocket monitoring
-python examples_api.py websocket
+uv run examples/api_client.py websocket
 ```
 
 ## ⚙️ Configuration
@@ -357,7 +357,7 @@ Returns:
 
 All API requests and errors are logged with structured format:
 
-```
+```text
 2024-01-15 10:30:00 - INFO - API Request - Endpoint: /analysis/detailed, Client: 192.168.1.100
 2024-01-15 10:30:01 - INFO - API Response - Endpoint: /analysis/detailed, Status: 200, Time: 0.856s
 ```
