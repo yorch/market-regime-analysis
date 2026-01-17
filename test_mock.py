@@ -37,8 +37,8 @@ def create_mock_data() -> pd.DataFrame:
     )
     df["Volume"] = np.random.randint(1000000, 10000000, len(df))
 
-    # Fill any NaN values
-    df = df.fillna(method="ffill").fillna(method="bfill")
+    # Fill any NaN values (using pandas 2.0+ syntax)
+    df = df.ffill().bfill()
 
     return df
 
