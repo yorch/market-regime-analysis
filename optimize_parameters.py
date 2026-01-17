@@ -77,9 +77,18 @@ def grid_search(symbol, timeframe, objective, provider, max_combinations, regime
     click.echo(f"\n=== Parameter Optimization: {symbol} ===\n")
 
     # Initialize analyzer to get data and regimes
+    # Only load the timeframe we're optimizing to avoid data loading errors
     click.echo(f"Loading data for {symbol}...")
     try:
-        analyzer = MarketRegimeAnalyzer(symbol=symbol, provider_flag=provider)
+        # Map timeframe to period
+        period_map = {"1D": "2y", "1H": "6mo", "15m": "3mo"}
+        period = period_map.get(timeframe, "2y")
+
+        analyzer = MarketRegimeAnalyzer(
+            symbol=symbol,
+            periods={timeframe: period},
+            provider_flag=provider
+        )
     except Exception as e:
         click.echo(f"Error loading data: {e}", err=True)
         sys.exit(1)
@@ -234,7 +243,15 @@ def validate(symbol, timeframe, params_file, provider):
 
     # Load data
     click.echo(f"\nLoading data for {symbol}...")
-    analyzer = MarketRegimeAnalyzer(symbol=symbol, provider_flag=provider)
+    # Map timeframe to period
+    period_map = {"1D": "2y", "1H": "6mo", "15m": "3mo"}
+    period = period_map.get(timeframe, "2y")
+
+    analyzer = MarketRegimeAnalyzer(
+        symbol=symbol,
+        periods={timeframe: period},
+        provider_flag=provider
+    )
     df = analyzer.data[timeframe]
 
     # Split data: 70% train, 30% test
