@@ -127,7 +127,7 @@ class TrueHMMDetector:
                 features["returns"]
                 .rolling(60, min_periods=40)
                 .apply(
-                    lambda x: x.autocorr(lag=lag) if len(x.dropna()) >= lag + 20 else np.nan,
+                    lambda x, lag_val=lag: x.autocorr(lag=lag_val) if len(x.dropna()) >= lag_val + 20 else np.nan,
                     raw=False,
                 )
             )

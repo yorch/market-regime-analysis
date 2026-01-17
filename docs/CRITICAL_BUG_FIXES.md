@@ -166,6 +166,49 @@ def _calculate_current_equity(self, current_price: float):
 **Impact**: Exit prices were wrong (exited at close instead of stop price)
 **Fix**: Now uses high/low prices for realistic stop/profit exits
 
+### Bug #7: Lambda Loop Variable Binding (HIGH)
+
+**Severity**: 🟠 **HIGH** - Autocorrelation features calculated incorrectly
+
+**Location**: `market_regime_analysis/true_hmm_detector.py:126-130`
+
+**Problem**:
+```python
+# BEFORE (BROKEN):
+for lag in [1, 2, 5]:
+    features[f"autocorr_{lag}"] = features["returns"].rolling(60).apply(
+        lambda x: x.autocorr(lag=lag),  # ❌ BUG: All lambdas use final lag=5
+        raw=False,
+    )
+
+# Issue: Lambda captures loop variable by reference, not value
+# Result: autocorr_1, autocorr_2, autocorr_5 ALL calculated with lag=5
+```
+
+**Impact**:
+- **autocorr_1** calculated with lag=5 ❌ (should be lag=1)
+- **autocorr_2** calculated with lag=5 ❌ (should be lag=2)
+- **autocorr_5** calculated with lag=5 ✓ (correct by accident)
+- HMM training received **corrupted features**, affecting regime classification
+- Ruff linting warning **B023** correctly identified this bug but was ignored
+
+**Fix**:
+```python
+# AFTER (FIXED):
+for lag in [1, 2, 5]:
+    features[f"autocorr_{lag}"] = features["returns"].rolling(60).apply(
+        lambda x, lag_val=lag: x.autocorr(lag=lag_val),  # ✓ Default arg binds value
+        raw=False,
+    )
+
+# Using default argument binds loop variable value at lambda creation time
+```
+
+**Validation**:
+- Verified all 3 autocorrelation features (`autocorr_1`, `autocorr_2`, `autocorr_5`) now calculated correctly
+- Removed **B023** from linting ignore list (bug fixed, no longer need to suppress)
+- All linting checks now pass
+
 ---
 
 ## 📊 BEFORE vs AFTER COMPARISON
@@ -203,9 +246,10 @@ def _calculate_current_equity(self, current_price: float):
    - Hardcoded 0.2, 0.3, 0.4 thresholds without justification
    - Should derive from data or optimize
 
-2. **Inefficient Autocorrelation** (true_hmm_detector.py:126-129)
-   - Complex lambda with `raw=False` is slow
-   - Should use vectorized approach
+2. **Inefficient Autocorrelation** (true_hmm_detector.py:126-129) - ✅ **PARTIALLY FIXED**
+   - Lambda loop variable bug fixed (Bug #7)
+   - Still uses `apply()` instead of vectorized approach (performance issue)
+   - Could optimize for faster feature calculation
 
 3. **Position Size Rounding** (engine.py:211)
    - `int(target_dollars / price)` loses fractional shares
