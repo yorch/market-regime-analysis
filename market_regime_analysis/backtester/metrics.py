@@ -140,7 +140,11 @@ class PerformanceMetrics:
         # Profit factor
         total_wins = sum(winning_trades) if winning_trades else 0.0
         total_losses = abs(sum(losing_trades)) if losing_trades else 0.0
-        profit_factor = total_wins / total_losses if total_losses > 0 else float('inf')
+        if total_losses > 0:
+            profit_factor = total_wins / total_losses
+        else:
+            # No losing trades - use large finite value or NaN for undefined
+            profit_factor = 999.0 if total_wins > 0 else 0.0
 
         # Average trade
         avg_trade = np.mean(trade_pnls) if trade_pnls else 0.0

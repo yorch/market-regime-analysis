@@ -75,28 +75,36 @@ def main():
         print(f"   ✗ Failed to load data: {e}")
         sys.exit(1)
 
-    # 2. Train HMM and detect regimes
+    # 2. Train HMM and detect regimes (WITH PROPER WALK-FORWARD)
     print("\n2. Training HMM and detecting regimes...")
+    print("   ⚠️  Using walk-forward approach to avoid look-ahead bias")
     try:
-        hmm = TrueHMMDetector(n_states=6, n_iter=100)
-        hmm.fit(df)
-
-        # Get regime predictions for each day
-        # For backtesting, we need to predict regime using only past data
-        # This is a simplified approach - in production, use expanding window
+        # Get regime predictions for each day using ONLY past data
         regime_list = []
         state_list = []
         confidence_list = []
 
-        # Use expanding window to avoid look-ahead bias
+        # Minimum training period
         min_train_days = 100
-        for i in range(min_train_days, len(df)):
-            train_df = df.iloc[:i]
-            test_df = df.iloc[:i+1]  # Include current day for prediction
+        retrain_frequency = 20  # Retrain every 20 days
 
-            # For speed, we'll use the full-trained model
-            # In production, retrain periodically
-            regime, state, conf = hmm.predict_regime(test_df, use_viterbi=False)
+        print(f"   Training window: {min_train_days} days minimum")
+        print(f"   Retrain frequency: Every {retrain_frequency} days")
+
+        hmm = None
+        for i in range(min_train_days, len(df)):
+            # Retrain periodically or on first iteration
+            if i == min_train_days or (i - min_train_days) % retrain_frequency == 0:
+                # Train on data UP TO (but not including) current day
+                train_df = df.iloc[:i]
+                hmm = TrueHMMDetector(n_states=6, n_iter=100)
+                hmm.fit(train_df)
+
+            # Predict using data UP TO current day (NOT including current close)
+            # In reality, we'd use yesterday's close to make today's trading decision
+            predict_df = df.iloc[:i]  # Only past data
+            regime, state, conf = hmm.predict_regime(predict_df, use_viterbi=False)
+
             regime_list.append(regime)
             state_list.append(state)
             confidence_list.append(conf)
@@ -110,7 +118,7 @@ def main():
         # Align data
         df_backtest = df.iloc[min_train_days:].copy()
 
-        print(f"   ✓ Detected regimes for {len(regime_series)} days")
+        print(f"   ✓ Detected regimes for {len(regime_series)} days (no look-ahead bias)")
         print(f"\n   Regime Distribution:")
         regime_counts = regime_series.value_counts()
         for regime, count in regime_counts.items():

@@ -222,8 +222,16 @@ class BacktestEngine:
         # Calculate entry costs
         costs = self.cost_model.calculate_total_cost(price, shares, "BUY" if direction == "LONG" else "SELL")
 
-        # Deduct costs from capital
-        self.capital -= costs["total_cost"]
+        # Calculate notional value
+        notional = price * shares
+
+        # Deduct position cost AND transaction costs from capital
+        # For LONG: we pay price * shares + costs
+        # For SHORT: we receive price * shares - costs (but margin required)
+        if direction == "LONG":
+            self.capital -= (notional + costs["total_cost"])
+        else:  # SHORT - receive proceeds but need margin (simplified: deduct costs only)
+            self.capital -= costs["total_cost"]
 
         # Create position
         self.position = {
@@ -255,9 +263,18 @@ class BacktestEngine:
         total_costs = self.position["entry_costs"] + costs["total_cost"]
         net_pnl = gross_pnl - total_costs
 
-        # Update capital
+        # Calculate notional (entry value for return calculation)
         notional = self.position["entry_price"] * shares
-        self.capital += notional + net_pnl
+
+        # Update capital
+        # For LONG: we receive sell proceeds = price * shares - exit_costs
+        # We already paid (entry_price * shares + entry_costs) when opening
+        # So net change is: sell proceeds - what we paid = gross_pnl - costs
+        # Which equals net_pnl that we already calculated
+        if direction == "LONG":
+            self.capital += (price * shares - costs["total_cost"])
+        else:  # SHORT - we pay to cover = price * shares + costs
+            self.capital -= (price * shares + costs["total_cost"])
 
         # Calculate return percentage
         return_pct = (net_pnl / notional * 100) if notional > 0 else 0.0
@@ -288,46 +305,56 @@ class BacktestEngine:
     def _check_exit_conditions(
         self, date: datetime, close: float, high: float, low: float
     ) -> None:
-        """Check if stop-loss or take-profit hit."""
+        """Check if stop-loss or take-profit hit using intraday high/low."""
         if self.position is None:
             return
 
         entry_price = self.position["entry_price"]
         direction = self.position["direction"]
 
-        # Calculate current P&L percentage
-        if direction == "LONG":
-            current_return = (close - entry_price) / entry_price
-        else:
-            current_return = (entry_price - close) / entry_price
+        # Check stop-loss (use worst case - LOW for LONG, HIGH for SHORT)
+        if self.stop_loss_pct:
+            if direction == "LONG":
+                stop_price = entry_price * (1 - self.stop_loss_pct)
+                if low <= stop_price:
+                    self._close_position(date, stop_price, "STOP_LOSS")
+                    return
+            else:  # SHORT
+                stop_price = entry_price * (1 + self.stop_loss_pct)
+                if high >= stop_price:
+                    self._close_position(date, stop_price, "STOP_LOSS")
+                    return
 
-        # Check stop-loss
-        if self.stop_loss_pct and current_return < -self.stop_loss_pct:
-            self._close_position(date, close, "STOP_LOSS")
-            return
-
-        # Check take-profit
-        if self.take_profit_pct and current_return > self.take_profit_pct:
-            self._close_position(date, close, "TAKE_PROFIT")
-            return
+        # Check take-profit (use best case - HIGH for LONG, LOW for SHORT)
+        if self.take_profit_pct:
+            if direction == "LONG":
+                profit_price = entry_price * (1 + self.take_profit_pct)
+                if high >= profit_price:
+                    self._close_position(date, profit_price, "TAKE_PROFIT")
+                    return
+            else:  # SHORT
+                profit_price = entry_price * (1 - self.take_profit_pct)
+                if low <= profit_price:
+                    self._close_position(date, profit_price, "TAKE_PROFIT")
+                    return
 
     def _calculate_current_equity(self, current_price: float) -> float:
         """Calculate current portfolio equity."""
         equity = self.capital
 
-        # Add unrealized P&L from open position
+        # Add current market value of open position
         if self.position is not None:
             shares = self.position["shares"]
-            entry_price = self.position["entry_price"]
             direction = self.position["direction"]
 
+            # For LONG: current value = current_price * shares (what we could sell for)
+            # For SHORT: current liability = current_price * shares (what we'd pay to cover)
             if direction == "LONG":
-                unrealized_pnl = (current_price - entry_price) * shares
-            else:
-                unrealized_pnl = (entry_price - current_price) * shares
-
-            notional = entry_price * shares
-            equity += notional + unrealized_pnl
+                position_value = current_price * shares
+                equity += position_value
+            else:  # SHORT
+                position_liability = current_price * shares
+                equity -= position_liability
 
         return equity
 
