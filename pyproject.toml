@@ -51,7 +51,9 @@ fixable = ["ALL"]
 "market_regime_analysis/portfolio.py" = ["T201", "PLR2004"]  # Allow print statements and magic values in portfolio reports
 "market_regime_analysis/risk_calculator.py" = ["T201", "PLR2004", "PLR0913"]  # Allow prints and magic values in risk calculator
 "market_regime_analysis/hmm_detector.py" = ["PLR2004", "B904", "B023", "PLR0911"]  # Allow magic values and complex patterns in HMM detector
-"test_*.py" = ["T201", "PLC0415"]  # Allow print statements and imports in tests
+"market_regime_analysis/true_hmm_detector.py" = ["PLR2004", "B023", "PLR0911", "PLR0912"]  # Allow magic values, loop binding, many returns/branches for regime classification
+"market_regime_analysis/backtester/*.py" = ["T201", "PLR2004", "SIM102", "SIM103"]  # Backtester modules with print statements and magic values
+"test_*.py" = ["T201", "PLC0415", "PLR0912", "PLR0915", "PLR2004"]  # Allow print statements, imports, complexity in tests
 "examples/*.py" = ["T201", "PLR2004"]
 "*.ipynb" = ["E402", "PLR2004", "RUF001", "T201"]
 

@@ -77,7 +77,7 @@ class PerformanceMetrics:
                 "total_trades": 0,
             }
 
-        total_return = (self.equity_curve.iloc[-1] / self.equity_curve.iloc[0] - 1)
+        total_return = self.equity_curve.iloc[-1] / self.equity_curve.iloc[0] - 1
         years = len(self.equity_curve) / 252  # Assuming daily data
         annualized_return = (1 + total_return) ** (1 / years) - 1 if years > 0 else 0
 
@@ -206,9 +206,17 @@ class PerformanceMetrics:
 
     def _calculate_ratio_metrics(self) -> dict:
         """Calculate performance ratios."""
-        annual_return = self.metrics.get("annualized_return", 0.0) if hasattr(self, "metrics") else 0.0
-        annual_vol = self.metrics.get("annualized_volatility", 0.0) if hasattr(self, "metrics") else 0.0
-        downside_dev = self.metrics.get("annualized_downside_deviation", 0.0) if hasattr(self, "metrics") else 0.0
+        annual_return = (
+            self.metrics.get("annualized_return", 0.0) if hasattr(self, "metrics") else 0.0
+        )
+        annual_vol = (
+            self.metrics.get("annualized_volatility", 0.0) if hasattr(self, "metrics") else 0.0
+        )
+        downside_dev = (
+            self.metrics.get("annualized_downside_deviation", 0.0)
+            if hasattr(self, "metrics")
+            else 0.0
+        )
         max_dd = self.metrics.get("max_drawdown", -0.01) if hasattr(self, "metrics") else -0.01
 
         # Need to get from already calculated metrics
@@ -226,7 +234,9 @@ class PerformanceMetrics:
         sharpe = ((annual_return - self.risk_free_rate) / annual_vol) if annual_vol > 0 else 0.0
 
         # Sortino Ratio
-        sortino = ((annual_return - self.risk_free_rate) / downside_dev) if downside_dev > 0 else 0.0
+        sortino = (
+            ((annual_return - self.risk_free_rate) / downside_dev) if downside_dev > 0 else 0.0
+        )
 
         # Calmar Ratio (return / max drawdown)
         calmar = abs(annual_return / max_dd) if max_dd < 0 else 0.0
@@ -247,7 +257,8 @@ class PerformanceMetrics:
             trade_stats = self._calculate_trade_stats()
         else:
             trade_stats = {
-                k: v for k, v in self.metrics.items()
+                k: v
+                for k, v in self.metrics.items()
                 if k in ["win_rate", "avg_win", "avg_loss", "profit_factor"]
             }
 
@@ -286,22 +297,22 @@ class PerformanceMetrics:
         print("BACKTEST PERFORMANCE SUMMARY")
         print("=" * 80)
 
-        print(f"\n📈 RETURNS:")
+        print("\n📈 RETURNS:")
         print(f"   Total Return:       {self.metrics['total_return']:>10.2%}")
         print(f"   Annualized Return:  {self.metrics['annualized_return']:>10.2%}")
         print(f"   Years:              {self.metrics['years']:>10.2f}")
 
-        print(f"\n📊 RISK METRICS:")
+        print("\n📊 RISK METRICS:")
         print(f"   Volatility (Ann.):  {self.metrics['annualized_volatility']:>10.2%}")
         print(f"   Max Drawdown:       {self.metrics['max_drawdown']:>10.2%}")
         print(f"   Avg Drawdown:       {self.metrics['avg_drawdown']:>10.2%}")
 
-        print(f"\n📉 PERFORMANCE RATIOS:")
+        print("\n📉 PERFORMANCE RATIOS:")
         print(f"   Sharpe Ratio:       {self.metrics['sharpe_ratio']:>10.2f}")
         print(f"   Sortino Ratio:      {self.metrics['sortino_ratio']:>10.2f}")
         print(f"   Calmar Ratio:       {self.metrics['calmar_ratio']:>10.2f}")
 
-        print(f"\n💰 TRADE STATISTICS:")
+        print("\n💰 TRADE STATISTICS:")
         print(f"   Total Trades:       {self.metrics['total_trades']:>10}")
         print(f"   Winning Trades:     {self.metrics['winning_trades']:>10}")
         print(f"   Losing Trades:      {self.metrics['losing_trades']:>10}")
@@ -312,7 +323,7 @@ class PerformanceMetrics:
         print(f"   Avg Trade:          ${self.metrics['avg_trade']:>9.2f}")
         print(f"   Expectancy:         ${self.metrics['expectancy']:>9.2f}")
 
-        print(f"\n🎯 KELLY CRITERION PARAMETERS:")
+        print("\n🎯 KELLY CRITERION PARAMETERS:")
         print(f"   Full Kelly:         {self.metrics['kelly_fraction']:>10.2%}")
         print(f"   Half Kelly:         {self.metrics['half_kelly']:>10.2%}")
         print(f"   Quarter Kelly:      {self.metrics['quarter_kelly']:>10.2%}")

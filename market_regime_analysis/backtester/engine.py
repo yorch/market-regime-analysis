@@ -8,7 +8,6 @@ with realistic execution, transaction costs, and performance measurement.
 from dataclasses import dataclass
 from datetime import datetime
 
-import numpy as np
 import pandas as pd
 
 from ..enums import MarketRegime, TradingStrategy
@@ -120,7 +119,11 @@ class BacktestEngine:
 
                 # Check regime change exit
                 if self._should_exit_regime(regime, strategy):
-                    self._close_position(date, price, regime.value if isinstance(regime, MarketRegime) else str(regime))
+                    self._close_position(
+                        date,
+                        price,
+                        regime.value if isinstance(regime, MarketRegime) else str(regime),
+                    )
 
             # Enter new position if no current position
             if self.position is None:
@@ -128,7 +131,13 @@ class BacktestEngine:
                     direction = self._get_direction_from_strategy(strategy)
                     if direction:
                         size = self._calculate_position_size(price, position_mult)
-                        self._open_position(date, price, size, direction, regime.value if isinstance(regime, MarketRegime) else str(regime))
+                        self._open_position(
+                            date,
+                            price,
+                            size,
+                            direction,
+                            regime.value if isinstance(regime, MarketRegime) else str(regime),
+                        )
 
             # Update equity curve
             current_equity = self._calculate_current_equity(price)
@@ -220,7 +229,9 @@ class BacktestEngine:
             return
 
         # Calculate entry costs
-        costs = self.cost_model.calculate_total_cost(price, shares, "BUY" if direction == "LONG" else "SELL")
+        costs = self.cost_model.calculate_total_cost(
+            price, shares, "BUY" if direction == "LONG" else "SELL"
+        )
 
         # Calculate notional value
         notional = price * shares
@@ -229,7 +240,7 @@ class BacktestEngine:
         # For LONG: we pay price * shares + costs
         # For SHORT: we receive price * shares - costs (but margin required)
         if direction == "LONG":
-            self.capital -= (notional + costs["total_cost"])
+            self.capital -= notional + costs["total_cost"]
         else:  # SHORT - receive proceeds but need margin (simplified: deduct costs only)
             self.capital -= costs["total_cost"]
 
@@ -252,7 +263,9 @@ class BacktestEngine:
         direction = self.position["direction"]
 
         # Calculate exit costs
-        costs = self.cost_model.calculate_total_cost(price, shares, "SELL" if direction == "LONG" else "BUY")
+        costs = self.cost_model.calculate_total_cost(
+            price, shares, "SELL" if direction == "LONG" else "BUY"
+        )
 
         # Calculate P&L
         if direction == "LONG":
@@ -272,9 +285,9 @@ class BacktestEngine:
         # So net change is: sell proceeds - what we paid = gross_pnl - costs
         # Which equals net_pnl that we already calculated
         if direction == "LONG":
-            self.capital += (price * shares - costs["total_cost"])
+            self.capital += price * shares - costs["total_cost"]
         else:  # SHORT - we pay to cover = price * shares + costs
-            self.capital -= (price * shares + costs["total_cost"])
+            self.capital -= price * shares + costs["total_cost"]
 
         # Calculate return percentage
         return_pct = (net_pnl / notional * 100) if notional > 0 else 0.0
@@ -302,9 +315,7 @@ class BacktestEngine:
         self.trades.append(trade)
         self.position = None
 
-    def _check_exit_conditions(
-        self, date: datetime, close: float, high: float, low: float
-    ) -> None:
+    def _check_exit_conditions(self, date: datetime, close: float, high: float, low: float) -> None:
         """Check if stop-loss or take-profit hit using intraday high/low."""
         if self.position is None:
             return
@@ -364,12 +375,12 @@ class BacktestEngine:
         print("BACKTEST RESULTS")
         print("=" * 100)
 
-        print(f"\n💰 CAPITAL:")
+        print("\n💰 CAPITAL:")
         print(f"   Initial Capital:    ${self.initial_capital:>12,.2f}")
         print(f"   Final Capital:      ${results['final_capital']:>12,.2f}")
         print(f"   Total Return:       {results['total_return']:>13.2%}")
 
-        print(f"\n📊 TRADES:")
+        print("\n📊 TRADES:")
         print(f"   Total Trades:       {len(results['trades']):>12}")
 
         if results["trades"]:

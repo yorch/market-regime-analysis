@@ -123,14 +123,20 @@ class TrueHMMDetector:
 
         # Autocorrelation with proper sample size
         for lag in [1, 2, 5]:
-            features[f"autocorr_{lag}"] = features["returns"].rolling(60, min_periods=40).apply(
-                lambda x: x.autocorr(lag=lag) if len(x.dropna()) >= lag + 20 else np.nan,
-                raw=False,
+            features[f"autocorr_{lag}"] = (
+                features["returns"]
+                .rolling(60, min_periods=40)
+                .apply(
+                    lambda x: x.autocorr(lag=lag) if len(x.dropna()) >= lag + 20 else np.nan,
+                    raw=False,
+                )
             )
 
         # Volume features (if available)
         if "Volume" in df.columns and df["Volume"].sum() > 0:
-            features["volume_ratio"] = df["Volume"] / df["Volume"].rolling(20, min_periods=10).mean()
+            features["volume_ratio"] = (
+                df["Volume"] / df["Volume"].rolling(20, min_periods=10).mean()
+            )
         else:
             features["volume_ratio"] = 1.0
 
@@ -352,8 +358,7 @@ class TrueHMMDetector:
         Returns:
             Persistence score (0-1, higher = more stable)
         """
-        if len(states) < lookback:
-            lookback = len(states)
+        lookback = min(lookback, len(states))
 
         if lookback == 0:
             return 0.0
@@ -406,7 +411,9 @@ class TrueHMMDetector:
             "n_features": len(self.feature_names),
             "covariance_type": self.covariance_type,
             "converged": self.model.monitor_.converged,
-            "n_iterations": len(self.model.monitor_.history) if hasattr(self.model.monitor_, "history") else "N/A",
+            "n_iterations": len(self.model.monitor_.history)
+            if hasattr(self.model.monitor_, "history")
+            else "N/A",
         }
 
     def compare_with_gmm(self, df: pd.DataFrame, gmm_detector) -> dict:

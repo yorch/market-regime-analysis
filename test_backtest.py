@@ -55,7 +55,9 @@ def create_simple_regime_strategy(regimes: pd.Series) -> tuple[pd.Series, pd.Ser
             strategies.append(TradingStrategy.AVOID)
             position_sizes.append(0.2)
 
-    return pd.Series(strategies, index=regimes.index), pd.Series(position_sizes, index=regimes.index)
+    return pd.Series(strategies, index=regimes.index), pd.Series(
+        position_sizes, index=regimes.index
+    )
 
 
 def main():
@@ -110,16 +112,13 @@ def main():
             confidence_list.append(conf)
 
         # Create regime series aligned with price data
-        regime_series = pd.Series(
-            regime_list,
-            index=df.index[min_train_days:]
-        )
+        regime_series = pd.Series(regime_list, index=df.index[min_train_days:])
 
         # Align data
         df_backtest = df.iloc[min_train_days:].copy()
 
         print(f"   ✓ Detected regimes for {len(regime_series)} days (no look-ahead bias)")
-        print(f"\n   Regime Distribution:")
+        print("\n   Regime Distribution:")
         regime_counts = regime_series.value_counts()
         for regime, count in regime_counts.items():
             pct = count / len(regime_series) * 100
@@ -128,6 +127,7 @@ def main():
     except Exception as e:
         print(f"   ✗ Regime detection failed: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 
@@ -136,7 +136,7 @@ def main():
     try:
         strategies, position_sizes = create_simple_regime_strategy(regime_series)
         print(f"   ✓ Strategy created for {len(strategies)} days")
-        print(f"\n   Strategy Distribution:")
+        print("\n   Strategy Distribution:")
         strategy_counts = strategies.value_counts()
         for strategy, count in strategy_counts.items():
             pct = count / len(strategies) * 100
@@ -163,7 +163,7 @@ def main():
             position_sizes=position_sizes,
         )
 
-        print(f"   ✓ Backtest complete")
+        print("   ✓ Backtest complete")
         print(f"     - Total trades: {len(results['trades'])}")
         print(f"     - Final capital: ${results['final_capital']:,.2f}")
         print(f"     - Total return: {results['total_return']:.2%}")
@@ -171,6 +171,7 @@ def main():
     except Exception as e:
         print(f"   ✗ Backtest failed: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 
@@ -205,8 +206,8 @@ def main():
 
     # 7. Compare with buy-and-hold
     print("\n7. Benchmark Comparison:")
-    buy_hold_return = (df_backtest['Close'].iloc[-1] / df_backtest['Close'].iloc[0] - 1)
-    strategy_return = results['total_return']
+    buy_hold_return = df_backtest["Close"].iloc[-1] / df_backtest["Close"].iloc[0] - 1
+    strategy_return = results["total_return"]
     print(f"   Buy & Hold:    {buy_hold_return:>10.2%}")
     print(f"   This Strategy: {strategy_return:>10.2%}")
     print(f"   Difference:    {strategy_return - buy_hold_return:>10.2%}")

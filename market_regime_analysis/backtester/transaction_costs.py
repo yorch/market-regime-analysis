@@ -77,9 +77,7 @@ class TransactionCostModel:
         spread_cost = notional_value * (self.spread_bps / 10000)
 
         # 2. Commission cost
-        commission = max(
-            self.commission_min, shares * self.commission_per_share
-        )
+        commission = max(self.commission_min, shares * self.commission_per_share)
 
         # 3. Slippage cost
         slippage_cost = notional_value * (self.slippage_bps / 10000)
@@ -90,9 +88,7 @@ class TransactionCostModel:
             # Impact proportional to sqrt(shares / avg_volume)
             participation_rate = shares / avg_volume
             market_impact_cost = (
-                notional_value
-                * self.market_impact_coeff
-                * np.sqrt(participation_rate)
+                notional_value * self.market_impact_coeff * np.sqrt(participation_rate)
             )
 
         # Total cost

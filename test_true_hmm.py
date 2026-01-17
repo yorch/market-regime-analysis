@@ -7,8 +7,6 @@ with the original GMM-based HiddenMarkovRegimeDetector.
 
 import sys
 
-import pandas as pd
-
 from market_regime_analysis.hmm_detector import HiddenMarkovRegimeDetector
 from market_regime_analysis.providers import MarketDataProvider
 from market_regime_analysis.true_hmm_detector import TrueHMMDetector
@@ -37,29 +35,27 @@ def main():
         true_hmm.fit(df)
 
         convergence = true_hmm.get_training_convergence()
-        print(f"   ✓ HMM trained successfully")
+        print("   ✓ HMM trained successfully")
         print(f"     - Log-likelihood: {convergence['log_likelihood']:.2f}")
         print(f"     - Converged: {convergence['converged']}")
         print(f"     - Features: {convergence['n_features']}")
 
         # Predict regime
         regime, state, confidence = true_hmm.predict_regime(df, use_viterbi=True)
-        print(f"\n   True HMM Prediction:")
+        print("\n   True HMM Prediction:")
         print(f"     - Regime: {regime.value}")
         print(f"     - State: {state}")
         print(f"     - Confidence: {confidence:.2%}")
 
         # Show transition matrix
-        print(f"\n   Learned Transition Matrix (top 3 transitions):")
+        print("\n   Learned Transition Matrix (top 3 transitions):")
         for i in range(min(3, true_hmm.n_states)):
             top_transitions = sorted(
                 [(j, true_hmm.transition_matrix[i, j]) for j in range(true_hmm.n_states)],
                 key=lambda x: x[1],
                 reverse=True,
             )[:3]
-            print(
-                f"     State {i} -> {', '.join([f'{j}({p:.2%})' for j, p in top_transitions])}"
-            )
+            print(f"     State {i} -> {', '.join([f'{j}({p:.2%})' for j, p in top_transitions])}")
 
     except Exception as e:
         print(f"   ✗ True HMM failed: {e}")
@@ -73,11 +69,11 @@ def main():
     try:
         gmm_detector = HiddenMarkovRegimeDetector(n_states=6)
         gmm_detector.fit(df)
-        print(f"   ✓ GMM trained successfully")
+        print("   ✓ GMM trained successfully")
 
         # Predict regime
         regime, state, confidence = gmm_detector.predict_regime(df)
-        print(f"\n   GMM Prediction:")
+        print("\n   GMM Prediction:")
         print(f"     - Regime: {regime.value}")
         print(f"     - State: {state}")
         print(f"     - Confidence: {confidence:.2%}")
@@ -92,7 +88,7 @@ def main():
     print("\n4. Comparing Approaches...")
     try:
         comparison = true_hmm.compare_with_gmm(df, gmm_detector)
-        print(f"\n   Comparison Results:")
+        print("\n   Comparison Results:")
         print(f"     - Regime Agreement: {comparison['regime_agreement']}")
         print(f"     - HMM Regime: {comparison['hmm_regime']}")
         print(f"     - GMM Regime: {comparison['gmm_regime']}")
