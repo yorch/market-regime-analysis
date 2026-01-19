@@ -1,0 +1,28 @@
+{
+  "symbol": "SPY",
+  "timeframe": "1D",
+  "objective": "sharpe_ratio",
+  "objective_value": -1.2064584431539447,
+  "parameters": {
+    "regime_mult_Bull Trending": 1.0,
+    "regime_mult_Bear Trending": 0.5,
+    "regime_mult_Mean Reverting": 1.0,
+    "regime_mult_High Volatility": 0.3,
+    "regime_mult_Low Volatility": 1.3,
+    "regime_mult_Breakout": 1.0999999999999999,
+    "regime_mult_Unknown": 0.1,
+    "stop_loss_pct": 0.1,
+    "take_profit_pct": 0.15,
+    "max_position_size": 0.2,
+    "vol_threshold_high_pct": 75.0,
+    "vol_threshold_low_pct": 25.0
+  },
+  "metrics": {
+    "sharpe_ratio": -1.2064584431539447,
+    "total_return": 0.017026014419829982,
+    "max_drawdown": -0.010584606428517569,
+    "num_trades": 19,
+    "win_rate": 0.3684210526315789,
+    "profit_factor": 2.2317021957591456
+  }
+}
