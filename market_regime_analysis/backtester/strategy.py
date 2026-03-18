@@ -88,6 +88,9 @@ class RegimeStrategy:
         if self.confidence_scaling:
             multiplier *= confidence
 
+        # Scale by base position fraction
+        multiplier *= self.base_position_fraction
+
         return direction, multiplier
 
     def generate_signals(

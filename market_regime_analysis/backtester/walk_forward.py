@@ -9,6 +9,7 @@ import warnings
 
 import numpy as np
 import pandas as pd
+from sklearn.exceptions import ConvergenceWarning
 
 from ..enums import MarketRegime
 from ..true_hmm_detector import TrueHMMDetector
@@ -16,8 +17,8 @@ from .engine import BacktestEngine
 from .strategy import RegimeStrategy
 from .transaction_costs import EquityCostModel, TransactionCostModel
 
-warnings.filterwarnings("ignore", category=UserWarning)
-warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=ConvergenceWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 
 class WalkForwardValidator:
@@ -156,6 +157,7 @@ class WalkForwardValidator:
             regimes=regimes,
             strategies=strategies,
             position_sizes=position_sizes,
+            directions=directions,
         )
 
         # Buy-and-hold benchmark for same window

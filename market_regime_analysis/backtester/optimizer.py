@@ -12,11 +12,13 @@ import warnings
 from dataclasses import dataclass
 
 import pandas as pd
+from sklearn.exceptions import ConvergenceWarning
 
 from .strategy import RegimeStrategy
 from .walk_forward import WalkForwardValidator
 
-warnings.filterwarnings("ignore")
+warnings.filterwarnings("ignore", category=ConvergenceWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 
 @dataclass
@@ -131,8 +133,7 @@ class StrategyOptimizer:
                 window_win_rate=wf_results["window_win_rate"],
             )
         except Exception as e:
-            if verbose:
-                print(f"    Error evaluating params: {e}")
+            print(f"    Error evaluating params ({type(e).__name__}): {e}")
             return None
 
     def grid_search(
@@ -230,10 +231,10 @@ class StrategyOptimizer:
         for idx in range(n_iterations):
             params = {}
             for key, (lo, hi) in param_ranges.items():
-                if isinstance(lo, int) and isinstance(hi, int):
-                    params[key] = random.randint(lo, hi)
-                elif isinstance(lo, bool):
+                if isinstance(lo, bool) or isinstance(hi, bool):
                     params[key] = random.choice([True, False])
+                elif isinstance(lo, int) and isinstance(hi, int):
+                    params[key] = random.randint(lo, hi)
                 else:
                     # Round to 2 decimal places for cleaner params
                     params[key] = round(random.uniform(lo, hi), 2)
