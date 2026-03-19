@@ -36,13 +36,45 @@ See `uv run mra --help` for all CLI commands.
 
 ## Core Features
 
-- **HMM Regime Detection** — 6-state classification using `hmmlearn` (Baum-Welch training, Viterbi decoding) and a GMM-based detector
-- **Statistical Arbitrage Signals** — Z-score mean reversion, autocorrelation breakdown
-- **Risk Management** — Kelly Criterion position sizing with regime adjustments and portfolio-level exposure limits
-- **Backtesting** — Walk-forward validation, transaction cost modeling, grid/random strategy optimization
-- **Multi-Timeframe** — Daily, hourly, 15-minute analysis
-- **3 Data Providers** — Yahoo Finance (free), Alpha Vantage, Polygon.io
-- **REST API** — FastAPI with JWT auth, WebSocket monitoring ([docs/api.md](docs/api.md))
+### Hidden Markov Model Regime Detection
+
+- **6-State HMM**: Bull Trending, Bear Trending, Mean Reverting, High Volatility, Low Volatility, Breakout
+- **Mathematical Features**: Returns, volatility, skewness, kurtosis, autocorrelation
+- **Transition Matrices**: Proper state transition probability estimation
+- **Regime Persistence**: Stability metrics for regime classification
+
+### Statistical Arbitrage
+
+- **Z-Score Analysis**: Mean reversion signal identification
+- **Autocorrelation Breakdown**: Momentum persistence analysis
+- **Cross-Asset Pairs**: Statistical arbitrage opportunity detection
+- **Confidence Weighting**: Signal strength based on regime confidence
+
+### Risk Management
+
+- **Kelly Criterion**: Optimal position sizing with confidence scaling
+- **Regime Adjustments**: Position multipliers based on market regime
+- **Correlation Adjustments**: Portfolio diversification considerations
+- **Volatility Targeting**: Risk-adjusted position sizing
+- **Cross-Asset Position Limits**: Portfolio-level exposure enforcement (gross, net, per-asset, sector, max positions)
+
+### Multi-Timeframe Analysis
+
+- **Daily (1D)**: Long-term regime trends (2 years of data)
+- **Hourly (1H)**: Medium-term regime shifts (6 months of data)
+- **15-Minute (15m)**: Short-term regime changes (2 months of data)
+
+### Backtesting & Strategy Optimization
+
+- **Walk-Forward Validation**: Anchored or rolling out-of-sample testing with periodic HMM retraining
+- **BacktestEngine**: Trade simulation with realistic transaction costs, stop-loss/take-profit, and LONG/SHORT support
+- **RegimeStrategy**: Parameterized strategy mapping regimes to trade directions and position sizes
+- **StrategyOptimizer**: Grid and random search over strategy parameters with composite scoring
+- **Performance Metrics**: Sharpe, Sortino, Calmar ratios, drawdown analysis, Kelly Criterion parameters
+
+### REST API
+
+- FastAPI with JWT auth and WebSocket monitoring — see [docs/api.md](docs/api.md)
 
 ### Example Output
 
