@@ -3,8 +3,9 @@ FROM python:3.13-slim AS builder
 
 WORKDIR /app
 
-# Install uv
+# Install uv and build tools needed for sdist-only packages (e.g. peewee)
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev && rm -rf /var/lib/apt/lists/*
 
 # Copy dependency manifests first for layer caching
 COPY pyproject.toml uv.lock ./
