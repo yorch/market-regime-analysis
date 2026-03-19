@@ -159,7 +159,7 @@ market_regime_analysis/
 3. **TrueHMMDetector** (`true_hmm_detector.py`): Full HMM implementation using hmmlearn with Viterbi decoding, regime forecasting via transition matrix projection, and regime stability analysis (stationary distribution, expected durations)
 4. **Data Providers** (`providers/`): Plug-and-play architecture supporting Alpha Vantage, Polygon.io, and Yahoo Finance with automatic provider discovery
 5. **Portfolio Analysis** (`portfolio.py`): Multi-symbol correlation and regime analysis
-6. **Risk Management** (`risk_calculator.py`): Kelly Criterion-based position sizing with regime adjustments
+6. **Risk Management** (`risk_calculator.py`): Kelly Criterion-based position sizing with regime adjustments, plus `PortfolioPositionLimits` for cross-asset exposure enforcement (gross, net, per-asset, sector, max positions)
 7. **Backtester** (`backtester/`): Walk-forward validation and strategy optimization framework:
    - **BacktestEngine** (`engine.py`): Simulates trades with transaction costs, stop-loss/take-profit, and LONG/SHORT support
    - **RegimeStrategy** (`strategy.py`): Parameterized strategy mapping regimes to directions and position sizes (tunable via `from_param_vector()`)
@@ -281,6 +281,9 @@ uv run main.py list-providers
 - `test_engine.py`: Unit tests for `BacktestEngine` (direction propagation, LONG/SHORT entries, direction reversals), walk-forward aggregation (compounding, window win rate), optimizer scoring/ranking, and `print_top_results` robustness
 - `test_forecasting.py`: Unit tests for `TrueHMMDetector` forecasting (n-step probability projection, regime sequence forecasting, stationary distribution, regime stability metrics)
 - `test_calibrator.py`: Unit tests for `RegimeMultiplierCalibrator` (per-regime stats computation, scoring methods, normalization, full integration calibration)
+- `test_transaction_costs.py`: Unit tests for `TransactionCostModel` and all preset models (spread, commission, slippage, market impact, roundtrip, P&L after costs)
+- `test_providers.py`: Unit tests for provider base class, registry, factory pattern, mock provider, `standardize_dataframe`, parameter validation
+- `test_risk_calculator.py`: Unit tests for `SimonsRiskCalculator` (Kelly, regime-adjusted, correlation, volatility sizing) and `PortfolioPositionLimits` (all limit types, clamping, BacktestEngine integration)
 - Manual verification through CLI commands
 
 ### Key Design Patterns

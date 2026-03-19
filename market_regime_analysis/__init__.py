@@ -11,7 +11,7 @@ from .data_classes import RegimeAnalysis
 from .enums import MarketRegime, TradingStrategy
 from .hmm_detector import HiddenMarkovRegimeDetector
 from .portfolio import PortfolioHMMAnalyzer
-from .risk_calculator import SimonsRiskCalculator
+from .risk_calculator import PortfolioPositionLimits, PositionRecord, SimonsRiskCalculator
 
 __version__ = "1.0.0"
 __all__ = [
@@ -19,6 +19,8 @@ __all__ = [
     "MarketRegime",
     "MarketRegimeAnalyzer",
     "PortfolioHMMAnalyzer",
+    "PortfolioPositionLimits",
+    "PositionRecord",
     "RegimeAnalysis",
     "SimonsRiskCalculator",
     "TradingStrategy",
