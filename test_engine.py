@@ -13,6 +13,7 @@ from market_regime_analysis.enums import MarketRegime, TradingStrategy
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_ohlcv(prices: list[float], start: str = "2020-01-01") -> pd.DataFrame:
     """Build a minimal OHLCV DataFrame from a list of close prices."""
     dates = pd.bdate_range(start, periods=len(prices))
@@ -167,9 +168,9 @@ class TestAggregateResults:
         strategy = RegimeStrategy()
         validator = WalkForwardValidator(strategy=strategy)
         windows = [
-            self._make_window_result(0.05, 0.03),   # positive
-            self._make_window_result(-0.02, 0.01),   # negative
-            self._make_window_result(0.03, 0.01),    # positive
+            self._make_window_result(0.05, 0.03),  # positive
+            self._make_window_result(-0.02, 0.01),  # negative
+            self._make_window_result(0.03, 0.01),  # positive
         ]
 
         prices = [100.0] * 400
@@ -191,34 +192,63 @@ class TestOptimizerScoring:
 
     def test_higher_sharpe_scores_higher(self):
         r1 = OptimizationResult(
-            params={}, sharpe=1.5, total_return=0.10, excess_return=0.05,
-            trade_win_rate=0.55, profit_factor=1.5, total_trades=30,
-            max_drawdown=-0.10, window_win_rate=0.6,
+            params={},
+            sharpe=1.5,
+            total_return=0.10,
+            excess_return=0.05,
+            trade_win_rate=0.55,
+            profit_factor=1.5,
+            total_trades=30,
+            max_drawdown=-0.10,
+            window_win_rate=0.6,
         )
         r2 = OptimizationResult(
-            params={}, sharpe=0.5, total_return=0.10, excess_return=0.05,
-            trade_win_rate=0.55, profit_factor=1.5, total_trades=30,
-            max_drawdown=-0.10, window_win_rate=0.6,
+            params={},
+            sharpe=0.5,
+            total_return=0.10,
+            excess_return=0.05,
+            trade_win_rate=0.55,
+            profit_factor=1.5,
+            total_trades=30,
+            max_drawdown=-0.10,
+            window_win_rate=0.6,
         )
         assert r1.score > r2.score
 
     def test_excess_return_boosts_score(self):
         r1 = OptimizationResult(
-            params={}, sharpe=1.0, total_return=0.15, excess_return=0.10,
-            trade_win_rate=0.55, profit_factor=1.5, total_trades=30,
-            max_drawdown=-0.10, window_win_rate=0.6,
+            params={},
+            sharpe=1.0,
+            total_return=0.15,
+            excess_return=0.10,
+            trade_win_rate=0.55,
+            profit_factor=1.5,
+            total_trades=30,
+            max_drawdown=-0.10,
+            window_win_rate=0.6,
         )
         r2 = OptimizationResult(
-            params={}, sharpe=1.0, total_return=0.05, excess_return=0.00,
-            trade_win_rate=0.55, profit_factor=1.5, total_trades=30,
-            max_drawdown=-0.10, window_win_rate=0.6,
+            params={},
+            sharpe=1.0,
+            total_return=0.05,
+            excess_return=0.00,
+            trade_win_rate=0.55,
+            profit_factor=1.5,
+            total_trades=30,
+            max_drawdown=-0.10,
+            window_win_rate=0.6,
         )
         assert r1.score > r2.score
 
     def test_deep_drawdown_penalised(self):
         base = {
-            "params": {}, "sharpe": 1.0, "total_return": 0.10, "excess_return": 0.05,
-            "trade_win_rate": 0.55, "profit_factor": 1.5, "total_trades": 30,
+            "params": {},
+            "sharpe": 1.0,
+            "total_return": 0.10,
+            "excess_return": 0.05,
+            "trade_win_rate": 0.55,
+            "profit_factor": 1.5,
+            "total_trades": 30,
             "window_win_rate": 0.6,
         }
         r_ok = OptimizationResult(**base, max_drawdown=-0.15)
@@ -227,8 +257,13 @@ class TestOptimizerScoring:
 
     def test_too_few_trades_penalised(self):
         base = {
-            "params": {}, "sharpe": 1.0, "total_return": 0.10, "excess_return": 0.05,
-            "trade_win_rate": 0.55, "profit_factor": 1.5, "max_drawdown": -0.10,
+            "params": {},
+            "sharpe": 1.0,
+            "total_return": 0.10,
+            "excess_return": 0.05,
+            "trade_win_rate": 0.55,
+            "profit_factor": 1.5,
+            "max_drawdown": -0.10,
             "window_win_rate": 0.6,
         }
         r_enough = OptimizationResult(**base, total_trades=30)
@@ -239,9 +274,15 @@ class TestOptimizerScoring:
         """Ensure grid_search sorts results best-first."""
         results = [
             OptimizationResult(
-                params={}, sharpe=s, total_return=0.10, excess_return=0.05,
-                trade_win_rate=0.55, profit_factor=1.5, total_trades=30,
-                max_drawdown=-0.10, window_win_rate=0.6,
+                params={},
+                sharpe=s,
+                total_return=0.10,
+                excess_return=0.05,
+                trade_win_rate=0.55,
+                profit_factor=1.5,
+                total_trades=30,
+                max_drawdown=-0.10,
+                window_win_rate=0.6,
             )
             for s in [0.5, 2.0, 1.0]
         ]
@@ -268,9 +309,14 @@ class TestPrintTopResults:
         optimizer.results = [
             OptimizationResult(
                 params={"custom_param": 42},
-                sharpe=1.0, total_return=0.10, excess_return=0.05,
-                trade_win_rate=0.55, profit_factor=1.5, total_trades=30,
-                max_drawdown=-0.10, window_win_rate=0.6,
+                sharpe=1.0,
+                total_return=0.10,
+                excess_return=0.05,
+                trade_win_rate=0.55,
+                profit_factor=1.5,
+                total_trades=30,
+                max_drawdown=-0.10,
+                window_win_rate=0.6,
             )
         ]
 
