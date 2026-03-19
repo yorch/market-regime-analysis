@@ -1,5 +1,5 @@
 # ── Builder stage ────────────────────────────────────────────────────────────
-FROM python:3.13-slim AS builder
+FROM python:3.12-slim AS builder
 
 WORKDIR /app
 
@@ -20,42 +20,35 @@ RUN mkdir -p packages/mra_lib/src/mra_lib && \
     touch packages/mra_cli/src/mra_cli/__init__.py && \
     touch packages/mra_web/src/mra_web/__init__.py
 
-# Install dependencies into .venv
-RUN uv sync --frozen --no-dev
+# Install dependencies into .venv (cached layer — only rebuilds when manifests change)
+RUN uv sync --frozen --no-dev --extra all
 
 # Copy actual source code
 COPY packages/ packages/
-COPY examples/ examples/
 
-# Reinstall workspace packages with actual source
-RUN uv sync --frozen --no-dev
+# Reinstall workspace packages as non-editable wheels baked into the venv
+# (only .venv is copied to runtime — no source tree)
+RUN uv sync --frozen --no-dev --extra all --no-editable
 
 # ── Runtime stage ────────────────────────────────────────────────────────────
-FROM python:3.13-slim AS runtime
+FROM python:3.12-slim AS runtime
 
 WORKDIR /app
 
 # Create non-root user
-RUN groupadd --gid 1000 app && \
-    useradd --uid 1000 --gid app --shell /bin/bash --create-home app
+RUN useradd -m -u 1000 scanner
 
-# Copy only the virtual environment from builder (no uv, no source needed)
+# Copy only the virtual environment from builder (no uv, no source, no build artifacts)
 COPY --from=builder /app/.venv /app/.venv
 
-# Put venv on PATH
+# Put venv on PATH so installed entry points are directly available
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    # Disable TUI dashboards in containerized mode
+    MRA_NO_DASHBOARD=1
 
-# Default configuration via env vars
-ENV API_HOST="0.0.0.0" \
-    API_PORT="8000" \
-    ENVIRONMENT="production" \
-    LOG_LEVEL="INFO"
+USER scanner
 
-EXPOSE 8000
-
-USER app
-
-# Headless by default — start the API server
-CMD ["python", "-m", "uvicorn", "mra_web.app:app", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["mra"]
+CMD ["--no-dashboard"]

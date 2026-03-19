@@ -1,42 +1,14 @@
-# Git
 .git
-.gitignore
-
-# Virtual environments
 .venv
-venv
-
-# Python cache
 __pycache__
 *.pyc
 *.pyo
-*.pyd
-
-# IDE
-.vscode
-.idea
-
-# Caches
-.ruff_cache
-.pytest_cache
-.mypy_cache
-
-# Docker
-Dockerfile
-.dockerignore
-docker-compose*.yml
-
-# Tests (not needed in production image)
-**/tests/
-
-# Docs
+*.egg-info
+.env
+.env.*
+!.env.example
+tests/
 docs/
 *.md
-!README.md
-
-# Dev files
-.env
-.env.example
 Justfile
-Makefile
-.pre-commit-config.yaml
+scripts/

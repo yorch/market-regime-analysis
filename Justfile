@@ -92,19 +92,51 @@ pre-commit-install:
 
 # Build the Docker image
 docker-build:
-    docker build -t market-regime-analysis .
+    docker compose build
 
-# Run the Docker container
-docker-run:
-    docker compose up
-
-# Build and run
+# Start detached
 docker-up:
-    docker compose up --build
+    docker compose up -d
 
-# Stop Docker containers
+# Stop
 docker-down:
     docker compose down
+
+# Restart
+docker-restart:
+    docker compose restart
+
+# Tail logs
+docker-logs:
+    docker compose logs -f
+
+# One-shot run (smoke test)
+docker-once:
+    docker compose run --rm scanner --once
+
+# Debug shell
+docker-shell:
+    docker compose run --rm --entrypoint /bin/bash scanner
+
+# Full reset (removes containers + volumes)
+docker-clean:
+    docker compose down -v --rmi local
+
+# Start with PostgreSQL
+docker-pg-up:
+    docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
+
+# Stop with PostgreSQL
+docker-pg-down:
+    docker compose -f docker-compose.yml -f docker-compose.postgres.yml down
+
+# Tail logs (both services)
+docker-pg-logs:
+    docker compose -f docker-compose.yml -f docker-compose.postgres.yml logs -f
+
+# Full reset with PostgreSQL (removes volumes + images)
+docker-pg-clean:
+    docker compose -f docker-compose.yml -f docker-compose.postgres.yml down -v --rmi local
 
 # ── Utilities ────────────────────────────────────────────────────────────────
 
