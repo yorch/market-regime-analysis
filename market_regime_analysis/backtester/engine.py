@@ -224,11 +224,8 @@ class BacktestEngine:
         Returns:
             Number of shares to buy
         """
-        # Base position size (fraction of capital)
-        base_fraction = 0.10  # 10% base position
-
-        # Apply regime multiplier
-        target_fraction = base_fraction * position_mult
+        # position_mult already includes base_position_fraction from the strategy
+        target_fraction = position_mult
 
         # Cap at maximum
         target_fraction = min(target_fraction, self.max_position_size)

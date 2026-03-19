@@ -160,7 +160,7 @@ class RegimeStrategy:
         Expected keys:
             bull_mult, bear_mult, mr_mult, hv_mult, lv_mult, bo_mult,
             base_fraction, max_position, stop_loss, take_profit,
-            min_confidence, bear_direction (1=SHORT, 0=None)
+            min_confidence, bear_short (1=SHORT, 0=None)
         """
         regime_multipliers = {
             MarketRegime.BULL_TRENDING: params.get("bull_mult", 1.3),

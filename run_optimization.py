@@ -204,6 +204,11 @@ def main():
     parser.add_argument("--period", default="5y")
     parser.add_argument("--iterations", type=int, default=30, help="Random search iterations")
     parser.add_argument("--quiet", action="store_true")
+    parser.add_argument(
+        "--output",
+        default="optimization_results.json",
+        help="Output file path for best parameters (default: optimization_results.json)",
+    )
     args = parser.parse_args()
 
     verbose = not args.quiet
@@ -247,9 +252,9 @@ def main():
                 "total_return": best.total_return,
                 "excess_return": best.excess_return,
             }
-            with open("optimization_results.json", "w") as f:
+            with open(args.output, "w") as f:
                 json.dump(output, f, indent=2)
-            print("\nBest parameters saved to optimization_results.json")
+            print(f"\nBest parameters saved to {args.output}")
     elif args.mode == "random":
         run_baseline(df, verbose=False)
         optimizer = run_random_search(df, n_iterations=args.iterations, verbose=verbose)

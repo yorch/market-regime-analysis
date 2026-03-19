@@ -279,11 +279,15 @@ class StrategyOptimizer:
         print("-" * 120)
 
         for i, r in enumerate(self.results[:n]):
+            sl = r.params.get("stop_loss")
+            bull = r.params.get("bull_mult")
+            bear = r.params.get("bear_mult")
+            base = r.params.get("base_fraction")
             key_params = (
-                f"SL={r.params.get('stop_loss', '?'):.0%} "
-                f"bull={r.params.get('bull_mult', '?'):.1f} "
-                f"bear={r.params.get('bear_mult', '?'):.1f} "
-                f"base={r.params.get('base_fraction', '?'):.0%}"
+                f"SL={f'{sl:.0%}' if sl is not None else '?'} "
+                f"bull={f'{bull:.1f}' if bull is not None else '?'} "
+                f"bear={f'{bear:.1f}' if bear is not None else '?'} "
+                f"base={f'{base:.0%}' if base is not None else '?'}"
             )
             print(
                 f"{i + 1:<5} {r.score:<8.3f} {r.sharpe:<8.2f} "
