@@ -2,16 +2,24 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
+    tags: ["v*"]
   pull_request:
-    branches: ["**"]
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
+    inputs:
+      push:
+        description: "Push Docker images to registries"
+        type: boolean
+        default: true
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 env:
+  PYTHON_VERSION: "3.13"
   ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
   POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
   JWT_SECRET: ci-secret
@@ -22,114 +30,209 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.13"
+          python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - uses: extractions/setup-just@v3
 
-      - name: Cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/uv
-            .venv
-          key: ${{ runner.os }}-uv-${{ hashFiles('uv.lock') }}
-
-      - run: uv sync --all-groups
+      - name: Install dependencies
+        run: uv sync
 
       - name: Lint (ruff check)
-        run: uv run ruff check packages/ examples/
+        run: just lint
 
       - name: Format check (ruff format)
-        run: uv run ruff format --check packages/ examples/
+        run: just fmt-check
 
   # ── Type Check ───────────────────────────────────────────────────────────
   typecheck:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.13"
+          python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - uses: extractions/setup-just@v3
 
-      - name: Cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/uv
-            .venv
-          key: ${{ runner.os }}-uv-${{ hashFiles('uv.lock') }}
+      - name: Install dependencies
+        run: uv sync
 
-      - run: uv sync --all-groups
-
-      - name: Type check (mypy)
-        run: uv run mypy packages/
-        continue-on-error: true  # Soft-fail until types are fully annotated
+      - name: Type check (mypy) — soft-fail until fully annotated
+        run: just types
+        continue-on-error: true
 
   # ── Test ─────────────────────────────────────────────────────────────────
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - uses: extractions/setup-just@v3
 
-      - name: Cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/uv
-            .venv
-          key: ${{ runner.os }}-py${{ matrix.python-version }}-uv-${{ hashFiles('uv.lock') }}
+      - name: Install dependencies
+        run: uv sync
 
-      - run: uv sync --all-groups
+      - name: Test mra_lib
+        run: >
+          uv run pytest
+          -m "not integration and not slow"
+          packages/mra_lib/tests/
+          -v --tb=short
 
-      - name: Run tests
-        run: uv run pytest -q
+      - name: Test mra_cli
+        run: >
+          uv run pytest
+          -m "not integration and not slow"
+          packages/mra_cli/tests/
+          -v --tb=short
+
+      - name: Test mra_web
+        run: >
+          uv run pytest
+          -m "not integration and not slow"
+          packages/mra_web/tests/
+          -v --tb=short
 
   # ── Build ────────────────────────────────────────────────────────────────
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.13"
+          python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - name: Install dependencies
+        run: uv sync
 
-      - run: uv build --package mra-lib
-      - run: uv build --package mra-cli
-      - run: uv build --package mra-web
+      - name: Build mra-lib
+        run: uv build --package mra-lib
+
+      - name: Build mra-cli
+        run: uv build --package mra-cli
+
+      - name: Build mra-web
+        run: uv build --package mra-web
+
+  # ── Integration Test (manual only) ──────────────────────────────────────
+  integration-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: extractions/setup-just@v3
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Integration tests — mra_lib
+        run: >
+          uv run pytest
+          -m "integration"
+          packages/mra_lib/tests/
+          -v --tb=short
+
+      - name: Integration tests — mra_cli
+        run: >
+          uv run pytest
+          -m "integration"
+          packages/mra_cli/tests/
+          -v --tb=short
+
+      - name: Integration tests — mra_web
+        run: >
+          uv run pytest
+          -m "integration"
+          packages/mra_web/tests/
+          -v --tb=short
 
   # ── Docker ───────────────────────────────────────────────────────────────
   docker:
     runs-on: ubuntu-latest
-    needs: [lint, test, build]
-    timeout-minutes: 15
+    needs: [lint, typecheck, test, build]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - name: Build Docker image
-        run: docker build -t market-regime-analysis:${{ github.sha }} .
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to external registry
+        if: vars.EXTERNAL_REGISTRY_URL != ''
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ vars.EXTERNAL_REGISTRY_URL }}
+          username: ${{ secrets.EXTERNAL_REGISTRY_USERNAME }}
+          password: ${{ secrets.EXTERNAL_REGISTRY_PASSWORD }}
+
+      - name: Extract commit metadata
+        id: meta-info
+        run: |
+          echo "datetime=$(git log -1 --format='%cd' --date=format:'%Y%m%d%H%M%S')" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build image list
+        id: images
+        run: |
+          IMAGES="ghcr.io/${{ github.repository }}"
+          if [ -n "${{ vars.EXTERNAL_REGISTRY_URL }}" ]; then
+            EXTERNAL_IMAGE="${{ vars.EXTERNAL_REGISTRY_URL }}/${{ vars.EXTERNAL_REGISTRY_IMAGE || github.event.repository.name }}"
+            IMAGES="${IMAGES},${EXTERNAL_IMAGE}"
+          fi
+          echo "list=${IMAGES}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.images.outputs.list }}
+          tags: |
+            type=ref,event=pr
+            type=raw,value=${{ steps.meta-info.outputs.datetime }}_${{ steps.meta-info.outputs.sha }},enable=${{ github.event_name != 'pull_request' }}
+            type=ref,event=branch
+            type=ref,event=tag
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: ${{ github.event_name == 'push' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'publish-docker')) || (github.event_name == 'workflow_dispatch' && inputs.push) }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
