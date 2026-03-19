@@ -117,6 +117,15 @@ uv run pytest test_forecasting.py -v
 # Regime multiplier calibration unit tests
 uv run pytest test_calibrator.py -v
 
+# Transaction cost model unit tests
+uv run pytest test_transaction_costs.py -v
+
+# Provider base class, registry, factory, mock provider tests
+uv run pytest test_providers.py -v
+
+# SimonsRiskCalculator + PortfolioPositionLimits + BacktestEngine integration
+uv run pytest test_risk_calculator.py -v
+
 # All pytest tests
 uv run pytest
 ```
@@ -127,14 +136,21 @@ uv run pytest
 
 ```bash
 market_regime_analysis/
-├── __init__.py              # Main exports
+├── __init__.py              # Main exports (incl. PortfolioPositionLimits, PositionRecord)
 ├── analyzer.py              # MarketRegimeAnalyzer - main analysis engine
 ├── data_classes.py          # RegimeAnalysis dataclass
 ├── enums.py                 # MarketRegime, TradingStrategy enums
 ├── hmm_detector.py          # HiddenMarkovRegimeDetector - GMM-based HMM
 ├── true_hmm_detector.py     # TrueHMMDetector - hmmlearn-based HMM
 ├── portfolio.py             # PortfolioHMMAnalyzer - multi-asset analysis
-├── risk_calculator.py       # SimonsRiskCalculator - position sizing
+├── risk_calculator.py       # SimonsRiskCalculator + PortfolioPositionLimits
+├── api/                     # REST API (FastAPI)
+│   ├── __init__.py          # API version
+│   ├── auth.py              # JWT + API key authentication
+│   ├── endpoints.py         # API route handlers
+│   ├── models.py            # Pydantic request/response models
+│   ├── utils.py             # JSON encoding, metrics, helpers
+│   └── websocket.py         # WebSocket support
 ├── backtester/              # Backtesting and strategy optimization
 │   ├── __init__.py          # Package exports
 │   ├── engine.py            # BacktestEngine - trade simulation
@@ -142,6 +158,7 @@ market_regime_analysis/
 │   ├── walk_forward.py      # WalkForwardValidator - out-of-sample testing
 │   ├── optimizer.py         # StrategyOptimizer - grid/random search
 │   ├── metrics.py           # PerformanceMetrics - Sharpe, drawdown, Kelly
+│   ├── calibrator.py        # RegimeMultiplierCalibrator - empirical calibration
 │   └── transaction_costs.py # Cost models (equity, futures, retail, HFT)
 └── providers/               # Plug-and-play data provider architecture
     ├── __init__.py          # Auto-discovery and registration
@@ -149,7 +166,8 @@ market_regime_analysis/
     ├── alphavantage_provider.py  # Alpha Vantage implementation
     ├── polygon_provider.py       # Polygon.io implementation
     ├── yfinance_provider.py      # Yahoo Finance implementation
-    └── mock_provider.py          # Mock provider for testing
+    ├── mock_provider.py          # Mock provider for testing
+    └── example_new_provider.py   # Template for adding new providers
 ```
 
 ### Key Components
@@ -331,7 +349,8 @@ uv run main.py list-providers
 
 - Uses `uv` for dependency management with lock file
 - Python 3.13+ required
-- Key dependencies: pandas, numpy, scikit-learn, yfinance, alpha-vantage, click, matplotlib
+- Key dependencies: pandas, numpy, scikit-learn, hmmlearn, yfinance, alpha-vantage, polygon-api-client, click, matplotlib
+- API dependencies: fastapi, uvicorn, pydantic, python-jose, slowapi, websockets
 - Development dependencies: ruff, pytest, pre-commit
 
 The system is designed for production quantitative trading analysis with emphasis on statistical rigor, risk management, and Renaissance Technologies' methodologies.
