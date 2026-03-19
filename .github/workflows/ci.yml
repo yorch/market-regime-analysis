@@ -87,25 +87,13 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      - name: Test mra_lib
+      - name: Run tests with coverage
         run: >
           uv run pytest
           -m "not integration and not slow"
-          packages/mra_lib/tests/
-          -v --tb=short
-
-      - name: Test mra_cli
-        run: >
-          uv run pytest
-          -m "not integration and not slow"
-          packages/mra_cli/tests/
-          -v --tb=short
-
-      - name: Test mra_web
-        run: >
-          uv run pytest
-          -m "not integration and not slow"
-          packages/mra_web/tests/
+          --cov=mra_lib --cov=mra_cli --cov=mra_web
+          --cov-report=term-missing
+          --cov-fail-under=65
           -v --tb=short
 
   # ── Build ────────────────────────────────────────────────────────────────

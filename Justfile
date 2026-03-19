@@ -49,9 +49,9 @@ test-web *ARGS:
 test-v:
     uv run pytest -v
 
-# Run tests with coverage
+# Run tests with coverage (fails if below 65%)
 test-cov:
-    uv run pytest --cov=packages/ --cov-report=term-missing
+    uv run pytest --cov=mra_lib --cov=mra_cli --cov=mra_web --cov-report=term-missing --cov-fail-under=65
 
 # ── Quality ──────────────────────────────────────────────────────────────────
 

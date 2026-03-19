@@ -251,6 +251,8 @@ from .strategy import RegimeStrategy  # inside backtesting/
 - Tests live alongside each package: `packages/<pkg>/tests/`
 - Root pytest config collects from all package test directories
 - Markers: `integration` (external APIs), `slow`
+- **Minimum coverage: 65%** — enforced in CI via `--cov-fail-under=65` and in `pyproject.toml` `[tool.coverage.report]`
+- Run `just test-cov` to verify coverage locally; CI will fail if coverage drops below the threshold
 - Conventions: name tests `test_<unit>_<behavior>()`; use fixtures and deterministic inputs
 - Run `just qa` before committing (fmt + lint + types)
 
