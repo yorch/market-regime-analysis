@@ -9,6 +9,7 @@ This package provides comprehensive backtesting capabilities including:
 - Strategy optimization
 """
 
+from .calibrator import CalibrationResult, RegimeMultiplierCalibrator, RegimeTradeStats
 from .engine import BacktestEngine
 from .metrics import PerformanceMetrics
 from .optimizer import OptimizationResult, StrategyOptimizer
@@ -24,12 +25,15 @@ from .walk_forward import WalkForwardValidator
 
 __all__ = [
     "BacktestEngine",
+    "CalibrationResult",
     "EquityCostModel",
     "FuturesCostModel",
     "HighFrequencyCostModel",
     "OptimizationResult",
     "PerformanceMetrics",
+    "RegimeMultiplierCalibrator",
     "RegimeStrategy",
+    "RegimeTradeStats",
     "RetailCostModel",
     "StrategyOptimizer",
     "TransactionCostModel",

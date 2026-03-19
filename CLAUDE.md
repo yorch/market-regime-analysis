@@ -54,6 +54,14 @@ uv run main.py export-csv --symbol SPY --filename analysis.csv
 
 # Continuous monitoring
 uv run main.py continuous-monitoring --symbol SPY --interval 300
+
+# Regime forecasting (uses HMM transition matrix)
+uv run main.py regime-forecast --symbol SPY --steps 10 --timeframe 1D
+uv run main.py regime-forecast --symbol SPY --steps 5 --n-states 4
+
+# Empirical regime multiplier calibration
+uv run main.py calibrate-multipliers --symbol SPY --method sharpe_weighted
+uv run main.py calibrate-multipliers --symbol SPY --method kelly --output calibration.json
 ```
 
 ### Strategy Optimization
@@ -103,6 +111,12 @@ uv run pytest test_strategy.py -v
 # BacktestEngine, walk-forward, and optimizer tests
 uv run pytest test_engine.py -v
 
+# Regime forecasting unit tests
+uv run pytest test_forecasting.py -v
+
+# Regime multiplier calibration unit tests
+uv run pytest test_calibrator.py -v
+
 # All pytest tests
 uv run pytest
 ```
@@ -142,7 +156,7 @@ market_regime_analysis/
 
 1. **MarketRegimeAnalyzer** (`analyzer.py`): Central analysis engine that coordinates data fetching, regime detection, and reporting
 2. **HiddenMarkovRegimeDetector** (`hmm_detector.py`): Core HMM implementation using Gaussian Mixture Models with 6-state regime classification
-3. **TrueHMMDetector** (`true_hmm_detector.py`): Full HMM implementation using hmmlearn with Viterbi decoding, used by the backtester for walk-forward regime detection
+3. **TrueHMMDetector** (`true_hmm_detector.py`): Full HMM implementation using hmmlearn with Viterbi decoding, regime forecasting via transition matrix projection, and regime stability analysis (stationary distribution, expected durations)
 4. **Data Providers** (`providers/`): Plug-and-play architecture supporting Alpha Vantage, Polygon.io, and Yahoo Finance with automatic provider discovery
 5. **Portfolio Analysis** (`portfolio.py`): Multi-symbol correlation and regime analysis
 6. **Risk Management** (`risk_calculator.py`): Kelly Criterion-based position sizing with regime adjustments
@@ -153,6 +167,7 @@ market_regime_analysis/
    - **StrategyOptimizer** (`optimizer.py`): Grid and random search over strategy parameters, scored by composite Sharpe/excess-return metric
    - **PerformanceMetrics** (`metrics.py`): Sharpe, Sortino, Calmar, drawdown, win rate, profit factor, Kelly Criterion parameters
    - **Transaction Costs** (`transaction_costs.py`): Configurable cost models (equity, futures, retail, HFT) with spread, commission, slippage, and market impact
+   - **RegimeMultiplierCalibrator** (`calibrator.py`): Empirical calibration of regime multipliers from walk-forward backtest data, with four scoring methods (Sharpe-weighted, win rate, profit factor, Kelly)
 
 ### Provider Architecture
 
@@ -264,6 +279,8 @@ uv run main.py list-providers
 - Mock data testing for offline development in `test_mock.py`
 - `test_strategy.py`: Unit tests for `RegimeStrategy` (signal generation, parameter vectors, confidence scaling, base position fraction)
 - `test_engine.py`: Unit tests for `BacktestEngine` (direction propagation, LONG/SHORT entries, direction reversals), walk-forward aggregation (compounding, window win rate), optimizer scoring/ranking, and `print_top_results` robustness
+- `test_forecasting.py`: Unit tests for `TrueHMMDetector` forecasting (n-step probability projection, regime sequence forecasting, stationary distribution, regime stability metrics)
+- `test_calibrator.py`: Unit tests for `RegimeMultiplierCalibrator` (per-regime stats computation, scoring methods, normalization, full integration calibration)
 - Manual verification through CLI commands
 
 ### Key Design Patterns

@@ -413,6 +413,223 @@ class TrueHMMDetector:
             else "N/A",
         }
 
+    def _map_state_index_to_regime(self, state_index: int) -> MarketRegime:
+        """
+        Map a state index to a MarketRegime using learned emission parameters only.
+
+        Unlike _map_state_to_regime, this does not require observed data,
+        making it suitable for forecasting future states.
+
+        Args:
+            state_index: HMM state index
+
+        Returns:
+            MarketRegime classification
+        """
+        if self.state_means is None or state_index >= self.n_states:
+            return MarketRegime.UNKNOWN
+
+        try:
+            state_features = self.state_means[state_index]
+
+            # Build feature lookup from learned emission means
+            feature_dict = {}
+            for idx, name in enumerate(self.feature_names):
+                if idx < len(state_features):
+                    feature_dict[name] = state_features[idx]
+
+            avg_returns = feature_dict.get("returns", 0.0)
+            avg_volatility = feature_dict.get("volatility", 0.0)
+            avg_trend = feature_dict.get("trend_9_21", 0.0)
+            avg_autocorr = feature_dict.get("autocorr_1", 0.0)
+
+            # Volatility thresholds from all states
+            vol_idx = None
+            for idx, name in enumerate(self.feature_names):
+                if name == "volatility":
+                    vol_idx = idx
+                    break
+
+            if vol_idx is not None:
+                all_vols = [self.state_means[i, vol_idx] for i in range(self.n_states)]
+                vol_high = np.percentile(all_vols, 75)
+                vol_low = np.percentile(all_vols, 25)
+            else:
+                vol_high, vol_low = 0.5, -0.5
+
+            if avg_volatility > vol_high:
+                return MarketRegime.HIGH_VOLATILITY
+            elif avg_volatility < vol_low:
+                return MarketRegime.LOW_VOLATILITY
+            elif avg_returns > 0.2 and avg_trend > 0.2:
+                return MarketRegime.BULL_TRENDING
+            elif avg_returns < -0.2 and avg_trend < -0.2:
+                return MarketRegime.BEAR_TRENDING
+            elif abs(avg_autocorr) < 0.3:
+                return MarketRegime.MEAN_REVERTING
+            elif avg_volatility > 0.4:
+                return MarketRegime.BREAKOUT
+            else:
+                return MarketRegime.UNKNOWN
+
+        except Exception:
+            return MarketRegime.UNKNOWN
+
+    def get_state_regime_map(self) -> dict[int, MarketRegime]:
+        """
+        Get the mapping from all state indices to MarketRegime.
+
+        Returns:
+            Dictionary mapping state index to MarketRegime
+
+        Raises:
+            ValueError: If model not fitted
+        """
+        if not self.fitted:
+            raise ValueError("Model must be fitted before getting state map")
+
+        return {i: self._map_state_index_to_regime(i) for i in range(self.n_states)}
+
+    def forecast_regime_probabilities(self, df: pd.DataFrame, n_steps: int = 1) -> np.ndarray:
+        """
+        Forecast regime state probability distribution n steps ahead.
+
+        Uses the current posterior state distribution and the learned
+        transition matrix to project future state probabilities:
+            pi_{t+n} = pi_t @ T^n
+
+        Args:
+            df: DataFrame with OHLCV data (used to determine current state)
+            n_steps: Number of steps ahead to forecast (default 1)
+
+        Returns:
+            Array of shape (n_states,) with forecasted state probabilities
+
+        Raises:
+            ValueError: If model not fitted or n_steps < 1
+        """
+        if not self.fitted or self.model is None:
+            raise ValueError("Model must be fitted before forecasting")
+        if n_steps < 1:
+            raise ValueError("n_steps must be >= 1")
+
+        # Get current posterior state distribution
+        X = self._prepare_features(df)
+        X_scaled = self.scaler.transform(X)
+        state_probs = self.model.predict_proba(X_scaled)
+        pi_t = state_probs[-1]  # Current state distribution
+
+        # Project forward: pi_{t+n} = pi_t @ T^n
+        T_n = np.linalg.matrix_power(self.transition_matrix, n_steps)
+        forecast = pi_t @ T_n
+
+        return forecast
+
+    def forecast_regime_sequence(self, df: pd.DataFrame, n_steps: int = 5) -> list[dict]:
+        """
+        Forecast regime probabilities for each step from 1 to n_steps.
+
+        For each forecast horizon, produces the probability distribution
+        over regimes (aggregated from HMM states) and the most likely regime.
+
+        Args:
+            df: DataFrame with OHLCV data
+            n_steps: Number of steps to forecast (default 5)
+
+        Returns:
+            List of dicts, one per step, each containing:
+                - step: forecast horizon (1-indexed)
+                - state_probabilities: raw state probability array
+                - regime_probabilities: dict[MarketRegime, float]
+                - most_likely_regime: MarketRegime with highest probability
+                - most_likely_regime_probability: float
+        """
+        if not self.fitted or self.model is None:
+            raise ValueError("Model must be fitted before forecasting")
+
+        # Get current posterior
+        X = self._prepare_features(df)
+        X_scaled = self.scaler.transform(X)
+        state_probs = self.model.predict_proba(X_scaled)
+        pi_t = state_probs[-1]
+
+        # Build state-to-regime mapping once
+        state_regime_map = self.get_state_regime_map()
+
+        results = []
+        for step in range(1, n_steps + 1):
+            T_n = np.linalg.matrix_power(self.transition_matrix, step)
+            forecast_probs = pi_t @ T_n
+
+            # Aggregate state probs by regime
+            regime_probs: dict[MarketRegime, float] = {}
+            for state_idx, prob in enumerate(forecast_probs):
+                regime = state_regime_map[state_idx]
+                regime_probs[regime] = regime_probs.get(regime, 0.0) + prob
+
+            most_likely = max(regime_probs, key=regime_probs.get)
+
+            results.append(
+                {
+                    "step": step,
+                    "state_probabilities": forecast_probs,
+                    "regime_probabilities": regime_probs,
+                    "most_likely_regime": most_likely,
+                    "most_likely_regime_probability": regime_probs[most_likely],
+                }
+            )
+
+        return results
+
+    def get_regime_stability(self) -> dict:
+        """
+        Compute regime stability metrics from the learned transition matrix.
+
+        Returns a dictionary with:
+        - self_transition_probs: diagonal of T (probability of staying in each state)
+        - expected_durations: expected number of steps in each state (1 / (1 - T_ii))
+        - stationary_distribution: long-run state probabilities (left eigenvector of T)
+        - stationary_regimes: stationary distribution aggregated by MarketRegime
+
+        Raises:
+            ValueError: If model not fitted
+        """
+        if not self.fitted or self.transition_matrix is None:
+            raise ValueError("Model must be fitted before computing stability")
+
+        T = self.transition_matrix
+
+        # Self-transition probabilities (diagonal)
+        self_trans = {i: float(T[i, i]) for i in range(self.n_states)}
+
+        # Expected duration in each state: 1 / (1 - p_ii)
+        expected_dur = {}
+        for i in range(self.n_states):
+            p_ii = T[i, i]
+            expected_dur[i] = 1.0 / (1.0 - p_ii) if p_ii < 1.0 else float("inf")
+
+        # Stationary distribution: left eigenvector of T (pi @ T = pi)
+        # Equivalent to right eigenvector of T^T with eigenvalue 1
+        eigenvalues, eigenvectors = np.linalg.eig(T.T)
+        # Find eigenvector for eigenvalue closest to 1
+        idx = np.argmin(np.abs(eigenvalues - 1.0))
+        stationary = np.real(eigenvectors[:, idx])
+        stationary = stationary / stationary.sum()  # Normalize to probability
+
+        # Aggregate by regime
+        state_regime_map = self.get_state_regime_map()
+        stationary_regimes: dict[MarketRegime, float] = {}
+        for state_idx, prob in enumerate(stationary):
+            regime = state_regime_map[state_idx]
+            stationary_regimes[regime] = stationary_regimes.get(regime, 0.0) + prob
+
+        return {
+            "self_transition_probs": self_trans,
+            "expected_durations": expected_dur,
+            "stationary_distribution": stationary,
+            "stationary_regimes": stationary_regimes,
+        }
+
     def compare_with_gmm(self, df: pd.DataFrame, gmm_detector) -> dict:
         """
         Compare predictions with GMM-based detector.
