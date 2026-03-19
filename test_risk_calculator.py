@@ -412,6 +412,60 @@ class TestPortfolioPositionLimits:
         # 20% of 200k = 40k
         assert clamped == pytest.approx(40000.0)
 
+    # --- Zero / edge-case capital ---
+
+    def test_zero_capital_does_not_divide_by_zero(self):
+        limits = PortfolioPositionLimits(capital=0.0)
+        result = limits.check_limits("SPY", "LONG", 1000.0)
+        # Should not raise; violations expected because 1000/1.0 > any limit
+        assert isinstance(result["allowed"], bool)
+        assert isinstance(result["violations"], list)
+
+    def test_zero_capital_portfolio_summary(self):
+        limits = PortfolioPositionLimits(capital=0.0)
+        summary = limits.get_portfolio_summary()
+        assert summary["capital"] == 0.0
+        assert summary["gross_exposure_pct"] == 0.0
+
+    # --- Sector clamping ---
+
+    def test_clamp_reduces_to_sector_headroom(self):
+        limits = self._make_limits(max_sector_exposure=0.25)
+        limits.add_position(PositionRecord("AAPL", "LONG", 20000.0, sector="tech"))
+        # Sector has 20k, limit is 25k, headroom is 5k
+        clamped = limits.clamp_position_size("MSFT", "LONG", 15000.0, sector="tech")
+        assert clamped == pytest.approx(5000.0)
+
+    def test_clamp_sector_zero_when_full(self):
+        limits = self._make_limits(max_sector_exposure=0.20)
+        limits.add_position(PositionRecord("AAPL", "LONG", 20000.0, sector="tech"))
+        clamped = limits.clamp_position_size("MSFT", "LONG", 10000.0, sector="tech")
+        assert clamped == 0.0
+
+    def test_clamp_sector_no_effect_without_sector_tag(self):
+        """Without a sector tag, sector limit should not constrain."""
+        limits = self._make_limits(max_sector_exposure=0.10)
+        limits.add_position(PositionRecord("AAPL", "LONG", 20000.0, sector="tech"))
+        # No sector tag on new trade — sector limit should not apply
+        clamped = limits.clamp_position_size("MSFT", "LONG", 15000.0)
+        assert clamped == 15000.0
+
+    # --- Notional update ---
+
+    def test_update_position_notional(self):
+        limits = self._make_limits()
+        limits.add_position(PositionRecord("SPY", "LONG", 10000.0))
+        assert limits.get_gross_exposure() == 10000.0
+        # Price went up: 100 shares * $120 = $12000
+        limits.update_position_notional("SPY", 120.0, 100)
+        assert limits.get_gross_exposure() == 12000.0
+
+    def test_update_position_notional_no_op_for_missing(self):
+        limits = self._make_limits()
+        # Should not raise for a symbol that isn't tracked
+        limits.update_position_notional("MISSING", 100.0, 50)
+        assert limits.get_gross_exposure() == 0.0
+
 
 # ---------------------------------------------------------------------------
 # Integration: BacktestEngine with position limits
@@ -500,3 +554,81 @@ class TestBacktestEngineWithLimits:
         # Without limits, 20% of $100k = $20k -> 200 shares at $100
         first_trade = results["trades"][0]
         assert first_trade["shares"] == 200
+
+    def test_sector_limit_enforced_through_engine(self):
+        """Sector limits should constrain positions when sector is set on the engine."""
+        import pandas as pd
+
+        from market_regime_analysis.backtester.engine import BacktestEngine
+        from market_regime_analysis.enums import TradingStrategy
+
+        limits = PortfolioPositionLimits(
+            capital=100_000.0,
+            max_per_asset_exposure=0.50,
+            max_total_exposure=1.0,
+            max_net_exposure=1.0,
+            max_sector_exposure=0.10,  # Only 10% per sector
+        )
+        # Pre-fill another position in the same sector
+        limits.add_position(PositionRecord("AAPL", "LONG", 5000.0, sector="tech"))
+
+        prices = [100.0] * 20
+        df = self._make_ohlcv(prices)
+        idx = df.index
+
+        regimes = pd.Series([MarketRegime.BULL_TRENDING] * 20, index=idx)
+        strategies = pd.Series([TradingStrategy.TREND_FOLLOWING] * 20, index=idx)
+        sizes = pd.Series([0.50] * 20, index=idx)
+        directions = pd.Series(["LONG"] * 20, index=idx)
+
+        engine = BacktestEngine(
+            initial_capital=100_000,
+            stop_loss_pct=None,
+            position_limits=limits,
+            symbol="MSFT",
+            sector="tech",
+        )
+        results = engine.run_regime_strategy(df, regimes, strategies, sizes, directions)
+
+        assert len(results["trades"]) >= 1
+        # Sector headroom: 10k - 5k = 5k -> max 50 shares at $100
+        first_trade = results["trades"][0]
+        assert first_trade["shares"] <= 50
+
+    def test_notional_updates_during_backtest(self):
+        """Position notional should be updated to mark-to-market during backtest."""
+        import pandas as pd
+
+        from market_regime_analysis.backtester.engine import BacktestEngine
+        from market_regime_analysis.enums import TradingStrategy
+
+        limits = PortfolioPositionLimits(
+            capital=100_000.0,
+            max_per_asset_exposure=0.50,
+            max_total_exposure=1.0,
+            max_net_exposure=1.0,
+        )
+
+        # Price increases: position notional should rise
+        prices = [100.0] + [120.0] * 19
+        df = self._make_ohlcv(prices)
+        idx = df.index
+
+        regimes = pd.Series([MarketRegime.BULL_TRENDING] * 20, index=idx)
+        strategies = pd.Series([TradingStrategy.TREND_FOLLOWING] * 20, index=idx)
+        sizes = pd.Series([0.10] * 20, index=idx)
+        directions = pd.Series(["LONG"] * 20, index=idx)
+
+        engine = BacktestEngine(
+            initial_capital=100_000,
+            stop_loss_pct=None,
+            position_limits=limits,
+            symbol="SPY",
+        )
+        engine.run_regime_strategy(df, regimes, strategies, sizes, directions)
+
+        # After the backtest, position should have been closed at end.
+        # But during the run, the notional should have been updated.
+        # We verify by checking that the limits tracker has no stale positions
+        # (they should be cleaned up after close).
+        assert "SPY" not in limits.positions

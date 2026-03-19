@@ -43,7 +43,6 @@ class PortfolioPositionLimits:
         max_positions: int = 20,
         max_net_exposure: float = 0.60,
         max_sector_exposure: float = 0.40,
-        max_correlated_exposure: float = 0.50,
     ) -> None:
         """
         Initialize portfolio position limits.
@@ -55,7 +54,6 @@ class PortfolioPositionLimits:
             max_positions: Max number of concurrent open positions
             max_net_exposure: Max net directional exposure (|long - short| / capital)
             max_sector_exposure: Max exposure to a single sector/group
-            max_correlated_exposure: Max combined exposure for correlated assets
         """
         self.capital = capital
         self.max_total_exposure = max_total_exposure
@@ -63,7 +61,6 @@ class PortfolioPositionLimits:
         self.max_positions = max_positions
         self.max_net_exposure = max_net_exposure
         self.max_sector_exposure = max_sector_exposure
-        self.max_correlated_exposure = max_correlated_exposure
 
         self.positions: dict[str, PositionRecord] = {}
 
@@ -78,6 +75,21 @@ class PortfolioPositionLimits:
     def remove_position(self, symbol: str) -> None:
         """Remove a closed position."""
         self.positions.pop(symbol, None)
+
+    def update_position_notional(self, symbol: str, current_price: float, shares: float) -> None:
+        """
+        Update a position's notional to reflect current market value.
+
+        Should be called each bar so that exposure limits track mark-to-market
+        values rather than stale entry notionals.
+
+        Args:
+            symbol: Asset symbol
+            current_price: Current market price
+            shares: Number of shares held
+        """
+        if symbol in self.positions:
+            self.positions[symbol].notional = abs(current_price * shares)
 
     def get_gross_exposure(self) -> float:
         """Total absolute notional across all positions."""
@@ -191,6 +203,13 @@ class PortfolioPositionLimits:
         # Net exposure headroom
         net_headroom = cap * self.max_net_exposure - abs(current_net)
         max_allowed = min(max_allowed, max(0.0, net_headroom))
+        # Sector exposure headroom
+        if sector:
+            current_sector = self.get_sector_exposure(sector)
+            if symbol in self.positions and self.positions[symbol].sector == sector:
+                current_sector -= self.get_asset_exposure(symbol)
+            sector_headroom = cap * self.max_sector_exposure - current_sector
+            max_allowed = min(max_allowed, max(0.0, sector_headroom))
 
         return {
             "allowed": len(violations) == 0,

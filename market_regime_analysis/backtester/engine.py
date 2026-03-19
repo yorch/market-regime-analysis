@@ -5,7 +5,6 @@ Core backtesting functionality for testing regime-based trading strategies
 with realistic execution, transaction costs, and performance measurement.
 """
 
-from dataclasses import dataclass
 from datetime import datetime
 
 import pandas as pd
@@ -14,26 +13,6 @@ from ..enums import MarketRegime, TradingStrategy
 from ..risk_calculator import PortfolioPositionLimits, PositionRecord
 from .metrics import PerformanceMetrics
 from .transaction_costs import EquityCostModel, TransactionCostModel
-
-
-@dataclass
-class Trade:
-    """Represents a completed trade."""
-
-    entry_date: datetime
-    exit_date: datetime
-    entry_price: float
-    exit_price: float
-    shares: float
-    direction: str  # 'LONG' or 'SHORT'
-    entry_regime: str
-    exit_regime: str
-    gross_pnl: float
-    net_pnl: float
-    return_pct: float
-    entry_costs: float
-    exit_costs: float
-    holding_days: int
 
 
 class BacktestEngine:
@@ -57,6 +36,7 @@ class BacktestEngine:
         take_profit_pct: float | None = None,  # No take profit by default
         position_limits: PortfolioPositionLimits | None = None,
         symbol: str = "",
+        sector: str = "",
     ) -> None:
         """
         Initialize backtest engine.
@@ -69,6 +49,7 @@ class BacktestEngine:
             take_profit_pct: Take profit percentage (None to disable)
             position_limits: Optional cross-asset position limits enforcer
             symbol: Symbol being traded (used with position_limits)
+            sector: Sector/group tag for sector limit enforcement
         """
         self.initial_capital = initial_capital
         self.cost_model = cost_model or EquityCostModel()
@@ -77,6 +58,7 @@ class BacktestEngine:
         self.take_profit_pct = take_profit_pct
         self.position_limits = position_limits
         self.symbol = symbol
+        self.sector = sector
 
         # Backtest state
         self.capital = initial_capital
@@ -164,6 +146,12 @@ class BacktestEngine:
                         regime.value if isinstance(regime, MarketRegime) else str(regime),
                     )
 
+            # Update position notional to mark-to-market for accurate limit tracking
+            if self.position is not None and self.position_limits is not None:
+                self.position_limits.update_position_notional(
+                    self.symbol, price, self.position["shares"]
+                )
+
             # Update equity curve
             current_equity = self._calculate_current_equity(price)
             self.equity_curve.append(current_equity)
@@ -222,7 +210,7 @@ class BacktestEngine:
 
     def _calculate_position_size(
         self, price: float, position_mult: float, direction: str = "LONG"
-    ) -> float:
+    ) -> int:
         """
         Calculate position size in shares, respecting portfolio limits.
 
@@ -247,7 +235,7 @@ class BacktestEngine:
         if self.position_limits is not None and price > 0:
             self.position_limits.update_capital(self._calculate_current_equity(price))
             target_dollars = self.position_limits.clamp_position_size(
-                self.symbol, direction, target_dollars
+                self.symbol, direction, target_dollars, self.sector
             )
 
         shares = int(target_dollars / price) if price > 0 else 0
@@ -294,6 +282,7 @@ class BacktestEngine:
                     symbol=self.symbol,
                     direction=direction,
                     notional=notional,
+                    sector=self.sector,
                 )
             )
 

@@ -301,6 +301,4 @@ class TestMockDataProvider:
         df1 = p1.fetch("SPY", "1y", "1d")
         df2 = p2.fetch("SPY", "1y", "1d")
         # Index uses datetime.now() so timestamps differ; compare values only
-        pd.testing.assert_frame_equal(
-            df1.reset_index(drop=True), df2.reset_index(drop=True)
-        )
+        pd.testing.assert_frame_equal(df1.reset_index(drop=True), df2.reset_index(drop=True))
