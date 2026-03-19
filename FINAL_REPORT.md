@@ -1,5 +1,9 @@
 # Final Implementation Report: Market Regime Analysis System
 
+> **Note**: This is a historical document. The codebase has since been reorganized into a
+> multi-package uv workspace. `market_regime_analysis/` paths now live under
+> `packages/mra_lib/src/mra_lib/`. See `CLAUDE.md` for the current structure.
+
 **Date**: 2026-01-17
 **Branch**: `claude/review-trading-system-WVPUN`
 **Status**: ✅ **COMPLETE** - All critical bugs fixed, code quality verified

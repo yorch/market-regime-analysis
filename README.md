@@ -16,16 +16,21 @@ This system implements sophisticated market regime detection using Hidden Markov
 ## 🏗️ System Architecture
 
 ```text
-Market Regime Analysis System
-├── Hidden Markov Model Implementation
-├── Multi-Timeframe Analysis Engine
-├── Statistical Arbitrage Detection
-├── Risk Management Calculator
-├── Portfolio Analysis Tools
-├── Backtesting & Walk-Forward Validation
-├── Strategy Parameter Optimization
-└── Click-based CLI
+Market Regime Analysis System (Multi-Package Workspace)
+├── packages/
+│   ├── mra_lib/    — Core library (zero UI deps)
+│   ├── mra_cli/    — CLI interface
+│   └── mra_web/    — FastAPI web API
+├── pyproject.toml  — Workspace root
+├── Justfile        — Task runner
+└── Dockerfile      — Two-stage build
 ```
+
+The project uses a **uv workspace** with three packages so that the core
+analysis library (`mra_lib`) carries no UI or web dependencies. The `just`
+task runner (see the `Justfile` at the repo root) provides convenient
+shortcuts for common development tasks such as `just test`, `just lint`,
+and `just fmt`.
 
 ## 🚀 Quick Start
 
@@ -49,19 +54,19 @@ uv sync
 1. **View CLI help (Click-based CLI):**
 
 ```bash
-uv run main.py --help
+uv run mra --help
 ```
 
 1. **Run a quick analysis (no API key required, uses Yahoo Finance):**
 
 ```bash
-uv run main.py current-analysis --provider yfinance --symbol SPY
+uv run mra current-analysis --provider yfinance --symbol SPY
 ```
 
 1. **Test the system:**
 
 ```bash
-uv run test_system.py
+just test
 ```
 
 1. **Programmatic examples:**
@@ -118,18 +123,18 @@ Notes:
 
 ## 🖥️ CLI Commands (Click)
 
-Run `uv run main.py --help` to see all commands. Common commands:
+Run `uv run mra --help` to see all commands. Common commands:
 
-- Current regime analysis (all timeframes): `uv run main.py current-analysis --symbol SPY --provider yfinance`
-- Detailed single timeframe analysis: `uv run main.py detailed-analysis --symbol SPY --timeframe 1D --provider alphavantage --api-key YOUR_KEY`
-- Generate charts (5 panels): `uv run main.py generate-charts --symbol SPY --timeframe 1D --days 60 --provider yfinance`
-- Export analysis to CSV: `uv run main.py export-csv --symbol SPY --filename analysis.csv --provider yfinance`
-- Continuous monitoring: `uv run main.py continuous-monitoring --symbol SPY --interval 300 --provider alphavantage --api-key YOUR_KEY`
-- Multi-symbol portfolio analysis: `uv run main.py multi-symbol-analysis --symbols "SPY,QQQ,IWM" --timeframe 1D --provider yfinance`
-- Position sizing calculator: `uv run main.py position-sizing --base-size 0.02 --regime "Bull Trending" --confidence 0.8 --persistence 0.7 --correlation 0.0`
-- List available data providers and capabilities: `uv run main.py list-providers`
-- Strategy optimization (grid search): `uv run run_optimization.py --mode grid --symbol SPY --provider yfinance`
-- Strategy optimization (random search): `uv run run_optimization.py --mode random --symbol SPY --provider yfinance --iterations 50`
+- Current regime analysis (all timeframes): `uv run mra current-analysis --symbol SPY --provider yfinance`
+- Detailed single timeframe analysis: `uv run mra detailed-analysis --symbol SPY --timeframe 1D --provider alphavantage --api-key YOUR_KEY`
+- Generate charts (5 panels): `uv run mra generate-charts --symbol SPY --timeframe 1D --days 60 --provider yfinance`
+- Export analysis to CSV: `uv run mra export-csv --symbol SPY --filename analysis.csv --provider yfinance`
+- Continuous monitoring: `uv run mra continuous-monitoring --symbol SPY --interval 300 --provider alphavantage --api-key YOUR_KEY`
+- Multi-symbol portfolio analysis: `uv run mra multi-symbol-analysis --symbols "SPY,QQQ,IWM" --timeframe 1D --provider yfinance`
+- Position sizing calculator: `uv run mra position-sizing --base-size 0.02 --regime "Bull Trending" --confidence 0.8 --persistence 0.7 --correlation 0.0`
+- List available data providers and capabilities: `uv run mra list-providers`
+- Strategy optimization (grid search): `uv run mra-optimize --mode grid --symbol SPY --provider yfinance`
+- Strategy optimization (random search): `uv run mra-optimize --mode random --symbol SPY --provider yfinance --iterations 50`
 
 ## 📈 Example Analysis Output
 
@@ -198,30 +203,30 @@ The system uses Gaussian Mixture Models as HMM approximations with:
 
 ## 🏛️ Architecture Details
 
-### Core Classes
+### Core Classes (`mra_lib`)
 
-- **`MarketRegimeAnalyzer`**: Main analysis engine
-- **`HiddenMarkovRegimeDetector`**: GMM-based HMM implementation
-- **`TrueHMMDetector`**: hmmlearn-based HMM with Viterbi decoding (used by backtester)
-- **`PortfolioHMMAnalyzer`**: Multi-asset analysis
-- **`SimonsRiskCalculator`**: Risk management utilities
-- **`PortfolioPositionLimits`**: Cross-asset exposure limit enforcement
+- **`MarketRegimeAnalyzer`** (`mra_lib.analyzer`): Main analysis engine
+- **`HiddenMarkovRegimeDetector`** (`mra_lib.indicators.hmm_detector`): GMM-based HMM implementation
+- **`TrueHMMDetector`** (`mra_lib.indicators.true_hmm_detector`): hmmlearn-based HMM with Viterbi decoding (used by backtester)
+- **`PortfolioHMMAnalyzer`** (`mra_lib.portfolio`): Multi-asset analysis
+- **`SimonsRiskCalculator`** (`mra_lib.risk_calculator`): Risk management utilities
+- **`PortfolioPositionLimits`** (`mra_lib.risk_calculator`): Cross-asset exposure limit enforcement
 
-### Backtester Classes
+### Backtester Classes (`mra_lib.backtesting`)
 
-- **`BacktestEngine`**: Trade simulation with transaction costs, stop-loss/take-profit, and portfolio position limits
-- **`RegimeStrategy`**: Parameterized trading strategy with `from_param_vector()` for optimization
-- **`WalkForwardValidator`**: Out-of-sample walk-forward validation framework
-- **`StrategyOptimizer`**: Grid/random search over strategy parameters
-- **`PerformanceMetrics`**: Comprehensive performance statistics and Kelly Criterion
-- **`TransactionCostModel`**: Configurable cost models (equity, futures, retail, HFT)
-- **`RegimeMultiplierCalibrator`**: Empirical calibration of regime multipliers from backtest data
+- **`BacktestEngine`** (`mra_lib.backtesting.engine`): Trade simulation with transaction costs, stop-loss/take-profit, and portfolio position limits
+- **`RegimeStrategy`** (`mra_lib.backtesting.strategy`): Parameterized trading strategy with `from_param_vector()` for optimization
+- **`WalkForwardValidator`** (`mra_lib.backtesting.walk_forward`): Out-of-sample walk-forward validation framework
+- **`StrategyOptimizer`** (`mra_lib.backtesting.optimizer`): Grid/random search over strategy parameters
+- **`PerformanceMetrics`** (`mra_lib.backtesting.metrics`): Comprehensive performance statistics and Kelly Criterion
+- **`TransactionCostModel`** (`mra_lib.backtesting.transaction_costs`): Configurable cost models (equity, futures, retail, HFT)
+- **`RegimeMultiplierCalibrator`** (`mra_lib.backtesting.calibrator`): Empirical calibration of regime multipliers from backtest data
 
-### Data Classes
+### Data Classes (`mra_lib`)
 
-- **`MarketRegime`**: Enum for regime classifications
-- **`TradingStrategy`**: Enum for strategy recommendations
-- **`RegimeAnalysis`**: Comprehensive analysis results
+- **`MarketRegime`** (`mra_lib.enums`): Enum for regime classifications
+- **`TradingStrategy`** (`mra_lib.enums`): Enum for strategy recommendations
+- **`RegimeAnalysis`** (`mra_lib.data_classes`): Comprehensive analysis results
 
 ## 📚 Dependencies
 
@@ -239,16 +244,22 @@ Python: 3.13+
 
 ## 🧪 Testing
 
-Run the test suite to verify system functionality:
+The preferred way to run the full test suite is via the task runner:
 
 ```bash
-uv run test_system.py
+just test
 ```
 
-Or run all tests with pytest:
+You can also run tests directly with pytest:
 
 ```bash
 uv run pytest
+```
+
+Or run a specific test file:
+
+```bash
+uv run pytest packages/mra_lib/tests/test_system.py
 ```
 
 The tests cover:
@@ -276,6 +287,7 @@ periods = {
     "15m": "2mo"   # 15-min data for 2 months
 }
 
+from mra_lib import MarketRegimeAnalyzer
 analyzer = MarketRegimeAnalyzer("SPY", periods=periods)
 ```
 
@@ -287,7 +299,7 @@ analyzer = MarketRegimeAnalyzer("SPY", periods=periods)
 List providers and their capabilities:
 
 ```bash
-uv run main.py list-providers
+uv run mra list-providers
 ```
 
 ## 📈 Performance Considerations

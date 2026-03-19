@@ -6,6 +6,7 @@ Technologies' approach to multi-asset regime detection and correlation analysis.
 """
 
 from itertools import combinations
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -123,7 +124,7 @@ class PortfolioHMMAnalyzer:
 
         return regime_df
 
-    def get_portfolio_regime_summary(self, timeframe: str = "1D") -> dict[str, any]:
+    def get_portfolio_regime_summary(self, timeframe: str = "1D") -> dict[str, Any]:
         """
         Get portfolio-level regime metrics.
 
@@ -133,7 +134,7 @@ class PortfolioHMMAnalyzer:
         Returns:
             Dictionary with portfolio metrics
         """
-        summary = {
+        summary: dict[str, Any] = {
             "dominant_regime": None,
             "regime_consensus": 0.0,
             "average_confidence": 0.0,
@@ -158,7 +159,7 @@ class PortfolioHMMAnalyzer:
 
             # Calculate regime distribution
             regimes = [analysis.current_regime for _, analysis in analyses]
-            regime_counts = {}
+            regime_counts: dict[str, int] = {}
             for regime in regimes:
                 regime_counts[regime.value] = regime_counts.get(regime.value, 0) + 1
 
@@ -215,7 +216,7 @@ class PortfolioHMMAnalyzer:
 
         return summary
 
-    def identify_arbitrage_pairs(self, timeframe: str = "1D") -> list[dict[str, any]]:
+    def identify_arbitrage_pairs(self, timeframe: str = "1D") -> list[dict[str, Any]]:
         """
         Statistical arbitrage pairs detection.
 
@@ -225,7 +226,7 @@ class PortfolioHMMAnalyzer:
         Returns:
             List of arbitrage opportunities
         """
-        opportunities = []
+        opportunities: list[dict[str, Any]] = []
 
         if timeframe not in self.portfolio_data:
             return opportunities

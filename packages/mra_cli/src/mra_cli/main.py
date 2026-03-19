@@ -154,7 +154,7 @@ def cli(ctx: click.Context, debug: bool, provider: str, api_key: str | None) -> 
     This system implements Hidden Markov Model methodology for quantitative trading analysis,
     detecting market regimes and providing statistical arbitrage signals.
 
-    🌐 WEB API AVAILABLE: Run 'python start_api.py --dev' to start the REST API server
+    🌐 WEB API AVAILABLE: Run 'uv run mra-api --dev' to start the REST API server
     📚 API Documentation: http://localhost:8000/docs (when API server is running)
     🔌 WebSocket Monitoring: ws://localhost:8000/ws/monitoring/{symbol}
 
@@ -475,8 +475,8 @@ def start_api(host: str, port: int, dev: bool) -> None:
     for all CLI functionality plus WebSocket monitoring.
 
     Examples:
-        uv run main.py start-api --dev              # Development mode
-        uv run main.py start-api --host 0.0.0.0     # Production mode
+        uv run mra start-api --dev              # Development mode
+        uv run mra start-api --host 0.0.0.0     # Production mode
     """
     try:
         import uvicorn  # noqa: PLC0415

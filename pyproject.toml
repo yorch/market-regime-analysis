@@ -58,7 +58,15 @@ python_version = "3.13"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
+disallow_any_unimported = false
+explicit_package_bases = true
+mypy_path = [
+    "packages/mra_lib/src",
+    "packages/mra_cli/src",
+    "packages/mra_web/src",
+]
 plugins = ["pydantic.mypy"]
+exclude = ["packages/.*/tests/"]
 
 [[tool.mypy.overrides]]
 module = [
@@ -68,8 +76,19 @@ module = [
     "polygon.*",
     "sklearn.*",
     "statsmodels.*",
+    "pandas",
+    "pandas.*",
+    "numpy",
+    "numpy.*",
+    "jose",
+    "jose.*",
+    "matplotlib",
+    "matplotlib.*",
+    "scipy",
+    "scipy.*",
 ]
 ignore_missing_imports = true
+follow_untyped_imports = true
 
 # ── pytest (shared across all packages) ────────────────────────────────────
 

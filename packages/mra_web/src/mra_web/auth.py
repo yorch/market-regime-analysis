@@ -8,11 +8,12 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import ClassVar
 
-from config import config
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from pydantic import BaseModel
+
+from mra_web.config import config
 
 # Setup logging
 logger = logging.getLogger(__name__)

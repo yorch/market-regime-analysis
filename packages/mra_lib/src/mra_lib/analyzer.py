@@ -278,7 +278,7 @@ class MarketRegimeAnalyzer:
         Returns:
             List of arbitrage opportunity descriptions
         """
-        opportunities = []
+        opportunities: list[str] = []
 
         if df.empty:
             return opportunities
@@ -322,7 +322,7 @@ class MarketRegimeAnalyzer:
         Returns:
             List of statistical signals
         """
-        signals = []
+        signals: list[str] = []
 
         if df.empty:
             return signals
@@ -376,7 +376,7 @@ class MarketRegimeAnalyzer:
         Returns:
             Dictionary of key levels
         """
-        levels = {}
+        levels: dict[str, float] = {}
 
         if len(df) < 50:
             return levels

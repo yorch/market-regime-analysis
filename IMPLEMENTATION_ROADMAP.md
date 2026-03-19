@@ -1,4 +1,9 @@
 # Implementation Roadmap: Critical Fixes for Trading System
+
+> **Note**: This is a historical document. The codebase has since been reorganized into a
+> multi-package uv workspace. `market_regime_analysis/` paths now live under
+> `packages/mra_lib/src/mra_lib/`. See `CLAUDE.md` for the current structure.
+
 ## Addressing Methodological and Production Issues
 
 **Created**: 2026-01-17

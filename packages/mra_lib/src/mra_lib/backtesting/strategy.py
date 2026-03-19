@@ -20,7 +20,7 @@ class RegimeStrategy:
     def __init__(
         self,
         regime_multipliers: dict[MarketRegime, float] | None = None,
-        regime_directions: dict[MarketRegime, str] | None = None,
+        regime_directions: dict[MarketRegime, str | None] | None = None,
         base_position_fraction: float = 0.10,
         max_position_size: float = 0.20,
         stop_loss_pct: float = 0.05,
@@ -105,7 +105,7 @@ class RegimeStrategy:
             Tuple of (strategies, directions, position_sizes) series.
         """
         strategies = []
-        directions = []
+        directions: list[str | None] = []
         position_sizes = []
 
         regime_to_strategy = {

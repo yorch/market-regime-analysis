@@ -19,13 +19,13 @@ export POLYGON_API_KEY=your_key_here
 
 ```bash
 # Development mode with auto-reload
-python start_api.py --dev
+uv run mra-api --dev
 
 # Production mode
-python start_api.py --host 0.0.0.0 --port 8000 --workers 4
+uv run mra-api --host 0.0.0.0 --port 8000 --workers 4
 
 # Or directly with uvicorn
-uvicorn api_server:app --host 0.0.0.0 --port 8000 --reload
+uvicorn mra_web.app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ### Access the API
@@ -374,7 +374,7 @@ RUN pip install uv && uv sync --frozen
 
 EXPOSE 8000
 
-CMD ["python", "start_api.py", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+CMD ["uv", "run", "mra-api", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
 ```
 
 ```bash
@@ -400,7 +400,7 @@ export RATE_LIMIT_PER_MINUTE=100
 
 ```bash
 pip install gunicorn
-gunicorn api_server:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
+gunicorn mra_web.app:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
 ```
 
 ### Nginx Configuration
@@ -478,7 +478,7 @@ server {
 
 ```bash
 # Start in debug mode
-python start_api.py --dev
+uv run mra-api --dev
 
 # Check debug configuration
 curl http://localhost:8000/debug/config
