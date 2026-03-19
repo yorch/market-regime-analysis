@@ -1,5 +1,5 @@
 # ── Builder stage ────────────────────────────────────────────────────────────
-FROM python:3.12-slim AS builder
+FROM python:3.13-slim AS builder
 
 WORKDIR /app
 
@@ -21,17 +21,17 @@ RUN mkdir -p packages/mra_lib/src/mra_lib && \
     touch packages/mra_web/src/mra_web/__init__.py
 
 # Install dependencies into .venv (cached layer — only rebuilds when manifests change)
-RUN uv sync --frozen --no-dev --extra all
+RUN uv sync --frozen --no-dev
 
 # Copy actual source code
 COPY packages/ packages/
 
 # Reinstall workspace packages as non-editable wheels baked into the venv
 # (only .venv is copied to runtime — no source tree)
-RUN uv sync --frozen --no-dev --extra all --no-editable
+RUN uv sync --frozen --no-dev --no-editable
 
 # ── Runtime stage ────────────────────────────────────────────────────────────
-FROM python:3.12-slim AS runtime
+FROM python:3.13-slim AS runtime
 
 WORKDIR /app
 
@@ -45,10 +45,9 @@ COPY --from=builder /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    # Disable TUI dashboards in containerized mode
     MRA_NO_DASHBOARD=1
 
 USER scanner
 
-ENTRYPOINT ["mra"]
-CMD ["--no-dashboard"]
+ENTRYPOINT ["mra-api"]
+CMD ["--host", "0.0.0.0", "--port", "8000"]

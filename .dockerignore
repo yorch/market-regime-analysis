@@ -7,8 +7,13 @@ __pycache__
 .env
 .env.*
 !.env.example
-tests/
+**/tests/
 docs/
 *.md
 Justfile
 scripts/
+.ruff_cache
+.pytest_cache
+.mypy_cache
+.github
+.pre-commit-config.yaml
