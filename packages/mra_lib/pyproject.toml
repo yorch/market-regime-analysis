@@ -2,7 +2,7 @@
 name = "mra-lib"
 version = "1.0.0"
 description = "Core library for market regime analysis using Hidden Markov Models"
-readme = "../../README.md"
+readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "alpha-vantage>=3.0.0",
