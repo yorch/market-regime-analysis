@@ -5,34 +5,14 @@ Core backtesting functionality for testing regime-based trading strategies
 with realistic execution, transaction costs, and performance measurement.
 """
 
-from dataclasses import dataclass
 from datetime import datetime
 
 import pandas as pd
 
 from ..enums import MarketRegime, TradingStrategy
+from ..risk_calculator import PortfolioPositionLimits, PositionRecord
 from .metrics import PerformanceMetrics
 from .transaction_costs import EquityCostModel, TransactionCostModel
-
-
-@dataclass
-class Trade:
-    """Represents a completed trade."""
-
-    entry_date: datetime
-    exit_date: datetime
-    entry_price: float
-    exit_price: float
-    shares: float
-    direction: str  # 'LONG' or 'SHORT'
-    entry_regime: str
-    exit_regime: str
-    gross_pnl: float
-    net_pnl: float
-    return_pct: float
-    entry_costs: float
-    exit_costs: float
-    holding_days: int
 
 
 class BacktestEngine:
@@ -54,6 +34,9 @@ class BacktestEngine:
         max_position_size: float = 0.20,  # 20% max per position
         stop_loss_pct: float | None = 0.10,  # 10% stop loss
         take_profit_pct: float | None = None,  # No take profit by default
+        position_limits: PortfolioPositionLimits | None = None,
+        symbol: str = "",
+        sector: str = "",
     ) -> None:
         """
         Initialize backtest engine.
@@ -64,12 +47,18 @@ class BacktestEngine:
             max_position_size: Maximum position size as fraction of capital
             stop_loss_pct: Stop loss percentage (None to disable)
             take_profit_pct: Take profit percentage (None to disable)
+            position_limits: Optional cross-asset position limits enforcer
+            symbol: Symbol being traded (used with position_limits)
+            sector: Sector/group tag for sector limit enforcement
         """
         self.initial_capital = initial_capital
         self.cost_model = cost_model or EquityCostModel()
         self.max_position_size = max_position_size
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
+        self.position_limits = position_limits
+        self.symbol = symbol
+        self.sector = sector
 
         # Backtest state
         self.capital = initial_capital
@@ -148,7 +137,7 @@ class BacktestEngine:
                     direction = None
 
                 if direction and position_mult > 0:
-                    size = self._calculate_position_size(price, position_mult)
+                    size = self._calculate_position_size(price, position_mult, direction)
                     self._open_position(
                         date,
                         price,
@@ -156,6 +145,12 @@ class BacktestEngine:
                         direction,
                         regime.value if isinstance(regime, MarketRegime) else str(regime),
                     )
+
+            # Update position notional to mark-to-market for accurate limit tracking
+            if self.position is not None and self.position_limits is not None:
+                self.position_limits.update_position_notional(
+                    self.symbol, price, self.position["shares"]
+                )
 
             # Update equity curve
             current_equity = self._calculate_current_equity(price)
@@ -213,13 +208,16 @@ class BacktestEngine:
             return "LONG"
         return None
 
-    def _calculate_position_size(self, price: float, position_mult: float) -> float:
+    def _calculate_position_size(
+        self, price: float, position_mult: float, direction: str = "LONG"
+    ) -> int:
         """
-        Calculate position size in shares.
+        Calculate position size in shares, respecting portfolio limits.
 
         Args:
             price: Current price
             position_mult: Regime-based multiplier
+            direction: Trade direction ('LONG' or 'SHORT')
 
         Returns:
             Number of shares to buy
@@ -230,9 +228,17 @@ class BacktestEngine:
         # Cap at maximum
         target_fraction = min(target_fraction, self.max_position_size)
 
-        # Calculate shares
+        # Calculate target dollars
         target_dollars = self.capital * target_fraction
-        shares = int(target_dollars / price)
+
+        # Apply portfolio position limits if configured
+        if self.position_limits is not None and price > 0:
+            self.position_limits.update_capital(self._calculate_current_equity(price))
+            target_dollars = self.position_limits.clamp_position_size(
+                self.symbol, direction, target_dollars, self.sector
+            )
+
+        shares = int(target_dollars / price) if price > 0 else 0
 
         return shares
 
@@ -268,6 +274,17 @@ class BacktestEngine:
             "entry_regime": regime,
             "entry_costs": costs["total_cost"],
         }
+
+        # Register with portfolio limits tracker
+        if self.position_limits is not None:
+            self.position_limits.add_position(
+                PositionRecord(
+                    symbol=self.symbol,
+                    direction=direction,
+                    notional=notional,
+                    sector=self.sector,
+                )
+            )
 
     def _close_position(self, date: datetime, price: float, regime: str) -> None:
         """Close current position."""
@@ -329,6 +346,10 @@ class BacktestEngine:
 
         self.trades.append(trade)
         self.position = None
+
+        # Unregister from portfolio limits tracker
+        if self.position_limits is not None:
+            self.position_limits.remove_position(self.symbol)
 
     def _check_exit_conditions(self, date: datetime, close: float, high: float, low: float) -> None:
         """Check if stop-loss or take-profit hit using intraday high/low."""

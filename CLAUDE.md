@@ -54,6 +54,14 @@ uv run main.py export-csv --symbol SPY --filename analysis.csv
 
 # Continuous monitoring
 uv run main.py continuous-monitoring --symbol SPY --interval 300
+
+# Regime forecasting (uses HMM transition matrix)
+uv run main.py regime-forecast --symbol SPY --steps 10 --timeframe 1D
+uv run main.py regime-forecast --symbol SPY --steps 5 --n-states 4
+
+# Empirical regime multiplier calibration
+uv run main.py calibrate-multipliers --symbol SPY --method sharpe_weighted
+uv run main.py calibrate-multipliers --symbol SPY --method kelly --output calibration.json
 ```
 
 ### Strategy Optimization
@@ -103,6 +111,21 @@ uv run pytest test_strategy.py -v
 # BacktestEngine, walk-forward, and optimizer tests
 uv run pytest test_engine.py -v
 
+# Regime forecasting unit tests
+uv run pytest test_forecasting.py -v
+
+# Regime multiplier calibration unit tests
+uv run pytest test_calibrator.py -v
+
+# Transaction cost model unit tests
+uv run pytest test_transaction_costs.py -v
+
+# Provider base class, registry, factory, mock provider tests
+uv run pytest test_providers.py -v
+
+# SimonsRiskCalculator + PortfolioPositionLimits + BacktestEngine integration
+uv run pytest test_risk_calculator.py -v
+
 # All pytest tests
 uv run pytest
 ```
@@ -113,14 +136,21 @@ uv run pytest
 
 ```bash
 market_regime_analysis/
-├── __init__.py              # Main exports
+├── __init__.py              # Main exports (incl. PortfolioPositionLimits, PositionRecord)
 ├── analyzer.py              # MarketRegimeAnalyzer - main analysis engine
 ├── data_classes.py          # RegimeAnalysis dataclass
 ├── enums.py                 # MarketRegime, TradingStrategy enums
 ├── hmm_detector.py          # HiddenMarkovRegimeDetector - GMM-based HMM
 ├── true_hmm_detector.py     # TrueHMMDetector - hmmlearn-based HMM
 ├── portfolio.py             # PortfolioHMMAnalyzer - multi-asset analysis
-├── risk_calculator.py       # SimonsRiskCalculator - position sizing
+├── risk_calculator.py       # SimonsRiskCalculator + PortfolioPositionLimits
+├── api/                     # REST API (FastAPI)
+│   ├── __init__.py          # API version
+│   ├── auth.py              # JWT + API key authentication
+│   ├── endpoints.py         # API route handlers
+│   ├── models.py            # Pydantic request/response models
+│   ├── utils.py             # JSON encoding, metrics, helpers
+│   └── websocket.py         # WebSocket support
 ├── backtester/              # Backtesting and strategy optimization
 │   ├── __init__.py          # Package exports
 │   ├── engine.py            # BacktestEngine - trade simulation
@@ -128,6 +158,7 @@ market_regime_analysis/
 │   ├── walk_forward.py      # WalkForwardValidator - out-of-sample testing
 │   ├── optimizer.py         # StrategyOptimizer - grid/random search
 │   ├── metrics.py           # PerformanceMetrics - Sharpe, drawdown, Kelly
+│   ├── calibrator.py        # RegimeMultiplierCalibrator - empirical calibration
 │   └── transaction_costs.py # Cost models (equity, futures, retail, HFT)
 └── providers/               # Plug-and-play data provider architecture
     ├── __init__.py          # Auto-discovery and registration
@@ -135,17 +166,18 @@ market_regime_analysis/
     ├── alphavantage_provider.py  # Alpha Vantage implementation
     ├── polygon_provider.py       # Polygon.io implementation
     ├── yfinance_provider.py      # Yahoo Finance implementation
-    └── mock_provider.py          # Mock provider for testing
+    ├── mock_provider.py          # Mock provider for testing
+    └── example_new_provider.py   # Template for adding new providers
 ```
 
 ### Key Components
 
 1. **MarketRegimeAnalyzer** (`analyzer.py`): Central analysis engine that coordinates data fetching, regime detection, and reporting
 2. **HiddenMarkovRegimeDetector** (`hmm_detector.py`): Core HMM implementation using Gaussian Mixture Models with 6-state regime classification
-3. **TrueHMMDetector** (`true_hmm_detector.py`): Full HMM implementation using hmmlearn with Viterbi decoding, used by the backtester for walk-forward regime detection
+3. **TrueHMMDetector** (`true_hmm_detector.py`): Full HMM implementation using hmmlearn with Viterbi decoding, regime forecasting via transition matrix projection, and regime stability analysis (stationary distribution, expected durations)
 4. **Data Providers** (`providers/`): Plug-and-play architecture supporting Alpha Vantage, Polygon.io, and Yahoo Finance with automatic provider discovery
 5. **Portfolio Analysis** (`portfolio.py`): Multi-symbol correlation and regime analysis
-6. **Risk Management** (`risk_calculator.py`): Kelly Criterion-based position sizing with regime adjustments
+6. **Risk Management** (`risk_calculator.py`): Kelly Criterion-based position sizing with regime adjustments, plus `PortfolioPositionLimits` for cross-asset exposure enforcement (gross, net, per-asset, sector, max positions)
 7. **Backtester** (`backtester/`): Walk-forward validation and strategy optimization framework:
    - **BacktestEngine** (`engine.py`): Simulates trades with transaction costs, stop-loss/take-profit, and LONG/SHORT support
    - **RegimeStrategy** (`strategy.py`): Parameterized strategy mapping regimes to directions and position sizes (tunable via `from_param_vector()`)
@@ -153,6 +185,7 @@ market_regime_analysis/
    - **StrategyOptimizer** (`optimizer.py`): Grid and random search over strategy parameters, scored by composite Sharpe/excess-return metric
    - **PerformanceMetrics** (`metrics.py`): Sharpe, Sortino, Calmar, drawdown, win rate, profit factor, Kelly Criterion parameters
    - **Transaction Costs** (`transaction_costs.py`): Configurable cost models (equity, futures, retail, HFT) with spread, commission, slippage, and market impact
+   - **RegimeMultiplierCalibrator** (`calibrator.py`): Empirical calibration of regime multipliers from walk-forward backtest data, with four scoring methods (Sharpe-weighted, win rate, profit factor, Kelly)
 
 ### Provider Architecture
 
@@ -264,6 +297,11 @@ uv run main.py list-providers
 - Mock data testing for offline development in `test_mock.py`
 - `test_strategy.py`: Unit tests for `RegimeStrategy` (signal generation, parameter vectors, confidence scaling, base position fraction)
 - `test_engine.py`: Unit tests for `BacktestEngine` (direction propagation, LONG/SHORT entries, direction reversals), walk-forward aggregation (compounding, window win rate), optimizer scoring/ranking, and `print_top_results` robustness
+- `test_forecasting.py`: Unit tests for `TrueHMMDetector` forecasting (n-step probability projection, regime sequence forecasting, stationary distribution, regime stability metrics)
+- `test_calibrator.py`: Unit tests for `RegimeMultiplierCalibrator` (per-regime stats computation, scoring methods, normalization, full integration calibration)
+- `test_transaction_costs.py`: Unit tests for `TransactionCostModel` and all preset models (spread, commission, slippage, market impact, roundtrip, P&L after costs)
+- `test_providers.py`: Unit tests for provider base class, registry, factory pattern, mock provider, `standardize_dataframe`, parameter validation
+- `test_risk_calculator.py`: Unit tests for `SimonsRiskCalculator` (Kelly, regime-adjusted, correlation, volatility sizing) and `PortfolioPositionLimits` (all limit types, clamping, BacktestEngine integration)
 - Manual verification through CLI commands
 
 ### Key Design Patterns
@@ -311,7 +349,8 @@ uv run main.py list-providers
 
 - Uses `uv` for dependency management with lock file
 - Python 3.13+ required
-- Key dependencies: pandas, numpy, scikit-learn, yfinance, alpha-vantage, click, matplotlib
+- Key dependencies: pandas, numpy, scikit-learn, hmmlearn, yfinance, alpha-vantage, polygon-api-client, click, matplotlib
+- API dependencies: fastapi, uvicorn, pydantic, python-jose, slowapi, websockets
 - Development dependencies: ruff, pytest, pre-commit
 
 The system is designed for production quantitative trading analysis with emphasis on statistical rigor, risk management, and Renaissance Technologies' methodologies.

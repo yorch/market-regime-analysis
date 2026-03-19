@@ -6,7 +6,264 @@ and risk management, including Kelly Criterion optimization and regime-adjusted
 position sizing.
 """
 
+from dataclasses import dataclass
+
 from .enums import MarketRegime
+
+
+@dataclass
+class PositionRecord:
+    """Tracks a single open position for portfolio-level limit enforcement."""
+
+    symbol: str
+    direction: str  # 'LONG' or 'SHORT'
+    notional: float  # position notional value
+    sector: str = ""  # optional sector/group tag
+
+
+class PortfolioPositionLimits:
+    """
+    Cross-asset position limit enforcer.
+
+    Tracks open positions across multiple symbols and enforces:
+    - Maximum total portfolio exposure (gross notional / capital)
+    - Maximum per-asset exposure
+    - Maximum number of concurrent positions
+    - Maximum net directional exposure (long - short)
+    - Maximum sector/group concentration
+
+    All limits are expressed as fractions of portfolio capital.
+    """
+
+    def __init__(
+        self,
+        capital: float,
+        max_total_exposure: float = 1.0,
+        max_per_asset_exposure: float = 0.20,
+        max_positions: int = 20,
+        max_net_exposure: float = 0.60,
+        max_sector_exposure: float = 0.40,
+    ) -> None:
+        """
+        Initialize portfolio position limits.
+
+        Args:
+            capital: Current portfolio capital
+            max_total_exposure: Max gross exposure as fraction of capital (default 1.0 = 100%)
+            max_per_asset_exposure: Max single-asset exposure (default 20%)
+            max_positions: Max number of concurrent open positions
+            max_net_exposure: Max net directional exposure (|long - short| / capital)
+            max_sector_exposure: Max exposure to a single sector/group
+        """
+        self.capital = capital
+        self.max_total_exposure = max_total_exposure
+        self.max_per_asset_exposure = max_per_asset_exposure
+        self.max_positions = max_positions
+        self.max_net_exposure = max_net_exposure
+        self.max_sector_exposure = max_sector_exposure
+
+        self.positions: dict[str, PositionRecord] = {}
+
+    def update_capital(self, capital: float) -> None:
+        """Update current portfolio capital."""
+        self.capital = capital
+
+    def add_position(self, position: PositionRecord) -> None:
+        """Register an open position."""
+        self.positions[position.symbol] = position
+
+    def remove_position(self, symbol: str) -> None:
+        """Remove a closed position."""
+        self.positions.pop(symbol, None)
+
+    def update_position_notional(self, symbol: str, current_price: float, shares: float) -> None:
+        """
+        Update a position's notional to reflect current market value.
+
+        Should be called each bar so that exposure limits track mark-to-market
+        values rather than stale entry notionals.
+
+        Args:
+            symbol: Asset symbol
+            current_price: Current market price
+            shares: Number of shares held
+        """
+        if symbol in self.positions:
+            self.positions[symbol].notional = abs(current_price * shares)
+
+    def get_gross_exposure(self) -> float:
+        """Total absolute notional across all positions."""
+        return sum(abs(p.notional) for p in self.positions.values())
+
+    def get_net_exposure(self) -> float:
+        """Net directional exposure (long notional - short notional)."""
+        net = 0.0
+        for p in self.positions.values():
+            net += p.notional if p.direction == "LONG" else -p.notional
+        return net
+
+    def get_long_exposure(self) -> float:
+        """Total long notional."""
+        return sum(p.notional for p in self.positions.values() if p.direction == "LONG")
+
+    def get_short_exposure(self) -> float:
+        """Total short notional."""
+        return sum(p.notional for p in self.positions.values() if p.direction == "SHORT")
+
+    def get_sector_exposure(self, sector: str) -> float:
+        """Total notional for a given sector."""
+        return sum(abs(p.notional) for p in self.positions.values() if p.sector == sector)
+
+    def get_asset_exposure(self, symbol: str) -> float:
+        """Current notional for a specific asset."""
+        p = self.positions.get(symbol)
+        return abs(p.notional) if p else 0.0
+
+    def check_limits(
+        self,
+        symbol: str,
+        direction: str,
+        proposed_notional: float,
+        sector: str = "",
+    ) -> dict:
+        """
+        Check whether a proposed trade would violate any position limits.
+
+        Args:
+            symbol: Asset symbol
+            direction: 'LONG' or 'SHORT'
+            proposed_notional: Notional value of proposed trade
+            sector: Optional sector/group tag
+
+        Returns:
+            Dictionary with:
+                - allowed: bool - whether the trade is permitted
+                - max_allowed_notional: float - largest notional that would pass all limits
+                - violations: list[str] - descriptions of any limit breaches
+        """
+        violations: list[str] = []
+        cap = self.capital if self.capital > 0 else 1.0  # avoid division by zero
+
+        proposed_abs = abs(proposed_notional)
+
+        # Existing exposures (exclude current position in same symbol if replacing)
+        current_gross = self.get_gross_exposure() - self.get_asset_exposure(symbol)
+        current_net = self.get_net_exposure()
+        if symbol in self.positions:
+            old = self.positions[symbol]
+            current_net -= old.notional if old.direction == "LONG" else -old.notional
+
+        # 1. Max positions count
+        new_count = len(self.positions) + (0 if symbol in self.positions else 1)
+        if new_count > self.max_positions:
+            violations.append(f"Max positions exceeded: {new_count} > {self.max_positions}")
+
+        # 2. Per-asset exposure
+        if proposed_abs / cap > self.max_per_asset_exposure:
+            violations.append(
+                f"Per-asset exposure {proposed_abs / cap:.1%} > "
+                f"limit {self.max_per_asset_exposure:.1%}"
+            )
+
+        # 3. Total gross exposure
+        new_gross = current_gross + proposed_abs
+        if new_gross / cap > self.max_total_exposure:
+            violations.append(
+                f"Total exposure {new_gross / cap:.1%} > limit {self.max_total_exposure:.1%}"
+            )
+
+        # 4. Net directional exposure
+        signed = proposed_abs if direction == "LONG" else -proposed_abs
+        new_net = current_net + signed
+        if abs(new_net) / cap > self.max_net_exposure:
+            violations.append(
+                f"Net exposure {abs(new_net) / cap:.1%} > limit {self.max_net_exposure:.1%}"
+            )
+
+        # 5. Sector concentration
+        if sector:
+            current_sector = self.get_sector_exposure(sector)
+            # Remove same symbol's old sector contribution
+            if symbol in self.positions and self.positions[symbol].sector == sector:
+                current_sector -= self.get_asset_exposure(symbol)
+            new_sector = current_sector + proposed_abs
+            if new_sector / cap > self.max_sector_exposure:
+                violations.append(
+                    f"Sector '{sector}' exposure {new_sector / cap:.1%} > "
+                    f"limit {self.max_sector_exposure:.1%}"
+                )
+
+        # Calculate max allowed notional (the tightest binding constraint)
+        max_allowed = proposed_abs
+        # Per-asset limit
+        max_allowed = min(max_allowed, cap * self.max_per_asset_exposure)
+        # Gross exposure headroom
+        gross_headroom = cap * self.max_total_exposure - current_gross
+        max_allowed = min(max_allowed, max(0.0, gross_headroom))
+        # Net exposure headroom
+        net_headroom = cap * self.max_net_exposure - abs(current_net)
+        max_allowed = min(max_allowed, max(0.0, net_headroom))
+        # Sector exposure headroom
+        if sector:
+            current_sector = self.get_sector_exposure(sector)
+            if symbol in self.positions and self.positions[symbol].sector == sector:
+                current_sector -= self.get_asset_exposure(symbol)
+            sector_headroom = cap * self.max_sector_exposure - current_sector
+            max_allowed = min(max_allowed, max(0.0, sector_headroom))
+
+        return {
+            "allowed": len(violations) == 0,
+            "max_allowed_notional": max_allowed,
+            "violations": violations,
+        }
+
+    def clamp_position_size(
+        self,
+        symbol: str,
+        direction: str,
+        desired_notional: float,
+        sector: str = "",
+    ) -> float:
+        """
+        Return the largest position size that respects all limits.
+
+        Args:
+            symbol: Asset symbol
+            direction: 'LONG' or 'SHORT'
+            desired_notional: Desired notional value
+            sector: Optional sector tag
+
+        Returns:
+            Clamped notional value (may be 0 if no room)
+        """
+        result = self.check_limits(symbol, direction, desired_notional, sector)
+        return min(abs(desired_notional), result["max_allowed_notional"])
+
+    def get_portfolio_summary(self) -> dict:
+        """Get summary of current portfolio exposure."""
+        cap = self.capital if self.capital > 0 else 1.0
+        gross = self.get_gross_exposure()
+        net = self.get_net_exposure()
+
+        # Sector breakdown
+        sectors: dict[str, float] = {}
+        for p in self.positions.values():
+            if p.sector:
+                sectors[p.sector] = sectors.get(p.sector, 0.0) + abs(p.notional)
+
+        return {
+            "capital": self.capital,
+            "n_positions": len(self.positions),
+            "gross_exposure": gross,
+            "gross_exposure_pct": gross / cap,
+            "net_exposure": net,
+            "net_exposure_pct": abs(net) / cap,
+            "long_exposure": self.get_long_exposure(),
+            "short_exposure": self.get_short_exposure(),
+            "sector_exposures": {s: v / cap for s, v in sectors.items()},
+            "headroom_gross": max(0.0, cap * self.max_total_exposure - gross),
+            "headroom_net": max(0.0, cap * self.max_net_exposure - abs(net)),
+        }
 
 
 class SimonsRiskCalculator:

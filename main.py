@@ -20,7 +20,9 @@ from market_regime_analysis import (
     PortfolioHMMAnalyzer,
     SimonsRiskCalculator,
 )
+from market_regime_analysis.backtester import RegimeMultiplierCalibrator
 from market_regime_analysis.providers import MarketDataProvider
+from market_regime_analysis.true_hmm_detector import TrueHMMDetector
 
 
 def validate_api_key(provider: str, api_key: str | None) -> str:
@@ -508,6 +510,189 @@ def start_api(host: str, port: int, dev: bool) -> None:
     except Exception as e:
         print(f"❌ Failed to start API server: {e}")
         raise click.Abort() from e
+
+
+@cli.command()
+@click.option("--symbol", type=str, default="SPY", help="Trading symbol")
+@click.option("--steps", type=int, default=5, help="Number of forecast steps ahead")
+@click.option(
+    "--timeframe",
+    type=click.Choice(["1D", "1H", "15m"]),
+    default="1D",
+    help="Timeframe",
+)
+@click.option("--n-states", type=int, default=6, help="Number of HMM states")
+@click.pass_context
+@handle_exceptions
+def regime_forecast(
+    ctx: click.Context, symbol: str, steps: int, timeframe: str, n_states: int
+) -> None:
+    """Forecast future regime probabilities using the HMM transition matrix.
+
+    Uses the learned transition matrix to project the current regime state
+    distribution forward by N steps, showing how regime probabilities evolve.
+    Also displays regime stability metrics (expected durations, stationary distribution).
+
+    Args:
+        ctx: Click context containing global options
+        symbol: Trading symbol to analyze
+        steps: Number of forecast steps ahead
+        timeframe: Time interval for analysis
+        n_states: Number of HMM states
+    """
+    provider_name = ctx.obj["provider"]
+    api_key = ctx.obj["api_key"]
+
+    print(f"\nFetching {timeframe} data for {symbol}...")
+
+    # Map timeframe to period/interval for provider
+    tf_map = {"1D": ("2y", "1d"), "1H": ("6mo", "1h"), "15m": ("2mo", "15m")}
+    period, interval = tf_map[timeframe]
+
+    provider = MarketDataProvider.create_provider(provider_name, api_key=api_key)
+    df = provider.fetch(symbol, period, interval)
+
+    print(f"Training HMM with {n_states} states on {len(df)} bars...")
+    hmm = TrueHMMDetector(n_states=n_states, n_iter=100)
+    hmm.fit(df)
+
+    # Current regime
+    regime, state, confidence = hmm.predict_regime(df)
+    print(f"\nCURRENT REGIME: {regime.value} (state {state}, confidence {confidence:.1%})")
+
+    # Forecast
+    print(f"\nREGIME FORECAST ({steps}-step ahead):")
+    print("=" * 80)
+
+    forecasts = hmm.forecast_regime_sequence(df, n_steps=steps)
+    state_regime_map = hmm.get_state_regime_map()
+
+    # Collect all regimes that appear
+    all_regimes = sorted(
+        {r for f in forecasts for r in f["regime_probabilities"]},
+        key=lambda r: r.value,
+    )
+
+    # Header
+    header = f"{'Step':>5}"
+    for r in all_regimes:
+        header += f"  {r.value:>16}"
+    header += f"  {'Most Likely':>18}"
+    print(header)
+    print("-" * 80)
+
+    for f in forecasts:
+        row = f"{f['step']:>5}"
+        for r in all_regimes:
+            prob = f["regime_probabilities"].get(r, 0.0)
+            row += f"  {prob:>16.1%}"
+        row += f"  {f['most_likely_regime'].value:>18}"
+        print(row)
+
+    # Stability metrics
+    print("\nREGIME STABILITY METRICS:")
+    print("=" * 80)
+
+    stability = hmm.get_regime_stability()
+
+    print(f"\n{'State':>6} {'Regime':<20} {'Self-Trans':>10} {'Exp Duration':>13}")
+    print("-" * 55)
+    for i in range(hmm.n_states):
+        r = state_regime_map[i]
+        st = stability["self_transition_probs"][i]
+        dur = stability["expected_durations"][i]
+        max_display_duration = 1000
+        dur_str = f"{dur:.1f}" if dur < max_display_duration else "inf"
+        print(f"{i:>6} {r.value:<20} {st:>10.1%} {dur_str:>13}")
+
+    print("\nSTATIONARY DISTRIBUTION (long-run regime probabilities):")
+    print("-" * 55)
+    for r in sorted(stability["stationary_regimes"], key=lambda r: r.value):
+        prob = stability["stationary_regimes"][r]
+        bar = "#" * int(prob * 40)
+        print(f"  {r.value:<20} {prob:>7.1%}  {bar}")
+
+
+@cli.command()
+@click.option("--symbol", type=str, default="SPY", help="Trading symbol")
+@click.option(
+    "--method",
+    type=click.Choice(["sharpe_weighted", "win_rate", "profit_factor", "kelly"]),
+    default="sharpe_weighted",
+    help="Calibration scoring method",
+)
+@click.option("--output", type=str, default=None, help="Save calibrated params to JSON file")
+@click.option("--n-states", type=int, default=4, help="Number of HMM states")
+@click.pass_context
+@handle_exceptions
+def calibrate_multipliers(
+    ctx: click.Context,
+    symbol: str,
+    method: str,
+    output: str | None,
+    n_states: int,
+) -> None:
+    """Empirically calibrate regime multipliers from historical backtest data.
+
+    Runs a walk-forward backtest with uniform multipliers, then analyzes
+    per-regime trade performance to derive optimal position size multipliers.
+
+    Args:
+        ctx: Click context containing global options
+        symbol: Trading symbol to analyze
+        method: Calibration scoring method
+        output: Optional path to save results as JSON
+        n_states: Number of HMM states
+    """
+    import json  # noqa: PLC0415
+
+    provider_name = ctx.obj["provider"]
+    api_key = ctx.obj["api_key"]
+
+    print(f"\nFetching daily data for {symbol}...")
+    provider = MarketDataProvider.create_provider(provider_name, api_key=api_key)
+    df = provider.fetch(symbol, "2y", "1d")
+    print(f"Loaded {len(df)} bars.")
+
+    calibrator = RegimeMultiplierCalibrator(
+        df=df,
+        n_hmm_states=n_states,
+        hmm_n_iter=50,
+        retrain_frequency=20,
+        min_train_days=252,
+        test_days=63,
+    )
+
+    result = calibrator.calibrate_with_details(method=method, verbose=True)
+
+    print(f"\nBaseline Sharpe: {result.baseline_sharpe:.2f}")
+    print(f"Total trades analyzed: {result.total_trades}")
+
+    # Save to JSON if requested
+    if output:
+        output_data = {
+            "symbol": symbol,
+            "method": method,
+            "total_trades": result.total_trades,
+            "baseline_sharpe": result.baseline_sharpe,
+            "multipliers": {r.value: v for r, v in result.multipliers.items()},
+            "trades_per_regime": {r.value: v for r, v in result.trades_per_regime.items()},
+            "raw_scores": {r.value: v for r, v in result.raw_scores.items()},
+            "regime_stats": {
+                r.value: {
+                    "n_trades": rs.n_trades,
+                    "win_rate": rs.win_rate,
+                    "avg_pnl": rs.avg_pnl,
+                    "sharpe": rs.sharpe,
+                    "profit_factor": rs.profit_factor,
+                    "kelly_fraction": rs.kelly_fraction,
+                }
+                for r, rs in result.regime_stats.items()
+            },
+        }
+        with open(output, "w") as f:
+            json.dump(output_data, f, indent=2)
+        print(f"\nResults saved to {output}")
 
 
 if __name__ == "__main__":

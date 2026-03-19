@@ -92,16 +92,17 @@ def test_core_functionality():
         print("\n🎉 All core functionality tests passed!")
         print(f"✓ System is working correctly with {len(mock_data)} data points")
 
-        return True
-
     except Exception as e:
         print(f"❌ Test failed: {e!s}")
         import traceback
 
         traceback.print_exc()
-        return False
+        raise AssertionError(f"Core functionality test failed: {e}") from e
 
 
 if __name__ == "__main__":
-    success = test_core_functionality()
-    sys.exit(0 if success else 1)
+    try:
+        test_core_functionality()
+        sys.exit(0)
+    except (AssertionError, Exception):
+        sys.exit(1)

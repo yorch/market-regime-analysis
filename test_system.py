@@ -35,16 +35,18 @@ def test_basic_functionality():
         print("✓ Report generated successfully")
 
         print("\n🎉 All tests passed! The system is working correctly.")
-        return True
 
     except Exception as e:
         print(f"❌ Test failed: {e!s}")
         import traceback
 
         traceback.print_exc()
-        return False
+        raise AssertionError(f"Basic functionality test failed: {e}") from e
 
 
 if __name__ == "__main__":
-    success = test_basic_functionality()
-    sys.exit(0 if success else 1)
+    try:
+        test_basic_functionality()
+        sys.exit(0)
+    except (AssertionError, Exception):
+        sys.exit(1)

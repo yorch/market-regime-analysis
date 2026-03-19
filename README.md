@@ -100,6 +100,7 @@ Notes:
 - **Regime Adjustments**: Position multipliers based on market regime
 - **Correlation Adjustments**: Portfolio diversification considerations
 - **Volatility Targeting**: Risk-adjusted position sizing
+- **Cross-Asset Position Limits**: Portfolio-level exposure enforcement (gross, net, per-asset, sector, max positions)
 
 ### 4. Multi-Timeframe Analysis
 
@@ -204,15 +205,17 @@ The system uses Gaussian Mixture Models as HMM approximations with:
 - **`TrueHMMDetector`**: hmmlearn-based HMM with Viterbi decoding (used by backtester)
 - **`PortfolioHMMAnalyzer`**: Multi-asset analysis
 - **`SimonsRiskCalculator`**: Risk management utilities
+- **`PortfolioPositionLimits`**: Cross-asset exposure limit enforcement
 
 ### Backtester Classes
 
-- **`BacktestEngine`**: Trade simulation with transaction costs and stop-loss/take-profit
+- **`BacktestEngine`**: Trade simulation with transaction costs, stop-loss/take-profit, and portfolio position limits
 - **`RegimeStrategy`**: Parameterized trading strategy with `from_param_vector()` for optimization
 - **`WalkForwardValidator`**: Out-of-sample walk-forward validation framework
 - **`StrategyOptimizer`**: Grid/random search over strategy parameters
 - **`PerformanceMetrics`**: Comprehensive performance statistics and Kelly Criterion
 - **`TransactionCostModel`**: Configurable cost models (equity, futures, retail, HFT)
+- **`RegimeMultiplierCalibrator`**: Empirical calibration of regime multipliers from backtest data
 
 ### Data Classes
 
@@ -225,6 +228,7 @@ The system uses Gaussian Mixture Models as HMM approximations with:
 - **pandas**: Data manipulation and analysis
 - **numpy**: Numerical computing
 - **scikit-learn**: Machine learning (Gaussian Mixture Models)
+- **hmmlearn**: Hidden Markov Model implementation (Viterbi decoding)
 - **click**: CLI framework
 - **yfinance**: Market data retrieval (free)
 - **alpha-vantage**: Market data retrieval (API key required)
@@ -254,7 +258,11 @@ The tests cover:
 - BacktestEngine direction propagation, LONG/SHORT entries, direction reversals (`test_engine.py`)
 - Walk-forward return compounding and window aggregation (`test_engine.py`)
 - Optimizer scoring, ranking, and print robustness (`test_engine.py`)
-- Report generation and error handling
+- Regime forecasting: n-step projection, stationary distribution, stability (`test_forecasting.py`)
+- Regime multiplier calibration: scoring methods, normalization (`test_calibrator.py`)
+- Transaction cost models: all components, presets, P&L after costs (`test_transaction_costs.py`)
+- Provider base class, registry, factory, mock provider, DataFrame standardization (`test_providers.py`)
+- SimonsRiskCalculator, PortfolioPositionLimits, BacktestEngine integration (`test_risk_calculator.py`)
 
 ## 🔧 Configuration
 
