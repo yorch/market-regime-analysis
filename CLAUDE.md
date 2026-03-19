@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a professional-grade market regime analysis system implementing Jim Simons' Hidden Markov Model methodology for quantitative trading analysis. The system detects market regimes (Bull Trending, Bear Trending, Mean Reverting, High/Low Volatility, Breakout) and provides statistical arbitrage signals following Renaissance Technologies' approach.
+Market regime analysis system using HMMs to classify market states and generate trading signals. See [README.md](README.md) for user-facing overview and [docs/status.md](docs/status.md) for current project state.
 
-The project is organized as a **multi-package uv workspace** with three packages:
+**Multi-package uv workspace** with three packages:
 - **mra_lib** — Core library (zero UI/framework deps)
 - **mra_cli** — CLI interface (depends on mra_lib)
 - **mra_web** — FastAPI web API (depends on mra_lib)
@@ -239,25 +239,6 @@ from .strategy import RegimeStrategy  # inside backtesting/
 | pre-commit | Git hooks (ruff + mypy) | `.pre-commit-config.yaml` |
 | just | Task runner | `Justfile` |
 
-## Data Provider Configuration
-
-### Alpha Vantage (Default)
-```bash
-export ALPHA_VANTAGE_API_KEY=your_key_here
-uv run mra current-analysis --provider alphavantage --symbol SPY
-```
-
-### Polygon.io (Professional)
-```bash
-export POLYGON_API_KEY=your_key_here
-uv run mra current-analysis --provider polygon --symbol SPY
-```
-
-### Yahoo Finance (Free)
-```bash
-uv run mra current-analysis --provider yfinance --symbol SPY
-```
-
 ## Development Guidelines
 
 ### Code Style
@@ -294,10 +275,6 @@ Four jobs run in parallel, Docker depends on all:
 4. **build** — uv build to verify packages build
 5. **docker** — multi-stage build on main/tags
 
-## Dependencies and Version Management
+## Dependencies
 
-- Uses `uv` for dependency management with workspace support
-- Python 3.13+ required
-- Key dependencies: pandas, numpy, scikit-learn, hmmlearn, yfinance, alpha-vantage, polygon-api-client, click, matplotlib
-- API dependencies: fastapi, uvicorn, pydantic, python-jose, slowapi, websockets
-- Development dependencies: ruff, mypy, pytest, pytest-asyncio, pre-commit
+Python 3.13+ required. All deps managed via `uv` with workspace support — see `pyproject.toml` files.

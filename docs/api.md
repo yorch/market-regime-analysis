@@ -1,6 +1,6 @@
 # Market Regime Analysis API
 
-Professional-grade REST API for market regime analysis implementing Jim Simons' Hidden Markov Model methodology.
+REST API for market regime analysis using Hidden Markov Models.
 
 ## 🚀 Quick Start
 
@@ -484,23 +484,8 @@ uv run mra-api --dev
 curl http://localhost:8000/debug/config
 ```
 
-## 📝 License
+## Support
 
-This API is part of the Market Regime Analysis system implementing Jim Simons' methodology for educational and research purposes.
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new endpoints
-4. Update API documentation
-5. Submit a pull request
-
-## 📞 Support
-
-For API support and questions:
-
-- Check the interactive documentation at `/docs`
-- Review error responses for detailed error information
-- Monitor logs for debugging information
-- Use health check endpoints for system status
+- Interactive docs at `/docs` (Swagger UI)
+- Error responses include detailed error information
+- Health check endpoints for system status
