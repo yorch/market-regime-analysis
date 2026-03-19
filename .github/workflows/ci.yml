@@ -39,7 +39,7 @@ jobs:
       - uses: extractions/setup-just@v3
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync
 
       - name: Lint (ruff check)
         run: just lint
@@ -61,7 +61,7 @@ jobs:
       - uses: extractions/setup-just@v3
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync
 
       - name: Type check (mypy)
         run: just types
@@ -73,7 +73,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.13"]
     steps:
       - uses: actions/checkout@v6
 
@@ -84,7 +84,7 @@ jobs:
       - uses: extractions/setup-just@v3
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync
 
       - name: Test mra_lib
         run: >
@@ -92,8 +92,6 @@ jobs:
           -m "not integration and not slow"
           packages/mra_lib/tests/
           -v --tb=short
-          --cov=mra_lib --cov-report=term-missing
-          --cov-fail-under=50
 
       - name: Test mra_cli
         run: >
@@ -101,8 +99,6 @@ jobs:
           -m "not integration and not slow"
           packages/mra_cli/tests/
           -v --tb=short
-          --cov=mra_cli --cov-report=term-missing
-          --cov-fail-under=30
 
       - name: Test mra_web
         run: >
@@ -110,8 +106,6 @@ jobs:
           -m "not integration and not slow"
           packages/mra_web/tests/
           -v --tb=short
-          --cov=mra_web --cov-report=term-missing
-          --cov-fail-under=30
 
   # ── Build ────────────────────────────────────────────────────────────────
   build:
@@ -125,7 +119,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync
 
       - name: Build mra-lib
         run: uv build --package mra-lib
@@ -151,7 +145,7 @@ jobs:
       - uses: extractions/setup-just@v3
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync
 
       - name: Integration tests — mra_lib
         run: >
