@@ -11,3 +11,15 @@ wheels/
 
 # Generated optimization output
 optimization_results.json
+
+# Environment secrets
+.env
+
+# Caches
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+
+# IDE
+.vscode/
+.idea/

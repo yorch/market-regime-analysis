@@ -1,0 +1,25 @@
+[project]
+name = "mra-lib"
+version = "1.0.0"
+description = "Core library for market regime analysis using Hidden Markov Models"
+readme = "../../README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "alpha-vantage>=3.0.0",
+    "hmmlearn>=0.3.0",
+    "matplotlib>=3.10.3",
+    "numpy>=2.3.1",
+    "pandas>=2.3.1",
+    "polygon-api-client>=1.15.3",
+    "requests>=2.32.0",
+    "scikit-learn>=1.7.1",
+    "statsmodels>=0.14.0",
+    "yfinance>=0.2.65",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mra_lib"]

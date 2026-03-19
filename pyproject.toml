@@ -1,32 +1,25 @@
-[project]
-name = "market-regime-analysis"
-version = "1.0.0"
-description = "Add your description here"
-readme = "README.md"
-requires-python = ">=3.13"
-dependencies = [
-    "alpha-vantage>=3.0.0",
-    "click>=8.2.1",
-    "fastapi>=0.104.0",
-    "hmmlearn>=0.3.0",
-    "matplotlib>=3.10.3",
-    "numpy>=2.3.1",
-    "pandas>=2.3.1",
-    "requests>=2.32.0",
-    "polygon-api-client>=1.15.3",
-    "pydantic>=2.5.0",
-    "python-jose[cryptography]>=3.3.0",
-    "python-multipart>=0.0.6",
-    "scikit-learn>=1.7.1",
-    "slowapi>=0.1.9",
-    "statsmodels>=0.14.0",
-    "uvicorn[standard]>=0.24.0",
-    "websockets>=12.0",
-    "yfinance>=0.2.65",
+# ── Virtual workspace root ─────────────────────────────────────────────────
+# This file ties the workspace packages together and centralizes tool config.
+# It is NOT a buildable package itself.
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+mra-lib = { workspace = true }
+mra-cli = { workspace = true }
+mra-web = { workspace = true }
+
+[tool.uv]
+dev-dependencies = [
+    "mypy>=1.11.0",
+    "pre-commit>=4.2.0",
+    "pytest>=8.4.1",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.12.4",
 ]
 
-[dependency-groups]
-dev = ["pre-commit>=4.2.0", "pytest>=8.4.1", "ruff>=0.12.4"]
+# ── Ruff (shared across all packages) ──────────────────────────────────────
 
 [tool.ruff]
 line-length = 100
@@ -36,29 +29,57 @@ exclude = [".venv", "__pycache__", "build", "dist"]
 quote-style = "double"
 indent-style = "space"
 
-# Enable recommended linting rules
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "C4", "T20", "SIM", "PL", "RUF"]
-ignore = ["E501"]                                                    # Ignore line length for docstrings
+ignore = ["E501"]
 fixable = ["ALL"]
 
 [tool.ruff.lint.per-file-ignores]
-"api_server.py" = ["T201"]  # Allow print statements
-"start_api.py" = ["T201"]  # Allow print statements
-"main.py" = ["T201"]  # Allow print statements in CLI application
-"market_regime_analysis/api/*.py" = ["T201", "PLR2004", "PLR0913"]  # API modules with flexible patterns
-"market_regime_analysis/analyzer.py" = ["T201", "PLR2004", "B023", "B904", "PLR0912", "PLR0915", "PLC0415", "SIM102", "SIM118", "RUF005"]  # Complex analysis module with many patterns
-"market_regime_analysis/portfolio.py" = ["T201", "PLR2004"]  # Allow print statements and magic values in portfolio reports
-"market_regime_analysis/risk_calculator.py" = ["T201", "PLR2004", "PLR0913"]  # Allow prints and magic values in risk calculator
-"market_regime_analysis/hmm_detector.py" = ["PLR2004", "B904", "B023", "PLR0911"]  # Allow magic values and complex patterns in HMM detector
-"market_regime_analysis/true_hmm_detector.py" = ["PLR2004", "PLR0911", "PLR0912"]  # Allow magic values, many returns/branches for regime classification
-"market_regime_analysis/backtester/*.py" = ["T201", "PLR2004", "PLR0913", "SIM102", "SIM103"]  # Backtester modules with print statements, magic values, and complex inits
-"test_*.py" = ["T201", "PLC0415", "PLR0912", "PLR0915", "PLR2004"]  # Allow print statements, imports, complexity in tests
-"run_optimization.py" = ["T201"]  # CLI script with print statements
+"packages/mra_web/src/mra_web/*.py" = ["T201", "PLR2004", "PLR0913"]
+"packages/mra_lib/src/mra_lib/analyzer.py" = ["T201", "PLR2004", "B023", "B904", "PLR0912", "PLR0915", "PLC0415", "SIM102", "SIM118", "RUF005"]
+"packages/mra_lib/src/mra_lib/portfolio/*.py" = ["T201", "PLR2004"]
+"packages/mra_lib/src/mra_lib/risk/*.py" = ["T201", "PLR2004", "PLR0913"]
+"packages/mra_lib/src/mra_lib/indicators/hmm_detector.py" = ["PLR2004", "B904", "B023", "PLR0911"]
+"packages/mra_lib/src/mra_lib/indicators/true_hmm_detector.py" = ["PLR2004", "PLR0911", "PLR0912"]
+"packages/mra_lib/src/mra_lib/backtesting/*.py" = ["T201", "PLR2004", "PLR0913", "SIM102", "SIM103"]
+"packages/mra_cli/src/mra_cli/*.py" = ["T201", "PLR2004"]
+"**/tests/*.py" = ["T201", "PLC0415", "PLR0912", "PLR0915", "PLR2004"]
 "examples/*.py" = ["T201", "PLR2004"]
 "*.ipynb" = ["E402", "PLR2004", "RUF001", "T201"]
 
-# Enable import sorting (replaces isort)
 [tool.ruff.lint.isort]
 combine-as-imports = true
-known-first-party = ["market_regime_analysis"]
+known-first-party = ["mra_lib", "mra_cli", "mra_web"]
+
+# ── mypy (shared across all packages) ──────────────────────────────────────
+
+[tool.mypy]
+python_version = "3.13"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = [
+    "hmmlearn.*",
+    "alpha_vantage.*",
+    "yfinance.*",
+    "polygon.*",
+    "sklearn.*",
+    "statsmodels.*",
+]
+ignore_missing_imports = true
+
+# ── pytest (shared across all packages) ────────────────────────────────────
+
+[tool.pytest.ini_options]
+testpaths = [
+    "packages/mra_lib/tests",
+    "packages/mra_cli/tests",
+    "packages/mra_web/tests",
+]
+markers = [
+    "integration: tests that call external APIs (deselect with '-m \"not integration\"')",
+    "slow: tests that take a long time to run (deselect with '-m \"not slow\"')",
+]

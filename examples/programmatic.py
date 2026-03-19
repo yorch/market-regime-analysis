@@ -11,13 +11,13 @@ from __future__ import annotations
 import os
 
 from examples.common import Banner
-from market_regime_analysis import (
+from mra_lib import (
     MarketRegime,
     MarketRegimeAnalyzer,
     PortfolioHMMAnalyzer,
     SimonsRiskCalculator,
 )
-from market_regime_analysis.providers import list_available_providers
+from mra_lib.data_providers import list_available_providers
 
 banner = Banner()
 

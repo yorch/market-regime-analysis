@@ -1,0 +1,28 @@
+[project]
+name = "mra-web"
+version = "1.0.0"
+description = "Web API for market regime analysis"
+requires-python = ">=3.13"
+dependencies = [
+    "mra-lib",
+    "fastapi>=0.104.0",
+    "pydantic>=2.5.0",
+    "python-jose[cryptography]>=3.3.0",
+    "python-multipart>=0.0.6",
+    "slowapi>=0.1.9",
+    "uvicorn[standard]>=0.24.0",
+    "websockets>=12.0",
+]
+
+[project.scripts]
+mra-api = "mra_web.server:main"
+
+[tool.uv.sources]
+mra-lib = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mra_web"]

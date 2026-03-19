@@ -2,7 +2,7 @@
 .git
 .gitignore
 
-# Virtualenv
+# Virtual environments
 .venv
 venv
 
@@ -16,12 +16,27 @@ __pycache__
 .vscode
 .idea
 
-# Ruff cache
+# Caches
 .ruff_cache
-
-# Pytest cache
 .pytest_cache
+.mypy_cache
 
 # Docker
 Dockerfile
 .dockerignore
+docker-compose*.yml
+
+# Tests (not needed in production image)
+**/tests/
+
+# Docs
+docs/
+*.md
+!README.md
+
+# Dev files
+.env
+.env.example
+Justfile
+Makefile
+.pre-commit-config.yaml
