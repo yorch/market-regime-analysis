@@ -121,18 +121,13 @@ class TrueHMMDetector:
         features["trend_9_21"] = (features["sma_9"] - features["sma_21"]) / df["Close"]
         features["trend_21_50"] = (features["sma_21"] - features["sma_50"]) / df["Close"]
 
-        # Autocorrelation with proper sample size
-        for lag in [1, 2, 5]:
-            features[f"autocorr_{lag}"] = (
-                features["returns"]
-                .rolling(60, min_periods=40)
-                .apply(
-                    lambda x, lag_val=lag: x.autocorr(lag=lag_val)
-                    if len(x.dropna()) >= lag_val + 20
-                    else np.nan,
-                    raw=False,
-                )
-            )
+        # Autocorrelation — vectorized for performance
+        returns = features["returns"]
+        for lag in [1, 5]:
+            lagged = returns.shift(lag)
+            roll_cov = returns.rolling(30, min_periods=20).cov(lagged)
+            roll_var = returns.rolling(30, min_periods=20).var()
+            features[f"autocorr_{lag}"] = roll_cov / (roll_var + 1e-12)
 
         # Volume features (if available)
         if "Volume" in df.columns and df["Volume"].sum() > 0:

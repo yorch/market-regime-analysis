@@ -22,6 +22,8 @@ Market Regime Analysis System
 ├── Statistical Arbitrage Detection
 ├── Risk Management Calculator
 ├── Portfolio Analysis Tools
+├── Backtesting & Walk-Forward Validation
+├── Strategy Parameter Optimization
 └── Click-based CLI
 ```
 
@@ -105,6 +107,14 @@ Notes:
 - **Hourly (1H)**: Medium-term regime shifts (6 months of data)
 - **15-Minute (15m)**: Short-term regime changes (2 months of data)
 
+### 5. Backtesting & Strategy Optimization
+
+- **Walk-Forward Validation**: Anchored or rolling out-of-sample testing with periodic HMM retraining
+- **BacktestEngine**: Trade simulation with realistic transaction costs, stop-loss/take-profit, and LONG/SHORT support
+- **RegimeStrategy**: Parameterized strategy mapping regimes to trade directions and position sizes
+- **StrategyOptimizer**: Grid and random search over strategy parameters with composite scoring
+- **Performance Metrics**: Sharpe, Sortino, Calmar ratios, drawdown analysis, Kelly Criterion parameters
+
 ## 🖥️ CLI Commands (Click)
 
 Run `uv run main.py --help` to see all commands. Common commands:
@@ -117,6 +127,8 @@ Run `uv run main.py --help` to see all commands. Common commands:
 - Multi-symbol portfolio analysis: `uv run main.py multi-symbol-analysis --symbols "SPY,QQQ,IWM" --timeframe 1D --provider yfinance`
 - Position sizing calculator: `uv run main.py position-sizing --base-size 0.02 --regime "Bull Trending" --confidence 0.8 --persistence 0.7 --correlation 0.0`
 - List available data providers and capabilities: `uv run main.py list-providers`
+- Strategy optimization (grid search): `uv run run_optimization.py --mode grid --symbol SPY --provider yfinance`
+- Strategy optimization (random search): `uv run run_optimization.py --mode random --symbol SPY --provider yfinance --iterations 50`
 
 ## 📈 Example Analysis Output
 
@@ -188,9 +200,19 @@ The system uses Gaussian Mixture Models as HMM approximations with:
 ### Core Classes
 
 - **`MarketRegimeAnalyzer`**: Main analysis engine
-- **`HiddenMarkovRegimeDetector`**: HMM implementation
+- **`HiddenMarkovRegimeDetector`**: GMM-based HMM implementation
+- **`TrueHMMDetector`**: hmmlearn-based HMM with Viterbi decoding (used by backtester)
 - **`PortfolioHMMAnalyzer`**: Multi-asset analysis
 - **`SimonsRiskCalculator`**: Risk management utilities
+
+### Backtester Classes
+
+- **`BacktestEngine`**: Trade simulation with transaction costs and stop-loss/take-profit
+- **`RegimeStrategy`**: Parameterized trading strategy with `from_param_vector()` for optimization
+- **`WalkForwardValidator`**: Out-of-sample walk-forward validation framework
+- **`StrategyOptimizer`**: Grid/random search over strategy parameters
+- **`PerformanceMetrics`**: Comprehensive performance statistics and Kelly Criterion
+- **`TransactionCostModel`**: Configurable cost models (equity, futures, retail, HFT)
 
 ### Data Classes
 
@@ -225,12 +247,14 @@ Or run all tests with pytest:
 uv run pytest
 ```
 
-The test covers:
+The tests cover:
 
-- Analyzer initialization
-- Regime detection
-- Report generation
-- Error handling
+- Analyzer initialization and regime detection (`test_system.py`, `test_mock.py`)
+- RegimeStrategy signal generation, parameter vectors, confidence scaling (`test_strategy.py`)
+- BacktestEngine direction propagation, LONG/SHORT entries, direction reversals (`test_engine.py`)
+- Walk-forward return compounding and window aggregation (`test_engine.py`)
+- Optimizer scoring, ranking, and print robustness (`test_engine.py`)
+- Report generation and error handling
 
 ## 🔧 Configuration
 

@@ -84,6 +84,7 @@ class BacktestEngine:
         regimes: pd.Series,  # Series of MarketRegime enum values
         strategies: pd.Series,  # Series of TradingStrategy enum values
         position_sizes: pd.Series,  # Series of position size multipliers
+        directions: pd.Series | None = None,  # Series of direction strings (LONG/SHORT/None)
     ) -> dict:
         """
         Run backtest for regime-based strategy.
@@ -93,6 +94,7 @@ class BacktestEngine:
             regimes: Market regime for each date
             strategies: Recommended strategy for each date
             position_sizes: Position size multiplier for each date
+            directions: Explicit trade directions (overrides strategy-based direction)
 
         Returns:
             Dictionary with backtest results
@@ -118,26 +120,42 @@ class BacktestEngine:
                 self._check_exit_conditions(date, price, df["High"].iloc[i], df["Low"].iloc[i])
 
                 # Check regime change exit
-                if self._should_exit_regime(regime, strategy):
+                if self.position is not None and self._should_exit_regime(regime, strategy):
                     self._close_position(
                         date,
                         price,
                         regime.value if isinstance(regime, MarketRegime) else str(regime),
                     )
 
-            # Enter new position if no current position
-            if self.position is None:
-                if self._should_enter_position(strategy):
-                    direction = self._get_direction_from_strategy(strategy)
-                    if direction:
-                        size = self._calculate_position_size(price, position_mult)
-                        self._open_position(
+                # Check direction reversal (e.g. was LONG, now signal SHORT)
+                if self.position is not None and directions is not None and i < len(directions):
+                    new_dir = directions.iloc[i]
+                    if new_dir is not None and new_dir != self.position["direction"]:
+                        self._close_position(
                             date,
                             price,
-                            size,
-                            direction,
                             regime.value if isinstance(regime, MarketRegime) else str(regime),
                         )
+
+            # Enter new position if no current position
+            if self.position is None:
+                # Use explicit direction if provided, otherwise infer from strategy
+                if directions is not None and i < len(directions):
+                    direction = directions.iloc[i]
+                elif self._should_enter_position(strategy):
+                    direction = self._get_direction_from_strategy(strategy)
+                else:
+                    direction = None
+
+                if direction and position_mult > 0:
+                    size = self._calculate_position_size(price, position_mult)
+                    self._open_position(
+                        date,
+                        price,
+                        size,
+                        direction,
+                        regime.value if isinstance(regime, MarketRegime) else str(regime),
+                    )
 
             # Update equity curve
             current_equity = self._calculate_current_equity(price)
@@ -206,11 +224,8 @@ class BacktestEngine:
         Returns:
             Number of shares to buy
         """
-        # Base position size (fraction of capital)
-        base_fraction = 0.10  # 10% base position
-
-        # Apply regime multiplier
-        target_fraction = base_fraction * position_mult
+        # position_mult already includes base_position_fraction from the strategy
+        target_fraction = position_mult
 
         # Cap at maximum
         target_fraction = min(target_fraction, self.max_position_size)

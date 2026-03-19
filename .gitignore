@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Generated optimization output
+optimization_results.json
