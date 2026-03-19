@@ -1,5 +1,9 @@
 # Critical Bug Fixes: Code Review Findings
 
+> **Note**: This is a historical document. The codebase has since been reorganized into a
+> multi-package uv workspace. `market_regime_analysis/` paths now live under
+> `packages/mra_lib/src/mra_lib/`. See `CLAUDE.md` for the current structure.
+
 **Date**: 2026-01-17
 **Review Type**: Comprehensive Code Quality & Security Assessment
 **Status**: ✅ CRITICAL BUGS FIXED

@@ -11,28 +11,27 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-jobs:
-  lint-and-test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+env:
+  ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
+  POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+  JWT_SECRET: ci-secret
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+jobs:
+  # ── Lint ──────────────────────────────────────────────────────────────────
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
 
       - name: Install uv
-        shell: bash
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          uv --version
+        uses: astral-sh/setup-uv@v4
 
-      - name: Cache uv and venv
+      - name: Cache
         uses: actions/cache@v4
         with:
           path: |
@@ -40,20 +39,98 @@ jobs:
             .venv
           key: ${{ runner.os }}-uv-${{ hashFiles('uv.lock') }}
 
-      - name: Sync dependencies (all groups)
-        run: uv sync --all-groups
+      - run: uv sync --all-groups
 
-      - name: Lint (ruff)
-        run: uv run ruff check .
+      - name: Lint (ruff check)
+        run: uv run ruff check packages/ examples/
 
-      - name: Format check (ruff)
-        run: uv run ruff format --check .
+      - name: Format check (ruff format)
+        run: uv run ruff format --check packages/ examples/
+
+  # ── Type Check ───────────────────────────────────────────────────────────
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/uv
+            .venv
+          key: ${{ runner.os }}-uv-${{ hashFiles('uv.lock') }}
+
+      - run: uv sync --all-groups
+
+      - name: Type check (mypy)
+        run: uv run mypy packages/
+        continue-on-error: true  # Soft-fail until types are fully annotated
+
+  # ── Test ─────────────────────────────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      matrix:
+        python-version: ["3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/uv
+            .venv
+          key: ${{ runner.os }}-py${{ matrix.python-version }}-uv-${{ hashFiles('uv.lock') }}
+
+      - run: uv sync --all-groups
 
       - name: Run tests
-        env:
-          # Optional: provide API keys via repository secrets if needed
-          ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
-          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
-          JWT_SECRET: ci-secret
         run: uv run pytest -q
 
+  # ── Build ────────────────────────────────────────────────────────────────
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - run: uv build --package mra-lib
+      - run: uv build --package mra-cli
+      - run: uv build --package mra-web
+
+  # ── Docker ───────────────────────────────────────────────────────────────
+  docker:
+    runs-on: ubuntu-latest
+    needs: [lint, test, build]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t market-regime-analysis:${{ github.sha }} .

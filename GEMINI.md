@@ -6,7 +6,7 @@ This document provides context for the Gemini Code Assistant to understand the `
 
 The `market-regime-analysis` project is a professional-grade Python application that implements Jim Simons' Hidden Markov Model (HMM) methodology for market regime detection and quantitative trading analysis. The system provides multi-timeframe analysis (daily, hourly, and 15-minute), statistical arbitrage opportunity identification, and risk management using the Kelly Criterion.
 
-The project is structured as a command-line application using the `click` library, with the core logic encapsulated in the `market_regime_analysis` package. The main components are:
+The project is structured as a multi-package workspace with three packages: `mra_lib` (core library), `mra_cli` (CLI application using `click`), and `mra_web` (FastAPI web API). The core logic is in `packages/mra_lib/src/mra_lib/`. The main components are:
 
 * **`MarketRegimeAnalyzer`**: The main analysis engine that integrates HMM detection with technical analysis, statistical arbitrage, and risk management.
 * **`HiddenMarkovRegimeDetector`**: The core HMM implementation using Gaussian Mixture Models to identify hidden market states.
@@ -19,33 +19,33 @@ The project is structured as a command-line application using the `click` librar
 The project uses `uv` for dependency management. The key commands are:
 
 * **Install dependencies:** `uv sync`
-* **Run the CLI:** `uv run main.py --help`
-* **Run tests:** `uv run test_system.py` or `uv run pytest`
+* **Run the CLI:** `uv run mra --help`
+* **Run tests:** `uv run pytest`
 
 ### CLI Usage Examples
 
 * **Run a quick analysis using Yahoo Finance:**
 
     ```bash
-    uv run main.py current-analysis --provider yfinance --symbol SPY
+    uv run mra current-analysis --provider yfinance --symbol SPY
     ```
 
 * **Run a detailed analysis with a specific timeframe and provider:**
 
     ```bash
-    uv run main.py detailed-analysis --symbol SPY --timeframe 1D --provider alphavantage --api-key YOUR_KEY
+    uv run mra detailed-analysis --symbol SPY --timeframe 1D --provider alphavantage --api-key YOUR_KEY
     ```
 
 * **Generate charts:**
 
     ```bash
-    uv run main.py generate-charts --symbol SPY --timeframe 1D --days 60 --provider yfinance
+    uv run mra generate-charts --symbol SPY --timeframe 1D --days 60 --provider yfinance
     ```
 
 ## Development Conventions
 
 * **Linting and Formatting:** The project uses `ruff` for linting and formatting. The configuration is in the `pyproject.toml` file.
-* **Testing:** The project uses `pytest` for testing. Tests are located in the `test_system.py` and `test_mock.py` files.
+* **Testing:** The project uses `pytest` for testing. Tests are located in `packages/mra_lib/tests/`.
 * **Type Hinting:** The code uses type hints throughout.
 * **Docstrings:** The code is well-documented with docstrings.
 * **Modularity:** The code is organized into modules with clear responsibilities.

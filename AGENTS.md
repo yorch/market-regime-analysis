@@ -2,21 +2,21 @@
 
 ## Project Structure & Module Organization
 
-- `market_regime_analysis/`: Core package (HMM analyzer, risk, providers).
-  - `providers/`: Pluggable data sources (`yfinance`, `alphavantage`, `polygon`).
-  - Key modules: `analyzer.py`, `hmm_detector.py`, `portfolio.py`, `risk_calculator.py`.
-- `main.py`: Click-based CLI commands.
-- `api_server.py` and `start_api.py`: FastAPI app and launcher.
-- `tests`: Test files live at repo root (e.g., `test_system.py`, `test_programmatic_usage.py`).
+- `packages/mra_lib/src/mra_lib/`: Core library package (HMM analyzer, risk, providers).
+  - `data_providers/`: Pluggable data sources (`yfinance`, `alphavantage`, `polygon`).
+  - Key modules: `analyzer.py`, `indicators/hmm_detector.py`, `portfolio/portfolio.py`, `risk/risk_calculator.py`.
+- `packages/mra_cli/src/mra_cli/main.py`: Click-based CLI commands (entry point: `mra`).
+- `packages/mra_web/src/mra_web/`: FastAPI app (entry point: `mra-api`).
+- `tests`: Test files live in `packages/mra_lib/tests/`, `packages/mra_cli/tests/`, `packages/mra_web/tests/`.
 - `docs/`, `examples/`, and planning docs: `README.md`, `ARCHITECTURE.md`, `API_README.md`.
 
 ## Build, Test, and Development Commands
 
 - Install deps: `uv sync` (runtime) or `uv sync --all-groups` (dev tooling)
-- Run CLI help: `uv run main.py --help`
-- Common CLI example: `uv run main.py current-analysis --symbol SPY --provider yfinance`
-- Run API (dev): `uv run start_api.py --dev` (docs at `http://localhost:8000/docs`)
-- Tests (single file): `uv run test_system.py`
+- Run CLI help: `uv run mra --help`
+- Common CLI example: `uv run mra current-analysis --symbol SPY --provider yfinance`
+- Run API (dev): `uv run mra-api --dev` (docs at `http://localhost:8000/docs`)
+- Tests (all): `uv run pytest`
 - Pytest (all): `uv run pytest`
 - Lint: `uv run ruff check .`
 - Format: `uv run ruff format .`
@@ -34,9 +34,9 @@
 ## Testing Guidelines
 
 - Framework: `pytest`.
-- Location: root-level `test_*.py` (e.g., `test_mock.py`, `test_system.py`).
+- Location: `packages/mra_lib/tests/` (e.g., `test_mock.py`, `test_system.py`).
 - Conventions: name tests `test_<unit>_<behavior>()`; use fixtures and deterministic inputs.
-- Aim to cover new branches/edge cases; add provider mocks where needed (`providers/mock_provider.py`).
+- Aim to cover new branches/edge cases; add provider mocks where needed (`data_providers/mock_provider.py`).
 - Run locally with `uv run pytest`; ensure tests pass before PRs.
 
 ## Commit & Pull Request Guidelines
