@@ -1,20 +1,72 @@
 services:
-  api:
+  scanner:
     build: .
-    ports:
-      - "${API_PORT:-8000}:8000"
-    environment:
-      - API_HOST=0.0.0.0
-      - API_PORT=8000
-      - ENVIRONMENT=${ENVIRONMENT:-production}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
-      - ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY:-}
-      - POLYGON_API_KEY=${POLYGON_API_KEY:-}
+    image: market-regime-analysis
+    # Alternative: pull from GHCR
+    # image: ghcr.io/market-regime-analysis/market-regime-analysis:latest
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+    command:
+      - "--no-dashboard"
+    environment:
+      # ── Application behaviour ──────────────────────────────────────────
+      ENVIRONMENT: "${ENVIRONMENT:-production}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      SCAN_INTERVAL: "${SCAN_INTERVAL:-300}"
+      SCAN_MODE: "${SCAN_MODE:-continuous}"
+      DEFAULT_SYMBOL: "${DEFAULT_SYMBOL:-SPY}"
+      DEFAULT_TIMEFRAME: "${DEFAULT_TIMEFRAME:-1D}"
+
+      # ── Data provider ──────────────────────────────────────────────────
+      DEFAULT_PROVIDER: "${DEFAULT_PROVIDER:-yfinance}"
+      ALPHA_VANTAGE_API_KEY: "${ALPHA_VANTAGE_API_KEY:-}"
+      POLYGON_API_KEY: "${POLYGON_API_KEY:-}"
+
+      # ── Alerts — Telegram ──────────────────────────────────────────────
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
+
+      # ── Alerts — Discord ──────────────────────────────────────────────
+      DISCORD_WEBHOOK_URL: "${DISCORD_WEBHOOK_URL:-}"
+
+      # ── Alerts — Email ─────────────────────────────────────────────────
+      EMAIL_SMTP_HOST: "${EMAIL_SMTP_HOST:-}"
+      EMAIL_SMTP_PORT: "${EMAIL_SMTP_PORT:-587}"
+      EMAIL_USERNAME: "${EMAIL_USERNAME:-}"
+      EMAIL_PASSWORD: "${EMAIL_PASSWORD:-}"
+      EMAIL_RECIPIENT: "${EMAIL_RECIPIENT:-}"
+
+      # ── Alerts — Webhook ───────────────────────────────────────────────
+      WEBHOOK_URL: "${WEBHOOK_URL:-}"
+
+      # ── Report output ──────────────────────────────────────────────────
+      REPORT_DIR: "${REPORT_DIR:-/data/reports}"
+      REPORT_FORMAT: "${REPORT_FORMAT:-json}"
+
+      # ── Persistent storage ─────────────────────────────────────────────
+      STORAGE_BACKEND: "${STORAGE_BACKEND:-none}"
+      # DATABASE_URL set via docker-compose.postgres.yml override
+
+      # ── Web dashboard ──────────────────────────────────────────────────
+      WEB_ENABLED: "${WEB_ENABLED:-false}"
+      WEB_PORT: "${WEB_PORT:-8080}"
+      WEB_PASSWORD: "${WEB_PASSWORD:-}"
+      JWT_SECRET: "${JWT_SECRET:-}"
+    ports:
+      # Expose web dashboard port (only relevant when WEB_ENABLED=true)
+      - "${WEB_PORT:-8080}:${WEB_PORT:-8080}"
+    volumes:
+      # Named volumes for data that should survive container restarts
+      - app-cache:/home/scanner/.cache    # Application cache
+      - app-reports:/data/reports          # Output reports
+      # Optional: mount read-only config file
+      # - ./config.json:/app/config.json:ro
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+volumes:
+  app-cache:
+  app-reports:
