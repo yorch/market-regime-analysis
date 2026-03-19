@@ -9,7 +9,8 @@ __pycache__
 !.env.example
 **/tests/
 docs/
-*.md
+# Exclude markdown at root only — packages may need README.md for hatchling
+/*.md
 Justfile
 scripts/
 .ruff_cache

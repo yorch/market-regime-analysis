@@ -18,7 +18,8 @@ RUN mkdir -p packages/mra_lib/src/mra_lib && \
     mkdir -p packages/mra_web/src/mra_web && \
     touch packages/mra_lib/src/mra_lib/__init__.py && \
     touch packages/mra_cli/src/mra_cli/__init__.py && \
-    touch packages/mra_web/src/mra_web/__init__.py
+    touch packages/mra_web/src/mra_web/__init__.py && \
+    touch packages/mra_lib/README.md
 
 # Install dependencies into .venv (cached layer — only rebuilds when manifests change)
 RUN uv sync --frozen --no-dev
