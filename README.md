@@ -77,17 +77,15 @@ just test-unit   # Unit tests only (no integration/slow)
 just test-lib    # Core library tests only
 ```
 
-See [CLAUDE.md](CLAUDE.md) for full development guide, architecture details, and contribution guidelines.
+See [AGENTS.md](AGENTS.md) for full development guide, architecture details, and contribution guidelines.
 
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [CLAUDE.md](CLAUDE.md) | Development guide, architecture, tooling |
+| [AGENTS.md](AGENTS.md) | Development guide, architecture, tooling |
 | [docs/api.md](docs/api.md) | REST API reference |
 | [docs/status.md](docs/status.md) | Current project state and known limitations |
-| [docs/hmm-improvements.md](docs/hmm-improvements.md) | True HMM implementation details |
-| [docs/critical-bug-fixes.md](docs/critical-bug-fixes.md) | Historical bug fixes and lessons learned |
 | [docs/archive/](docs/archive/) | Historical planning and review documents |
 
 ## License
