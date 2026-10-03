@@ -20,22 +20,27 @@ export TIINGO_API_KEY=your_key_here
 ### Start the Server
 
 ```bash
-# Development mode with auto-reload
+# Development mode: auto-reload, docs enabled, unauthenticated requests allowed
 uv run mra-api --dev
 
-# Production mode
+# Production (the default environment): a JWT secret of 32+ characters is required
+export JWT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
 uv run mra-api --host 0.0.0.0 --port 8000 --workers 4
-
-# Or directly with uvicorn
-uvicorn mra_web.app:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+Outside `ENVIRONMENT=development` the server refuses to start when `JWT_SECRET` is unset,
+empty, a placeholder, or shorter than 32 characters. In development a random per-process
+secret is generated (with a warning) instead.
 
 ### Access the API
 
-- **API Documentation**: <http://localhost:8000/docs> (Swagger UI)
-- **Alternative Docs**: <http://localhost:8000/redoc> (ReDoc)
-- **Health Check**: <http://localhost:8000/health>
-- **Metrics**: <http://localhost:8000/metrics>
+- **API Documentation**: <http://localhost:8000/docs> (Swagger UI; development or `ENABLE_DOCS=true`)
+- **Alternative Docs**: <http://localhost:8000/redoc> (ReDoc; same condition)
+- **Health Check**: <http://localhost:8000/health> (public)
+- **Metrics**: <http://localhost:8000/metrics> (authenticated)
+
+All `/api/v1/*` examples below omit credentials for brevity. Outside development, add
+`-H "Authorization: Bearer $TOKEN"` or `-H "X-API-Key: $KEY"` (see [Authentication](#-authentication)).
 
 ## 📚 API Endpoints
 
@@ -110,7 +115,7 @@ curl "http://localhost:8000/api/v1/providers"
 
 #### POST `/api/v1/charts/generate`
 
-Generate HMM visualization charts.
+Render the 5-panel HMM regime chart. Returns `image/png`.
 
 ```bash
 curl -X POST "http://localhost:8000/api/v1/charts/generate" \
@@ -120,12 +125,15 @@ curl -X POST "http://localhost:8000/api/v1/charts/generate" \
     "timeframe": "1D",
     "days": 60,
     "provider": "yfinance"
-  }'
+  }' -o spy_chart.png
 ```
 
 #### POST `/api/v1/export/csv`
 
-Export analysis data to CSV format.
+Export the analysis (one row per timeframe) as `text/csv`. The CSV is built in memory and
+returned in the response; nothing is written on the server. `filename` (optional, letters,
+digits, `.`, `_`, `-`) only sets the download name in `Content-Disposition`. The
+`X-Record-Count` header holds the number of rows.
 
 ```bash
 curl -X POST "http://localhost:8000/api/v1/export/csv" \
@@ -134,17 +142,30 @@ curl -X POST "http://localhost:8000/api/v1/export/csv" \
     "symbol": "SPY",
     "provider": "yfinance",
     "filename": "spy_analysis.csv"
-  }'
+  }' -o spy_analysis.csv
 ```
+
+Symbols must match `^[A-Z0-9^][A-Z0-9.\-^=]{0,14}$` after upper-casing (e.g. `BRK.B`,
+`^GSPC`, `ES=F`). Multi-symbol requests accept at most 20 symbols; duplicates are dropped.
 
 ## 🌐 WebSocket Monitoring
 
 Real-time regime monitoring via WebSocket connections.
 
+WebSocket connections must authenticate (except in development). The server checks, in
+order, an `X-API-Key` header, an `Authorization: Bearer` header, or a `token` query
+parameter (a JWT or API key) before accepting the handshake. Clients that cannot set headers
+can instead send `{"token": "<JWT or API key>"}` as the first message within 10 seconds.
+Invalid or missing credentials close the socket with code `1008`. Browser `Origin` headers
+must be listed in `CORS_ORIGINS`. Connections are capped (`WS_MAX_CONNECTIONS`, default 100;
+`WS_MAX_CONNECTIONS_PER_IP`, default 5); over the cap the handshake is refused (code `1013`).
+`api_key` in the query string is the **data provider** key, not an API credential.
+
 ### Connection
 
 ```javascript
 const ws = new WebSocket('ws://localhost:8000/ws/monitoring/SPY?provider=yfinance&interval=300');
+ws.onopen = () => ws.send(JSON.stringify({ token: TOKEN }));
 
 ws.onmessage = function(event) {
     const data = JSON.parse(event.data);
@@ -164,6 +185,7 @@ async def monitor_symbol():
     uri = "ws://localhost:8000/ws/monitoring/SPY?provider=yfinance&interval=60"
 
     async with websockets.connect(uri) as websocket:
+        await websocket.send(json.dumps({"token": TOKEN}))
         while True:
             message = await websocket.recv()
             data = json.loads(message)
@@ -181,59 +203,61 @@ asyncio.run(monitor_symbol())
 
 ## 🔐 Authentication
 
-The API supports two authentication methods:
+Every `/api/v1/*` route (except `/api/v1/health`), `/metrics`, `/ws/monitoring/status` and
+the WebSocket endpoint require credentials unless `ENVIRONMENT=development`. In
+development, requests **without** credentials are accepted as `dev_user`; credentials
+that are sent are still validated. Missing or invalid credentials return `401`.
+
+There is no token-issuing endpoint. Tokens are minted out of band with the server's secret.
 
 ### 1. JWT Bearer Tokens
 
-```bash
-# Get token
-curl -X POST "http://localhost:8000/auth/token?username=demo"
+Tokens are HS256-signed with `JWT_SECRET` and must carry `sub` and `exp` claims; other
+algorithms (including `none`) are rejected.
 
-# Use token
-curl -H "Authorization: Bearer YOUR_TOKEN" \
+```bash
+# Mint a token where JWT_SECRET is available (lifetime defaults to JWT_EXPIRATION_HOURS)
+TOKEN=$(JWT_SECRET=... uv run mra-token --sub alice --hours 12)
+
+curl -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8000/api/v1/analysis/detailed" \
   -H "Content-Type: application/json" \
   -d '{"symbol": "SPY", "timeframe": "1D", "provider": "yfinance"}'
 ```
 
-### 2. API Keys (Future Enhancement)
+### 2. API Keys
+
+Set `API_KEYS` to a comma-separated list of long random keys (16+ characters) and send
+one in the `X-API-Key` header. Keys are compared in constant time. Query-string keys are
+not accepted.
 
 ```bash
-curl -H "X-API-Key: your-api-key" \
-  "http://localhost:8000/api/v1/providers"
+export API_KEYS="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+curl -H "X-API-Key: $KEY" "http://localhost:8000/api/v1/providers"
 ```
 
 ## 🐍 Python Client
 
-Use the provided Python client for easy integration:
+`examples/api_client.py` contains a small client:
 
 ```python
-from examples_api import MarketRegimeAPIClient
+from examples.api_client import MarketRegimeAPIClient
 
-# Initialize client
-client = MarketRegimeAPIClient("http://localhost:8000")
+# JWT from `uv run mra-token --sub demo`, or service_key=<one of API_KEYS>
+client = MarketRegimeAPIClient("http://localhost:8000", token=TOKEN)
 
-# Authenticate (optional in development)
-client.authenticate("demo_user")
-
-# Run analysis
 analysis = client.detailed_analysis("SPY", "1D")
 print(f"Current regime: {analysis['current_regime']}")
 print(f"Confidence: {analysis['regime_confidence']:.3f}")
 
-# Portfolio analysis
 portfolio = client.multi_symbol_analysis(["SPY", "QQQ", "IWM"], "1D")
 print(f"Dominant regime: {portfolio['portfolio_metrics']['dominant_regime']}")
-
-# Position sizing
-sizing = client.position_sizing(0.02, "Bull Trending", 0.8, 0.75)
-print(f"Recommended size: {sizing['final_recommendation']:.1%}")
 ```
 
 ## 🏃 Running Examples
 
 ```bash
-# Run all API examples
+# Run all API examples (set MRA_TOKEN or MRA_API_KEY unless the server is in development)
 uv run examples/api_client.py
 
 # Test WebSocket monitoring
@@ -244,25 +268,20 @@ uv run examples/api_client.py websocket
 
 ### Environment Variables
 
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ENVIRONMENT` | `production` | `development` enables the unauthenticated dev user, docs and `/debug/config` |
+| `JWT_SECRET` | none | HS256 secret, 32+ characters; required outside development |
+| `JWT_EXPIRATION_HOURS` | `24` | Default lifetime of tokens minted by `mra-token` |
+| `API_KEYS` | empty | Comma-separated keys accepted in `X-API-Key` (16+ characters each) |
+| `CORS_ORIGINS` | empty | Comma-separated browser origins allowed for CORS and WebSockets |
+| `RATE_LIMIT_PER_MINUTE` | `60` | Per-client-IP limit for all HTTP routes except health probes |
+| `API_HOST` / `API_PORT` | `127.0.0.1` / `8000` | Bind address for `mra-api` |
+| `ENABLE_DOCS` | dev only | Serve `/docs`, `/redoc`, `/openapi.json` |
+| `WS_MAX_CONNECTIONS` / `WS_MAX_CONNECTIONS_PER_IP` | `100` / `5` | WebSocket caps |
+| `API_WORKERS`, `API_TIMEOUT`, `API_RELOAD`, `LOG_LEVEL`, `DEBUG` | | Server tuning |
+
 ```bash
-# Server configuration
-export API_HOST=0.0.0.0
-export API_PORT=8000
-export API_WORKERS=4
-export ENVIRONMENT=production
-export DEBUG=false
-
-# Authentication
-export JWT_SECRET=your-secret-key-change-in-production
-export JWT_EXPIRATION_HOURS=24
-
-# Rate limiting
-export RATE_LIMIT_PER_MINUTE=60
-export RATE_LIMIT_BURST=10
-
-# CORS
-export CORS_ORIGINS="http://localhost:3000,https://yourdomain.com"
-
 # Data providers
 export ALPHA_VANTAGE_API_KEY=your_key_here
 export POLYGON_API_KEY=your_key_here
@@ -271,6 +290,10 @@ export APCA_API_SECRET_KEY=your_secret
 export ALPACA_DATA_FEED=iex   # or sip
 export TIINGO_API_KEY=your_key_here
 ```
+
+Rate limits are kept in process memory, so each worker enforces its own window. Behind a
+reverse proxy, run uvicorn with `--proxy-headers` and trusted `--forwarded-allow-ips` so the
+limit applies per real client rather than per proxy.
 
 ### Data Providers
 
@@ -316,24 +339,21 @@ All API responses follow a consistent format:
 
 ```json
 {
-  "error_code": "PROVIDER_API_ERROR",
-  "message": "Failed to fetch data from Alpha Vantage",
-  "details": {
-    "provider": "alphavantage",
-    "symbol": "SPY",
-    "timeframe": "1D",
-    "retry_after": 60
-  },
-  "timestamp": "2024-01-15T10:30:00.000Z"
+  "error_code": "HTTP_503",
+  "message": "Data provider unavailable",
+  "timestamp": 1705314600.0
 }
 ```
+
+Error messages are generic on purpose: provider errors can embed request URLs that carry
+API keys, so exception text is only written to the server log (with `apikey=`, `token=`,
+bearer tokens and configured secrets redacted). Rate-limited requests return `429` with a
+`Retry-After` header.
 
 ## 🚀 Performance
 
 - **Async Support**: Non-blocking I/O for concurrent requests
-- **Rate Limiting**: Configurable per-endpoint rate limits
-- **Caching**: Response caching for frequently accessed data
-- **Parallel Processing**: Multi-timeframe analysis runs in parallel
+- **Rate Limiting**: Per-client limit on all HTTP routes (`RATE_LIMIT_PER_MINUTE`)
 - **WebSocket Streaming**: Real-time updates with minimal latency
 
 ## 🔧 Monitoring
@@ -351,8 +371,8 @@ curl http://localhost:8000/ready
 ### Metrics
 
 ```bash
-# Get API metrics
-curl http://localhost:8000/metrics
+# Get API metrics (authenticated)
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/metrics
 ```
 
 Returns:
@@ -393,10 +413,9 @@ docker run -p 127.0.0.1:8000:8000 -e JWT_SECRET="$(python -c 'import secrets; pr
 ### Environment Setup
 
 ```bash
-# Production configuration
-export ENVIRONMENT=production
-export DEBUG=false
-export JWT_SECRET=your-super-secure-secret-key
+# Production configuration (ENVIRONMENT defaults to production)
+export JWT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+export API_KEYS="<long-random-key>"
 export CORS_ORIGINS=https://yourdomain.com
 export RATE_LIMIT_PER_MINUTE=100
 ```
@@ -485,12 +504,12 @@ server {
 # Start in debug mode
 uv run mra-api --dev
 
-# Check debug configuration
+# Check debug configuration (development only, secrets omitted)
 curl http://localhost:8000/debug/config
 ```
 
 ## Support
 
-- Interactive docs at `/docs` (Swagger UI)
-- Error responses include detailed error information
+- Interactive docs at `/docs` (Swagger UI; development or `ENABLE_DOCS=true`)
+- Server logs carry error details; responses stay generic
 - Health check endpoints for system status

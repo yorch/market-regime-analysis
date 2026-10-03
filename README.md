@@ -74,7 +74,10 @@ See `uv run mra --help` for all CLI commands.
 
 ### REST API
 
-- FastAPI with JWT auth and WebSocket monitoring — see [docs/api.md](docs/api.md)
+- FastAPI with JWT / API-key auth and WebSocket monitoring — see [docs/api.md](docs/api.md)
+- Production is the default: set `JWT_SECRET` (32+ chars) before `uv run mra-api`, then mint
+  tokens with `uv run mra-token --sub <name>` or configure `API_KEYS` (sent as `X-API-Key`).
+  `uv run mra-api --dev` runs locally without credentials.
 
 ### Example Output
 

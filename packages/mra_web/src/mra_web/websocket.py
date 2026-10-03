@@ -1,20 +1,34 @@
 """
 WebSocket handlers for real-time monitoring in the Market Regime Analysis API.
 
-This module provides WebSocket endpoints for continuous regime monitoring
-and real-time updates.
+Connections must authenticate. Credentials are checked before the handshake is
+accepted, from (in order) the ``X-API-Key`` header, an ``Authorization: Bearer``
+header, or a ``token`` query parameter (JWT or API key). Browsers that cannot set
+headers and do not want the token in the URL may instead send
+``{"token": "<JWT or API key>"}`` as the first message within
+``AUTH_MESSAGE_TIMEOUT`` seconds. Browser ``Origin`` headers must be in
+``CORS_ORIGINS``, and concurrent connections are capped in total and per client IP.
 """
 
 import asyncio
+import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import Depends, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.routing import APIRouter
 
 from mra_lib import MarketRegimeAnalyzer
 
-from .models import MonitoringMessage, MonitoringUpdate
+from .auth import (
+    User,
+    authenticate_credentials,
+    authenticate_request,
+    get_api_key_user,
+    get_app_config,
+)
+from .config import APIConfig
+from .models import MonitoringMessage, MonitoringUpdate, normalize_symbol
 from .utils import validate_api_key
 
 # Setup logging
@@ -23,34 +37,65 @@ logger = logging.getLogger(__name__)
 # WebSocket router
 ws_router = APIRouter()
 
+# Close codes (RFC 6455 / IANA registry)
+WS_POLICY_VIOLATION = status.WS_1008_POLICY_VIOLATION
+WS_TRY_AGAIN_LATER = status.WS_1013_TRY_AGAIN_LATER
+WS_INTERNAL_ERROR = status.WS_1011_INTERNAL_ERROR
+
+AUTH_MESSAGE_TIMEOUT = 10.0
+
+
+def _client_ip(websocket: WebSocket) -> str:
+    return websocket.client.host if websocket.client else "unknown"
+
 
 # Active connections manager
 class ConnectionManager:
-    """Manages WebSocket connections for real-time monitoring."""
+    """Manages WebSocket connections and enforces connection caps."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.active_connections: dict[str, set[WebSocket]] = {}
         self.connection_data: dict[WebSocket, dict] = {}
+        self.connections_per_ip: dict[str, int] = {}
+        self.reserved = 0
 
-    async def connect(self, websocket: WebSocket, symbol: str, connection_data: dict):
-        """Accept a new WebSocket connection."""
-        await websocket.accept()
+    def try_reserve(self, client_ip: str, max_total: int, max_per_ip: int) -> bool:
+        """Reserve a connection slot; False if a cap is reached.
 
-        if symbol not in self.active_connections:
-            self.active_connections[symbol] = set()
+        Runs without awaiting, so check-and-increment is atomic on the event loop.
+        """
+        if self.reserved >= max_total:
+            return False
+        if self.connections_per_ip.get(client_ip, 0) >= max_per_ip:
+            return False
+        self.reserved += 1
+        self.connections_per_ip[client_ip] = self.connections_per_ip.get(client_ip, 0) + 1
+        return True
 
-        self.active_connections[symbol].add(websocket)
+    def release(self, client_ip: str) -> None:
+        """Release a slot taken by :meth:`try_reserve`."""
+        self.reserved = max(0, self.reserved - 1)
+        remaining = self.connections_per_ip.get(client_ip, 0) - 1
+        if remaining > 0:
+            self.connections_per_ip[client_ip] = remaining
+        else:
+            self.connections_per_ip.pop(client_ip, None)
+
+    def register(self, websocket: WebSocket, symbol: str, connection_data: dict) -> None:
+        """Track an accepted connection for a symbol."""
+        self.active_connections.setdefault(symbol, set()).add(websocket)
         self.connection_data[websocket] = {
             "symbol": symbol,
-            "connected_at": datetime.utcnow(),
+            "connected_at": datetime.now(UTC),
             **connection_data,
         }
-
         logger.info(
-            f"New WebSocket connection for {symbol}: {len(self.active_connections[symbol])} total"
+            "New WebSocket connection for %s: %d total",
+            symbol,
+            len(self.active_connections[symbol]),
         )
 
-    def disconnect(self, websocket: WebSocket):
+    def disconnect(self, websocket: WebSocket) -> None:
         """Remove a WebSocket connection."""
         if websocket not in self.connection_data:
             return
@@ -63,17 +108,17 @@ class ConnectionManager:
                 del self.active_connections[symbol]
 
         del self.connection_data[websocket]
-        logger.info(f"WebSocket disconnected for {symbol}")
+        logger.info("WebSocket disconnected for %s", symbol)
 
-    async def send_personal_message(self, message: str, websocket: WebSocket):
+    async def send_personal_message(self, message: str, websocket: WebSocket) -> None:
         """Send a message to a specific WebSocket connection."""
         try:
             await websocket.send_text(message)
-        except Exception as e:
-            logger.error(f"Failed to send message to WebSocket: {e}")
+        except Exception:
+            logger.info("Failed to send message to WebSocket", exc_info=True)
             self.disconnect(websocket)
 
-    async def broadcast_to_symbol(self, symbol: str, message: str):
+    async def broadcast_to_symbol(self, symbol: str, message: str) -> None:
         """Broadcast a message to all connections monitoring a specific symbol."""
         if symbol not in self.active_connections:
             return
@@ -83,8 +128,8 @@ class ConnectionManager:
         for websocket in self.active_connections[symbol].copy():
             try:
                 await websocket.send_text(message)
-            except Exception as e:
-                logger.error(f"Failed to broadcast to WebSocket: {e}")
+            except Exception:
+                logger.info("Failed to broadcast to WebSocket", exc_info=True)
                 disconnected.add(websocket)
 
         # Clean up disconnected connections
@@ -106,44 +151,152 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+def origin_allowed(origin: str | None, cfg: APIConfig) -> bool:
+    """Return True if a browser Origin may open a WebSocket.
+
+    Non-browser clients send no Origin and are allowed (they still need credentials).
+    """
+    if origin is None:
+        return True
+    return "*" in cfg.cors_origins or origin in cfg.cors_origins
+
+
+def handshake_credentials(websocket: WebSocket) -> tuple[str | None, str | None]:
+    """Extract (bearer_token, api_key) from handshake headers or the ``token`` param."""
+    api_key = websocket.headers.get("x-api-key") or None
+    bearer = None
+    authorization = websocket.headers.get("authorization", "")
+    scheme, _, value = authorization.partition(" ")
+    if scheme.lower() == "bearer" and value.strip():
+        bearer = value.strip()
+    if not api_key and not bearer:
+        bearer = websocket.query_params.get("token") or None
+    return bearer, api_key
+
+
+def authenticate_token(cfg: APIConfig, token: str) -> User:
+    """Authenticate a single opaque token that may be an API key or a JWT."""
+    username = get_api_key_user(token, cfg)  # constant-time comparison
+    if username is not None:
+        return User(username=username, is_active=True)
+    return authenticate_credentials(cfg, bearer_token=token)
+
+
+def _authenticate_handshake(websocket: WebSocket, cfg: APIConfig) -> User | None:
+    """Authenticate from handshake credentials.
+
+    Returns None when no credentials were presented outside development (the
+    client may still authenticate with a first message).
+
+    Raises:
+        HTTPException: If presented credentials are invalid.
+    """
+    bearer, api_key = handshake_credentials(websocket)
+    if api_key:
+        return authenticate_credentials(cfg, api_key=api_key)
+    if bearer:
+        return authenticate_token(cfg, bearer)
+    if cfg.is_development:
+        return authenticate_credentials(cfg)
+    return None
+
+
+async def _authenticate_first_message(websocket: WebSocket, cfg: APIConfig) -> User | None:
+    """Wait for ``{"token": ...}`` as the first message; None if invalid or late."""
+    try:
+        raw = await asyncio.wait_for(websocket.receive_text(), timeout=AUTH_MESSAGE_TIMEOUT)
+        payload = json.loads(raw)
+        token = payload.get("token") if isinstance(payload, dict) else None
+        if not isinstance(token, str) or not token:
+            return None
+        return authenticate_token(cfg, token)
+    except (TimeoutError, ValueError, HTTPException):
+        return None
+
+
+class _Rejected(Exception):
+    """Pre-accept validation failure; the handshake is refused with ``code``."""
+
+    def __init__(self, code: int = WS_POLICY_VIOLATION) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+def _check_handshake(
+    websocket: WebSocket, symbol: str, cfg: APIConfig
+) -> tuple[User | None, str, str, str | None, int]:
+    """Validate origin, credentials and parameters before accepting.
+
+    Returns:
+        (user or None if first-message auth is needed, symbol, provider,
+        provider API key, interval)
+
+    Raises:
+        _Rejected: If the handshake must be refused.
+    """
+    # Origin check (cross-site WebSocket hijacking protection)
+    if not origin_allowed(websocket.headers.get("origin"), cfg):
+        logger.warning("Rejected WebSocket from disallowed origin")
+        raise _Rejected()
+
+    try:
+        user = _authenticate_handshake(websocket, cfg)
+        symbol = normalize_symbol(symbol)
+        interval = int(websocket.query_params.get("interval", "300"))  # Default 5 minutes
+    except (HTTPException, ValueError) as e:
+        raise _Rejected() from e
+    if interval < 60 or interval > 3600:
+        raise _Rejected()
+
+    provider = websocket.query_params.get("provider", "alphavantage")
+    provider_api_key = websocket.query_params.get("api_key")
+    return user, symbol, provider, provider_api_key, interval
+
+
 @ws_router.websocket("/monitoring/{symbol}")
-async def websocket_monitoring_endpoint(websocket: WebSocket, symbol: str):
+async def websocket_monitoring_endpoint(websocket: WebSocket, symbol: str) -> None:
     """
     WebSocket endpoint for real-time regime monitoring.
 
-    Args:
-        websocket: WebSocket connection
-        symbol: Trading symbol to monitor
+    Query parameters: ``provider``, ``api_key`` (data provider key), ``interval``
+    (seconds, 60-3600) and optionally ``token`` (API credential).
     """
-    # Get query parameters
-    query_params = dict(websocket.query_params)
-    provider = query_params.get("provider", "alphavantage")
-    api_key = query_params.get("api_key")
-    interval = int(query_params.get("interval", "300"))  # Default 5 minutes
-
-    # Validate parameters
-    if not symbol or not symbol.strip():
-        await websocket.close(code=1008, reason="Symbol is required")
+    cfg = get_app_config(websocket)
+    try:
+        user, symbol, provider, provider_api_key, interval = _check_handshake(
+            websocket, symbol, cfg
+        )
+    except _Rejected as rejected:
+        await websocket.close(code=rejected.code)
         return
 
-    symbol = symbol.strip().upper()
-
-    # Validate interval
-    if interval < 60 or interval > 3600:
-        await websocket.close(code=1008, reason="Interval must be between 60 and 3600 seconds")
+    # Connection caps
+    client_ip = _client_ip(websocket)
+    if not manager.try_reserve(client_ip, cfg.ws_max_connections, cfg.ws_max_connections_per_ip):
+        logger.warning("Rejected WebSocket: connection limit reached")
+        await websocket.close(code=WS_TRY_AGAIN_LATER)
         return
 
     try:
-        # Validate API key
-        validated_api_key = validate_api_key(provider, api_key)
+        await websocket.accept()
 
-        # Accept connection
-        connection_data = {
-            "provider": provider,
-            "api_key": validated_api_key[:10] + "..." if validated_api_key else None,
-            "interval": interval,
-        }
-        await manager.connect(websocket, symbol, connection_data)
+        if user is None:
+            user = await _authenticate_first_message(websocket, cfg)
+            if user is None:
+                await websocket.close(code=WS_POLICY_VIOLATION, reason="Authentication required")
+                return
+
+        try:
+            validated_api_key = validate_api_key(provider, provider_api_key)
+        except HTTPException:
+            await websocket.close(code=WS_POLICY_VIOLATION, reason="Provider API key required")
+            return
+
+        manager.register(
+            websocket,
+            symbol,
+            {"provider": provider, "interval": interval, "user": user.username},
+        )
 
         # Send initial connection confirmation
         welcome_message = MonitoringMessage(
@@ -156,23 +309,27 @@ async def websocket_monitoring_endpoint(websocket: WebSocket, symbol: str):
                 "message": f"Started monitoring {symbol} with {interval}s intervals",
             },
         )
-        await manager.send_personal_message(welcome_message.json(), websocket)
+        await manager.send_personal_message(welcome_message.model_dump_json(), websocket)
 
         # Start monitoring loop
         await monitoring_loop(websocket, symbol, provider, validated_api_key, interval)
 
-    except ValueError as e:
-        await websocket.close(code=1008, reason=f"Invalid input: {e!s}")
-    except Exception as e:
-        logger.error(f"WebSocket connection error: {e}")
-        await websocket.close(code=1011, reason="Internal server error")
+    except WebSocketDisconnect:
+        logger.info("Client disconnected from %s monitoring", symbol)
+    except Exception:
+        logger.exception("WebSocket connection error")
+        try:
+            await websocket.close(code=WS_INTERNAL_ERROR, reason="Internal server error")
+        except Exception:
+            logger.debug("WebSocket already closed", exc_info=True)
     finally:
         manager.disconnect(websocket)
+        manager.release(client_ip)
 
 
-async def monitoring_loop(  # noqa: PLR0915
+async def monitoring_loop(  # noqa: PLR0912, PLR0915
     websocket: WebSocket, symbol: str, provider: str, api_key: str, interval: int
-):
+) -> None:
     """
     Main monitoring loop for WebSocket connections.
 
@@ -221,10 +378,10 @@ async def monitoring_loop(  # noqa: PLR0915
 
                 # Send update message
                 message = MonitoringMessage(
-                    message_type="update", symbol=symbol, data=update.dict()
+                    message_type="update", symbol=symbol, data=update.model_dump(mode="json")
                 )
 
-                await manager.send_personal_message(message.json(), websocket)
+                await manager.send_personal_message(message.model_dump_json(), websocket)
 
                 # Send alert if regime changed
                 if regime_changed:
@@ -239,7 +396,7 @@ async def monitoring_loop(  # noqa: PLR0915
                             "message": f"Regime changed from {previous_regime} to {current_regime}",
                         },
                     )
-                    await manager.send_personal_message(alert_message.json(), websocket)
+                    await manager.send_personal_message(alert_message.model_dump_json(), websocket)
 
                 # Update previous regime
                 previous_regime = current_regime
@@ -248,29 +405,37 @@ async def monitoring_loop(  # noqa: PLR0915
                 error_count = 0
 
             except WebSocketDisconnect:
-                logger.info(f"WebSocket disconnected for {symbol}")
+                logger.info("WebSocket disconnected for %s", symbol)
                 break
 
-            except Exception as e:
+            except Exception:
                 error_count += 1
-                logger.error(f"Monitoring error for {symbol}: {e}")
+                logger.exception("Monitoring error for %s", symbol)
 
-                # Send error message
+                # Send a generic error message (never exception text: it can carry keys)
                 error_message = MonitoringMessage(
                     message_type="error",
                     symbol=symbol,
-                    data={"error": str(e), "error_count": error_count, "max_errors": max_errors},
+                    data={
+                        "error": "Analysis failed",
+                        "error_count": error_count,
+                        "max_errors": max_errors,
+                    },
                 )
 
                 try:
-                    await manager.send_personal_message(error_message.json(), websocket)
+                    await manager.send_personal_message(error_message.model_dump_json(), websocket)
                 except Exception:
                     break
 
                 # Stop monitoring if too many errors
                 if error_count >= max_errors:
-                    logger.error(f"Too many errors for {symbol} monitoring, stopping")
+                    logger.error("Too many errors for %s monitoring, stopping", symbol)
                     break
+
+            # Stop if the client went away (send failure unregisters the socket)
+            if websocket not in manager.connection_data:
+                break
 
             # Wait for next interval
             try:
@@ -279,16 +444,18 @@ async def monitoring_loop(  # noqa: PLR0915
                 break
 
     except WebSocketDisconnect:
-        logger.info(f"Client disconnected from {symbol} monitoring")
-    except Exception as e:
-        logger.error(f"Monitoring loop error for {symbol}: {e}")
+        logger.info("Client disconnected from %s monitoring", symbol)
+    except Exception:
+        logger.exception("Monitoring loop error for %s", symbol)
     finally:
         manager.disconnect(websocket)
 
 
 @ws_router.get("/monitoring/status")
-async def monitoring_status():
-    """Get status of all active monitoring connections."""
+async def monitoring_status(
+    current_user: User = Depends(authenticate_request),  # noqa: B008
+) -> dict:
+    """Get status of all active monitoring connections (authenticated)."""
     return {
         "active_connections": manager.get_connection_count(),
         "monitored_symbols": manager.get_active_symbols(),
@@ -296,18 +463,3 @@ async def monitoring_status():
             symbol: manager.get_connection_count(symbol) for symbol in manager.get_active_symbols()
         },
     }
-
-
-# WebSocket testing endpoint
-@ws_router.websocket("/test")
-async def websocket_test_endpoint(websocket: WebSocket):
-    """Simple WebSocket test endpoint."""
-    await websocket.accept()
-
-    try:
-        while True:
-            data = await websocket.receive_text()
-            message = f"Echo: {data} at {datetime.utcnow().isoformat()}"
-            await websocket.send_text(message)
-    except WebSocketDisconnect:
-        logger.info("Test WebSocket disconnected")

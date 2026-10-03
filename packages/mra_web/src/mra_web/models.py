@@ -4,12 +4,37 @@ Pydantic request/response models for the Market Regime Analysis API.
 This module defines all request and response models following the plan specifications.
 """
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
 from mra_lib.config.enums import MarketRegime
+
+# Ticker symbols: letters, digits and . - ^ = (e.g. BRK.B, ^GSPC, ES=F), max 15 chars.
+# The first character may not be '.', '-' or '=' (avoids CSV formula injection too).
+SYMBOL_PATTERN = re.compile(r"^[A-Z0-9^][A-Z0-9.\-^=]{0,14}$")
+MAX_SYMBOLS = 20
+
+# Optional download filename for CSV export (never used as a server path).
+EXPORT_FILENAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+
+
+def normalize_symbol(value: str) -> str:
+    """Strip, upper-case and validate a ticker symbol.
+
+    Raises:
+        ValueError: If the symbol is empty or has an invalid format.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Symbol cannot be empty")
+    symbol = value.strip().upper()
+    if not SYMBOL_PATTERN.fullmatch(symbol):
+        raise ValueError(
+            "Invalid symbol: use 1-15 characters (letters, digits, '.', '-', '^', '=')"
+        )
+    return symbol
 
 
 # Base models
@@ -51,9 +76,7 @@ class DetailedAnalysisRequest(BaseRequest):
     @classmethod
     def validate_symbol(cls, v: str) -> str:
         """Validate trading symbol format."""
-        if not v or not v.strip():
-            raise ValueError("Symbol cannot be empty")
-        return v.strip().upper()
+        return normalize_symbol(v)
 
     @field_validator("timeframe")
     @classmethod
@@ -74,24 +97,33 @@ class CurrentAnalysisRequest(BaseRequest):
     @classmethod
     def validate_symbol(cls, v: str) -> str:
         """Validate trading symbol format."""
-        if not v or not v.strip():
-            raise ValueError("Symbol cannot be empty")
-        return v.strip().upper()
+        return normalize_symbol(v)
 
 
 class MultiSymbolAnalysisRequest(BaseRequest):
     """Request model for multi-symbol analysis endpoint."""
 
-    symbols: list[str] = Field(description="List of trading symbols")
+    symbols: list[str] = Field(
+        description=f"List of trading symbols (max {MAX_SYMBOLS})", max_length=MAX_SYMBOLS * 5
+    )
     timeframe: str = Field(description="Timeframe for analysis")
 
     @field_validator("symbols")
     @classmethod
     def validate_symbols(cls, v: list[str]) -> list[str]:
-        """Validate symbols list."""
-        if not v or len(v) == 0:
+        """Validate, normalize and de-duplicate the symbols list."""
+        symbols: list[str] = []
+        for raw in v:
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            symbol = normalize_symbol(raw)
+            if symbol not in symbols:
+                symbols.append(symbol)
+        if not symbols:
             raise ValueError("At least one symbol must be provided")
-        return [symbol.strip().upper() for symbol in v if symbol.strip()]
+        if len(symbols) > MAX_SYMBOLS:
+            raise ValueError(f"At most {MAX_SYMBOLS} symbols may be analyzed per request")
+        return symbols
 
     @field_validator("timeframe")
     @classmethod
@@ -114,9 +146,7 @@ class GenerateChartsRequest(BaseRequest):
     @classmethod
     def validate_symbol(cls, v: str) -> str:
         """Validate trading symbol format."""
-        if not v or not v.strip():
-            raise ValueError("Symbol cannot be empty")
-        return v.strip().upper()
+        return normalize_symbol(v)
 
     @field_validator("timeframe")
     @classmethod
@@ -142,15 +172,30 @@ class ExportCSVRequest(BaseRequest):
     """Request model for CSV export endpoint."""
 
     symbol: str = Field(description="Trading symbol (e.g., SPY, QQQ)")
-    filename: str | None = Field(default=None, description="Optional filename for export")
+    filename: str | None = Field(
+        default=None,
+        description="Optional download filename (Content-Disposition only; nothing is "
+        "written on the server)",
+    )
+
+    @field_validator("filename")
+    @classmethod
+    def validate_filename(cls, v: str | None) -> str | None:
+        """Allow only a plain, safe file name."""
+        if v is None or not v.strip():
+            return None
+        name = v.strip()
+        if not EXPORT_FILENAME_PATTERN.fullmatch(name):
+            raise ValueError(
+                "Filename may contain only letters, digits, '.', '_' and '-' (max 100 chars)"
+            )
+        return name if name.lower().endswith(".csv") else f"{name}.csv"
 
     @field_validator("symbol")
     @classmethod
     def validate_symbol(cls, v: str) -> str:
         """Validate trading symbol format."""
-        if not v or not v.strip():
-            raise ValueError("Symbol cannot be empty")
-        return v.strip().upper()
+        return normalize_symbol(v)
 
 
 class PositionSizingRequest(BaseModel):
