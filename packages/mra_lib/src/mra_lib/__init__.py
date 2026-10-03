@@ -6,6 +6,8 @@ for market regime detection and quantitative trading analysis.
 Zero UI/framework dependencies — designed for embedding in CLIs, web apps, bots, etc.
 """
 
+from importlib.metadata import PackageNotFoundError, version as _dist_version
+
 from .analyzer import MarketRegimeAnalyzer
 from .config.data_classes import RegimeAnalysis
 from .config.enums import MarketRegime, TradingStrategy
@@ -14,7 +16,11 @@ from .indicators.true_hmm_detector import TrueHMMDetector
 from .portfolio.portfolio import PortfolioHMMAnalyzer
 from .risk.risk_calculator import PortfolioPositionLimits, PositionRecord, SimonsRiskCalculator
 
-__version__ = "1.0.0"
+try:
+    __version__ = _dist_version("mra-lib")
+except PackageNotFoundError:  # pragma: no cover - not installed (e.g. bare source checkout)
+    __version__ = "0.0.0+unknown"
+
 __all__ = [
     "HiddenMarkovRegimeDetector",
     "MarketRegime",

@@ -27,6 +27,7 @@ from mra_lib.data_providers import (
     RateLimitError,
 )
 
+from . import __version__
 from .auth import User, authenticate_request
 from .models import (
     AnalysisResponse,
@@ -503,7 +504,7 @@ async def export_csv(
 # (``/health``, ``/metrics``; registered by ``create_app``) and under ``/api/v1``.
 async def health_check() -> dict[str, Any]:
     """Basic health check endpoint."""
-    return {"status": "healthy", "timestamp": time.time(), "version": "1.0.0"}
+    return {"status": "healthy", "timestamp": time.time(), "version": __version__}
 
 
 async def get_metrics(

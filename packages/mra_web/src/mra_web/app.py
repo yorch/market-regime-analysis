@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from mra_web import __version__
 from mra_web.config import APIConfig, config
 from mra_web.endpoints import get_metrics, health_check, router as api_router
 from mra_web.errors import install_error_handlers
@@ -74,7 +75,7 @@ def create_app(cfg: APIConfig | None = None) -> FastAPI:
     app = FastAPI(
         title="Market Regime Analysis API",
         description=API_DESCRIPTION,
-        version="1.0.0",
+        version=__version__,
         docs_url="/docs" if docs else None,
         redoc_url="/redoc" if docs else None,
         openapi_url="/openapi.json" if docs else None,
@@ -121,7 +122,7 @@ def create_app(cfg: APIConfig | None = None) -> FastAPI:
         """Root endpoint with API information."""
         return {
             "name": "Market Regime Analysis API",
-            "version": "1.0.0",
+            "version": __version__,
             "description": "Market regime analysis using HMM methodology",
             "documentation": "/docs" if docs else None,
             "health_check": "/health",
