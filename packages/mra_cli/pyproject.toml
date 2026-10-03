@@ -8,12 +8,17 @@ dependencies = [
     "click>=8.5.0",
 ]
 
+[project.optional-dependencies]
+# `mra start-api` serves the web API; install with `mra-cli[api]`
+api = ["mra-web"]
+
 [project.scripts]
 mra = "mra_cli.main:cli"
 mra-optimize = "mra_cli.optimization:main"
 
 [tool.uv.sources]
 mra-lib = { workspace = true }
+mra-web = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
