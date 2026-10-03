@@ -29,8 +29,11 @@ just install
 # CLI — get help
 uv run mra --help
 
-# CLI — current regime analysis
-uv run mra current-analysis --symbol SPY --provider yfinance
+# CLI — current regime analysis (yfinance is the default provider)
+uv run mra current-analysis --symbol SPY
+
+# CLI — offline, deterministic synthetic data (no network, no keys)
+uv run mra current-analysis --symbol SPY --provider mock
 
 # API server
 uv run mra-api
@@ -50,16 +53,28 @@ The CLI uses Click with these key commands:
 ```bash
 uv run mra current-analysis --symbol SPY --provider alphavantage
 uv run mra detailed-analysis --symbol SPY --timeframe 1D --provider alphavantage
-uv run mra generate-charts --symbol SPY --timeframe 1D --days 60
+uv run mra generate-charts --symbol SPY --timeframe 1D --days 60 --output spy.png
 uv run mra multi-symbol-analysis --symbols "SPY,QQQ,IWM" --timeframe 1D
 uv run mra position-sizing --base-size 0.02 --regime "Bull Trending" --confidence 0.8
 uv run mra export-csv --symbol SPY --filename analysis.csv
-uv run mra continuous-monitoring --symbol SPY --interval 300
+uv run mra continuous-monitoring --symbol SPY --interval 300 --max-iterations 12
 uv run mra regime-forecast --symbol SPY --steps 10 --timeframe 1D
 uv run mra calibrate-multipliers --symbol SPY --method sharpe_weighted
 uv run mra list-providers
 uv run mra start-api --dev
 ```
+
+CLI conventions (`mra_cli/main.py`):
+- `--provider` / `--api-key` are accepted on the group and on every data subcommand (shared
+  `provider_options` decorator; subcommand wins). Choices come from the provider registry.
+  Resolution: subcommand > group > `$DEFAULT_PROVIDER` > `yfinance`.
+- API keys are resolved lazily (`resolve_provider`) only in commands that fetch data.
+- Errors go through `handle_exceptions` → exit code 1 (`--debug` re-raises with traceback).
+  Commands verify library side effects (chart figure produced, CSV written) because some lib
+  methods swallow errors.
+- Timeframes and default periods come from `mra_lib.config.timeframes`
+  (`TIMEFRAMES`, `DEFAULT_PERIODS`, `TIMEFRAME_INTERVALS`, `BARS_PER_DAY`) — don't redefine them.
+- CLI tests use `CliRunner` with `--provider mock` (`packages/mra_cli/tests/test_cli_commands.py`).
 
 ### Code Quality
 
@@ -138,14 +153,15 @@ market-regime-analysis/
 │   │   │   ├── config/             # Enums, data classes, settings
 │   │   │   │   ├── enums.py        # MarketRegime, TradingStrategy
 │   │   │   │   ├── data_classes.py # RegimeAnalysis dataclass
-│   │   │   │   └── regime_tables.py # Canonical regime multipliers, regime→strategy map, bars/year
+│   │   │   │   ├── regime_tables.py # Canonical regime multipliers, regime→strategy map, bars/year
+│   │   │   │   └── timeframes.py   # TIMEFRAMES, DEFAULT_PERIODS, intervals, bars/day
 │   │   │   ├── types/              # Protocol definitions
 │   │   │   │   └── protocols.py    # DashboardProtocol, DataStoreProtocol, etc.
 │   │   │   ├── indicators/         # HMM-based detectors
 │   │   │   │   ├── hmm_detector.py       # GMM-based HMM
 │   │   │   │   └── true_hmm_detector.py  # hmmlearn-based HMM
 │   │   │   ├── data_providers/     # Plug-and-play provider architecture
-│   │   │   │   ├── base.py         # MarketDataProvider ABC + registry + period_to_start
+│   │   │   │   ├── base.py         # MarketDataProvider ABC, registry, DataFrame contract, errors, rate limiter
 │   │   │   │   ├── credentials.py  # Provider env-var lookup (shared by CLI + web)
 │   │   │   │   ├── _http.py        # Retrying JSON GET for REST providers
 │   │   │   │   ├── alpaca_provider.py
@@ -153,7 +169,7 @@ market-regime-analysis/
 │   │   │   │   ├── alphavantage_provider.py
 │   │   │   │   ├── polygon_provider.py
 │   │   │   │   ├── yfinance_provider.py
-│   │   │   │   └── mock_provider.py
+│   │   │   │   └── mock_provider.py  # Registered as "mock" (offline, deterministic per symbol)
 │   │   │   ├── backtesting/        # Strategy optimization framework
 │   │   │   │   ├── engine.py       # BacktestEngine
 │   │   │   │   ├── strategy.py     # RegimeStrategy
@@ -286,10 +302,14 @@ from .strategy import RegimeStrategy  # inside backtesting/
 3. Implement protocols from `mra_lib.types.protocols`
 
 ### Adding New Data Providers
-1. Implement the `MarketDataProvider` base class in `mra_lib/data_providers/`. REST providers should use `_http.get_json` (retries/backoff, header auth) and `base.period_to_start`
-2. Register in the package `__init__.py`
-3. If it needs credentials, add its env vars to `credentials.py` (`PROVIDER_ENV_VARS`, or `PROVIDER_ENV_PAIRS` for key ID + secret)
-4. Add the name to the CLI `--provider` choice (`mra_cli/main.py`) and `allowed_providers` (`mra_web/models.py`)
+See `examples/custom_provider.py` for a runnable template.
+1. Implement the `MarketDataProvider` base class in `mra_lib/data_providers/`. REST providers should use `_http.get_json` (retries/backoff, timeouts, header auth, `throttle=self.throttle`) and `base.period_to_start`; client-library providers call `self.throttle()` before each request and pass `config.timeout`/`config.retries` to the client
+2. Return `self.standardize_dataframe(df, interval)` — it enforces the contract documented in `base.py`: float64 OHLCV, sorted/de-duplicated tz-naive index, intraday bars in UTC, daily bars labeled by session date, optional `drop_incomplete_bar`
+3. Raise `InvalidSymbolError` (a `ValueError`) for unknown symbols / empty results, `AuthError` / `RateLimitError` (both `ConnectionError`) for credential and quota problems, plain `ConnectionError` for network failures. Don't wrap `ValueError`s as `ConnectionError`
+4. Set `rate_limit_per_minute` (and optionally `rate_limit_burst`) to drive the client-side token bucket
+5. Register in the package `__init__.py` — the CLI `--provider` choices are derived from the registry
+6. If it needs credentials, add its env vars to `credentials.py` (`PROVIDER_ENV_VARS`, or `PROVIDER_ENV_PAIRS` for key ID + secret)
+7. Add the name to `allowed_providers` (`mra_web/models.py`)
 
 ### Modifying the Backtester
 1. **Adding strategy parameters**: Add to `RegimeStrategy.__init__()`, expose in `from_param_vector()`

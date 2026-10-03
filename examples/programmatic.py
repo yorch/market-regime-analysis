@@ -4,13 +4,19 @@ Curated programmatic usage examples for Market Regime Analysis.
 
 This consolidates and de-duplicates the previous examples.py and
 examples_programmatic_usage.py into a single, focused script.
+
+Run with ``uv run examples/programmatic.py`` (or ``DEFAULT_PROVIDER=mock uv run
+examples/programmatic.py`` to use offline synthetic data).
 """
 
 from __future__ import annotations
 
 import os
 
-from examples.common import Banner
+try:  # `python -m examples.programmatic` / imported as a package
+    from examples.common import Banner
+except ImportError:  # `uv run examples/programmatic.py` puts examples/ on sys.path
+    from common import Banner  # type: ignore[no-redef]
 from mra_lib import (
     MarketRegime,
     MarketRegimeAnalyzer,
@@ -21,6 +27,9 @@ from mra_lib.data_providers import list_available_providers
 
 banner = Banner()
 
+# Set DEFAULT_PROVIDER=mock to run the examples offline
+PROVIDER = os.getenv("DEFAULT_PROVIDER", "yfinance")
+
 
 def single_asset_analysis() -> None:
     banner.title("Example 1: Single Asset Regime Analysis")
@@ -28,7 +37,7 @@ def single_asset_analysis() -> None:
     analyzer = MarketRegimeAnalyzer(
         symbol="SPY",
         periods={"1D": "1y", "1H": "3mo"},
-        provider_flag="yfinance",
+        provider_flag=PROVIDER,
     )
 
     for timeframe in analyzer.periods:
@@ -47,9 +56,7 @@ def portfolio_analysis() -> None:
     banner.title("Example 2: Portfolio Regime Analysis")
 
     symbols = ["SPY", "QQQ", "IWM"]
-    portfolio = PortfolioHMMAnalyzer(
-        symbols=symbols, periods={"1D": "6mo"}, provider_flag="yfinance"
-    )
+    portfolio = PortfolioHMMAnalyzer(symbols=symbols, periods={"1D": "6mo"}, provider_flag=PROVIDER)
 
     for symbol in symbols:
         analyzer = portfolio.analyzers.get(symbol)
@@ -113,7 +120,7 @@ def provider_overview() -> None:
 def integration_patterns() -> None:
     banner.title("Example 5: Integration Patterns")
 
-    analyzer = MarketRegimeAnalyzer(symbol="SPY", periods={"1D": "6mo"})
+    analyzer = MarketRegimeAnalyzer(symbol="SPY", periods={"1D": "6mo"}, provider_flag=PROVIDER)
     analysis = analyzer.analyze_current_regime("1D")
 
     mapping = {
