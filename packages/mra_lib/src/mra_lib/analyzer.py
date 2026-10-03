@@ -558,95 +558,151 @@ class MarketRegimeAnalyzer:
         except Exception as e:
             print(f"Error generating report: {e!s}")
 
+    def _draw_regime_chart(self, fig, timeframe: str, days: int) -> bool:
+        """
+        Draw the 5-panel regime chart onto a Matplotlib figure.
+
+        Uses only the object-oriented API, so it is safe to call from worker threads.
+
+        Args:
+            fig: Matplotlib Figure to draw on
+            timeframe: Timeframe to plot
+            days: Number of bars to show
+
+        Returns:
+            False if there is not enough data to plot, True otherwise
+        """
+        import matplotlib.dates as mdates
+
+        if timeframe not in self.data or timeframe not in self.indicators:
+            raise ValueError(f"No data loaded for timeframe {timeframe}")
+
+        df = self.data[timeframe].tail(days)
+        indicators = self.indicators[timeframe].tail(days)
+
+        if len(df) < 10:
+            return False
+
+        axes = fig.subplots(5, 1)
+        fig.suptitle(f"{self.symbol} HMM Regime Analysis ({timeframe})", fontsize=16)
+
+        # Panel 1: Price with regime background
+        ax1 = axes[0]
+        ax1.plot(df.index, df["Close"], label="Close Price", linewidth=2)
+
+        if "ema_9" in indicators.columns:
+            ax1.plot(df.index, indicators["ema_9"], label="EMA 9", alpha=0.7)
+        if "ema_34" in indicators.columns:
+            ax1.plot(df.index, indicators["ema_34"], label="EMA 34", alpha=0.7)
+
+        ax1.set_title("Price with Regime Background")
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+
+        # Panel 2: Statistical arbitrage signals
+        ax2 = axes[1]
+        if "price_zscore" in indicators.columns:
+            ax2.plot(df.index, indicators["price_zscore"], label="Price Z-Score")
+            ax2.axhline(y=2, color="r", linestyle="--", alpha=0.7, label="Overbought")
+            ax2.axhline(y=-2, color="g", linestyle="--", alpha=0.7, label="Oversold")
+            ax2.axhline(y=0, color="k", linestyle="-", alpha=0.3)
+
+        ax2.set_title("Statistical Arbitrage Signals")
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+
+        # Panel 3: Volatility measures
+        ax3 = axes[2]
+        if "atr_percent" in indicators.columns:
+            ax3.plot(df.index, indicators["atr_percent"], label="ATR %")
+        if "volatility" in indicators.columns:
+            ax3.plot(df.index, indicators["volatility"], label="Volatility")
+
+        ax3.set_title("Volatility Measures")
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+
+        # Panel 4: Return autocorrelation
+        ax4 = axes[3]
+        if "autocorr_1" in indicators.columns:
+            ax4.plot(df.index, indicators["autocorr_1"], label="1-Day Autocorr")
+            ax4.axhline(y=0, color="k", linestyle="-", alpha=0.3)
+
+        ax4.set_title("Return Autocorrelation")
+        ax4.legend()
+        ax4.grid(True, alpha=0.3)
+
+        # Panel 5: RSI and other oscillators
+        ax5 = axes[4]
+        if "rsi" in indicators.columns:
+            ax5.plot(df.index, indicators["rsi"], label="RSI")
+            ax5.axhline(y=70, color="r", linestyle="--", alpha=0.7)
+            ax5.axhline(y=30, color="g", linestyle="--", alpha=0.7)
+
+        ax5.set_title("Technical Oscillators")
+        ax5.legend()
+        ax5.grid(True, alpha=0.3)
+
+        # Format x-axis
+        for ax in axes:
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+            ax.xaxis.set_major_locator(mdates.WeekdayLocator())
+            for label in ax.xaxis.get_majorticklabels():
+                label.set_rotation(45)
+
+        fig.tight_layout()
+        return True
+
+    def render_regime_chart_png(self, timeframe: str, days: int = 60, dpi: int = 80) -> bytes:
+        """
+        Render the 5-panel regime chart to PNG bytes without a GUI backend.
+
+        Builds a standalone Agg figure (no pyplot global state), so it is safe in
+        servers and worker threads and nothing leaks between calls.
+
+        Args:
+            timeframe: Timeframe to plot
+            days: Number of bars to show
+            dpi: Output resolution
+
+        Returns:
+            PNG image bytes
+
+        Raises:
+            ValueError: If there is not enough data to plot
+        """
+        import io
+
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from matplotlib.figure import Figure
+
+        fig = Figure(figsize=(15, 20))
+        FigureCanvasAgg(fig)
+        if not self._draw_regime_chart(fig, timeframe, days):
+            raise ValueError("Insufficient data for plotting")
+        buffer = io.BytesIO()
+        fig.savefig(buffer, format="png", dpi=dpi)
+        return buffer.getvalue()
+
     def plot_regime_analysis(self, timeframe: str, days: int = 60) -> None:
         """
-        Generate 5-panel chart with regime background coloring.
+        Generate 5-panel chart with regime background coloring and show it.
 
         Args:
             timeframe: Timeframe to plot
             days: Number of days to show
         """
         try:
-            import matplotlib.dates as mdates
             import matplotlib.pyplot as plt
 
-            df = self.data[timeframe].tail(days)
-            indicators = self.indicators[timeframe].tail(days)
-
-            if len(df) < 10:
-                print("Insufficient data for plotting")
-                return
-
-            # Create regime predictions for the period
-
-            fig, axes = plt.subplots(5, 1, figsize=(15, 20))
-            fig.suptitle(f"{self.symbol} HMM Regime Analysis ({timeframe})", fontsize=16)
-
-            # Panel 1: Price with regime background
-            ax1 = axes[0]
-            ax1.plot(df.index, df["Close"], label="Close Price", linewidth=2)
-
-            if "ema_9" in indicators.columns:
-                ax1.plot(df.index, indicators["ema_9"], label="EMA 9", alpha=0.7)
-            if "ema_34" in indicators.columns:
-                ax1.plot(df.index, indicators["ema_34"], label="EMA 34", alpha=0.7)
-
-            ax1.set_title("Price with Regime Background")
-            ax1.legend()
-            ax1.grid(True, alpha=0.3)
-
-            # Panel 2: Statistical arbitrage signals
-            ax2 = axes[1]
-            if "price_zscore" in indicators.columns:
-                ax2.plot(df.index, indicators["price_zscore"], label="Price Z-Score")
-                ax2.axhline(y=2, color="r", linestyle="--", alpha=0.7, label="Overbought")
-                ax2.axhline(y=-2, color="g", linestyle="--", alpha=0.7, label="Oversold")
-                ax2.axhline(y=0, color="k", linestyle="-", alpha=0.3)
-
-            ax2.set_title("Statistical Arbitrage Signals")
-            ax2.legend()
-            ax2.grid(True, alpha=0.3)
-
-            # Panel 3: Volatility measures
-            ax3 = axes[2]
-            if "atr_percent" in indicators.columns:
-                ax3.plot(df.index, indicators["atr_percent"], label="ATR %")
-            if "volatility" in indicators.columns:
-                ax3.plot(df.index, indicators["volatility"], label="Volatility")
-
-            ax3.set_title("Volatility Measures")
-            ax3.legend()
-            ax3.grid(True, alpha=0.3)
-
-            # Panel 4: Return autocorrelation
-            ax4 = axes[3]
-            if "autocorr_1" in indicators.columns:
-                ax4.plot(df.index, indicators["autocorr_1"], label="1-Day Autocorr")
-                ax4.axhline(y=0, color="k", linestyle="-", alpha=0.3)
-
-            ax4.set_title("Return Autocorrelation")
-            ax4.legend()
-            ax4.grid(True, alpha=0.3)
-
-            # Panel 5: RSI and other oscillators
-            ax5 = axes[4]
-            if "rsi" in indicators.columns:
-                ax5.plot(df.index, indicators["rsi"], label="RSI")
-                ax5.axhline(y=70, color="r", linestyle="--", alpha=0.7)
-                ax5.axhline(y=30, color="g", linestyle="--", alpha=0.7)
-
-            ax5.set_title("Technical Oscillators")
-            ax5.legend()
-            ax5.grid(True, alpha=0.3)
-
-            # Format x-axis
-            for ax in axes:
-                ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
-                ax.xaxis.set_major_locator(mdates.WeekdayLocator())
-                plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
-
-            plt.tight_layout()
-            plt.show()
+            fig = plt.figure(figsize=(15, 20))
+            try:
+                if not self._draw_regime_chart(fig, timeframe, days):
+                    print("Insufficient data for plotting")
+                    return
+                plt.show()
+            finally:
+                plt.close(fig)
 
         except Exception as e:
             print(f"Error generating chart: {e!s}")
@@ -689,6 +745,63 @@ class MarketRegimeAnalyzer:
         except Exception as e:
             print(f"Monitoring error: {e!s}")
 
+    def build_export_dataframe(self) -> pd.DataFrame:
+        """
+        Build the analysis export table: one row per loaded timeframe.
+
+        Returns:
+            DataFrame with regime, strategy, indicator and key-level columns
+            (empty if no timeframe could be analyzed)
+        """
+        all_data = []
+
+        for timeframe in self.periods.keys():
+            try:
+                analysis = self.analyze_current_regime(timeframe)
+                df = self.data[timeframe]
+                indicators = self.indicators[timeframe]
+
+                # Create comprehensive export data
+                export_row = {
+                    "timestamp": df.index[-1],
+                    "symbol": self.symbol,
+                    "timeframe": timeframe,
+                    "close_price": df["Close"].iloc[-1],
+                    "regime": analysis.current_regime.value,
+                    "hmm_state": analysis.hmm_state,
+                    "regime_confidence": analysis.regime_confidence,
+                    "regime_persistence": analysis.regime_persistence,
+                    "transition_probability": analysis.transition_probability,
+                    "strategy": analysis.recommended_strategy.value,
+                    "position_multiplier": analysis.position_sizing_multiplier,
+                    "risk_level": analysis.risk_level,
+                    "arbitrage_count": len(analysis.arbitrage_opportunities),
+                    "signal_count": len(analysis.statistical_signals),
+                }
+
+                # Add key technical indicators
+                for col in [
+                    "rsi",
+                    "macd",
+                    "volatility",
+                    "atr_percent",
+                    "price_zscore",
+                    "autocorr_1",
+                ]:
+                    if col in indicators.columns:
+                        export_row[col] = indicators[col].iloc[-1]
+
+                # Add key levels
+                for level_name, level_value in analysis.key_levels.items():
+                    export_row[f"level_{level_name}"] = level_value
+
+                all_data.append(export_row)
+
+            except Exception as e:
+                print(f"Error exporting {timeframe}: {e!s}")
+
+        return pd.DataFrame(all_data)
+
     def export_analysis_to_csv(self, filename: str | None = None) -> None:
         """
         Export comprehensive analysis data to CSV for backtesting.
@@ -701,55 +814,8 @@ class MarketRegimeAnalyzer:
             filename = f"{self.symbol}_hmm_analysis_{timestamp}.csv"
 
         try:
-            all_data = []
-
-            for timeframe in self.periods.keys():
-                try:
-                    analysis = self.analyze_current_regime(timeframe)
-                    df = self.data[timeframe]
-                    indicators = self.indicators[timeframe]
-
-                    # Create comprehensive export data
-                    export_row = {
-                        "timestamp": df.index[-1],
-                        "symbol": self.symbol,
-                        "timeframe": timeframe,
-                        "close_price": df["Close"].iloc[-1],
-                        "regime": analysis.current_regime.value,
-                        "hmm_state": analysis.hmm_state,
-                        "regime_confidence": analysis.regime_confidence,
-                        "regime_persistence": analysis.regime_persistence,
-                        "transition_probability": analysis.transition_probability,
-                        "strategy": analysis.recommended_strategy.value,
-                        "position_multiplier": analysis.position_sizing_multiplier,
-                        "risk_level": analysis.risk_level,
-                        "arbitrage_count": len(analysis.arbitrage_opportunities),
-                        "signal_count": len(analysis.statistical_signals),
-                    }
-
-                    # Add key technical indicators
-                    for col in [
-                        "rsi",
-                        "macd",
-                        "volatility",
-                        "atr_percent",
-                        "price_zscore",
-                        "autocorr_1",
-                    ]:
-                        if col in indicators.columns:
-                            export_row[col] = indicators[col].iloc[-1]
-
-                    # Add key levels
-                    for level_name, level_value in analysis.key_levels.items():
-                        export_row[f"level_{level_name}"] = level_value
-
-                    all_data.append(export_row)
-
-                except Exception as e:
-                    print(f"Error exporting {timeframe}: {e!s}")
-
-            if all_data:
-                export_df = pd.DataFrame(all_data)
+            export_df = self.build_export_dataframe()
+            if not export_df.empty:
                 export_df.to_csv(filename, index=False)
                 print(f"✓ Analysis exported to {filename}")
             else:

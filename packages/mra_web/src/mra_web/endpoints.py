@@ -8,7 +8,7 @@ import logging
 import time
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
 
 from mra_lib import MarketRegimeAnalyzer, PortfolioHMMAnalyzer, SimonsRiskCalculator
 from mra_lib.data_providers import MarketDataProvider
@@ -16,11 +16,9 @@ from mra_lib.data_providers import MarketDataProvider
 from .auth import User, authenticate_request
 from .models import (
     AnalysisResponse,
-    ChartResponse,
     CurrentAnalysisRequest,
     DetailedAnalysisRequest,
     ExportCSVRequest,
-    ExportResponse,
     GenerateChartsRequest,
     MultiAnalysisResponse,
     MultiSymbolAnalysisRequest,
@@ -45,6 +43,11 @@ logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter(prefix="/api/v1", tags=["analysis"])
+
+# Generic client-facing error details. Exception text is never returned to clients:
+# provider errors can embed request URLs that carry API keys.
+INVALID_INPUT_DETAIL = "Invalid input or no data available for the requested symbol"
+PROVIDER_UNAVAILABLE_DETAIL = "Data provider unavailable"
 
 
 @router.post("/analysis/detailed", response_model=AnalysisResponse)
@@ -95,19 +98,19 @@ async def detailed_analysis(
     except ValueError as e:
         api_metrics.record_error(endpoint)
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid input: {e!s}"
+            status_code=status.HTTP_400_BAD_REQUEST, detail=INVALID_INPUT_DETAIL
         ) from e
     except ConnectionError as e:
         api_metrics.record_error(endpoint)
+        logger.warning("Detailed analysis provider error", exc_info=True)
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Data provider connection error: {e!s}",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=PROVIDER_UNAVAILABLE_DETAIL
         ) from e
     except Exception as e:
         api_metrics.record_error(endpoint)
-        logger.error(f"Detailed analysis error: {e}")
+        logger.exception("Detailed analysis error")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Analysis failed: {e!s}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Analysis failed"
         ) from e
 
 
@@ -150,8 +153,8 @@ async def current_analysis(
                         analysis, request.symbol, timeframe
                     )
                     analyses.append(response)
-                except Exception as e:
-                    logger.warning(f"Failed to analyze timeframe {timeframe}: {e}")
+                except Exception:
+                    logger.warning("Failed to analyze timeframe %s", timeframe, exc_info=True)
                     continue
 
             return analyses
@@ -182,9 +185,9 @@ async def current_analysis(
         raise
     except Exception as e:
         api_metrics.record_error(endpoint)
-        logger.error(f"Current analysis error: {e}")
+        logger.exception("Current analysis error")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Analysis failed: {e!s}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Analysis failed"
         ) from e
 
 
@@ -233,8 +236,8 @@ async def multi_symbol_analysis(  # noqa: PLR0915
                             analysis, symbol, request.timeframe
                         )
                         analyses.append(response)
-                    except Exception as e:
-                        logger.warning(f"Failed to analyze symbol {symbol}: {e}")
+                    except Exception:
+                        logger.warning("Failed to analyze symbol %s", symbol, exc_info=True)
                         continue
                 else:
                     logger.warning(f"Symbol {symbol} not available in portfolio analyzer")
@@ -271,8 +274,8 @@ async def multi_symbol_analysis(  # noqa: PLR0915
                         symbol: {other: 0.0 for other in request.symbols if other != symbol}
                         for symbol in request.symbols
                     }
-            except Exception as e:
-                logger.warning(f"Failed to calculate correlations: {e}")
+            except Exception:
+                logger.warning("Failed to calculate correlations", exc_info=True)
                 # Fallback correlation matrix
                 correlations = {
                     symbol: {other: 0.0 for other in request.symbols if other != symbol}
@@ -313,10 +316,10 @@ async def multi_symbol_analysis(  # noqa: PLR0915
         raise
     except Exception as e:
         api_metrics.record_error(endpoint)
-        logger.error(f"Multi-symbol analysis error: {e}")
+        logger.exception("Multi-symbol analysis error")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Portfolio analysis failed: {e!s}",
+            detail="Portfolio analysis failed",
         ) from e
 
 
@@ -390,14 +393,14 @@ async def position_sizing(
     except ValueError as e:
         api_metrics.record_error(endpoint)
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid input: {e!s}"
+            status_code=status.HTTP_400_BAD_REQUEST, detail=INVALID_INPUT_DETAIL
         ) from e
     except Exception as e:
         api_metrics.record_error(endpoint)
-        logger.error(f"Position sizing error: {e}")
+        logger.exception("Position sizing error")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Position sizing calculation failed: {e!s}",
+            detail="Position sizing calculation failed",
         ) from e
 
 
@@ -448,136 +451,149 @@ async def list_providers(
 
     except Exception as e:
         api_metrics.record_error(endpoint)
-        logger.error(f"List providers error: {e}")
+        logger.exception("List providers error")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to list providers: {e!s}",
+            detail="Failed to list providers",
         ) from e
 
 
-@router.post("/charts/generate", response_model=ChartResponse)
+@router.post(
+    "/charts/generate",
+    response_class=Response,
+    responses={200: {"content": {"image/png": {}}, "description": "PNG chart"}},
+)
 async def generate_charts(
     request: GenerateChartsRequest,
     background_tasks: BackgroundTasks,
     current_user: User | None = Depends(authenticate_request),  # noqa: B008
-) -> ChartResponse:
+) -> Response:
     """
-    Generate HMM charts for a given symbol and timeframe.
+    Generate the 5-panel HMM regime chart for a symbol and timeframe.
 
-    This endpoint creates visualization charts showing regime analysis results
-    and returns the chart data or file path.
+    The chart is rendered in memory with a headless backend and returned as
+    ``image/png``; nothing is written on the server.
     """
     start_time = time.time()
     endpoint = "/charts/generate"
 
     try:
         # Log request
-        log_api_request(endpoint, request.dict())
+        log_api_request(endpoint, request.model_dump())
         api_metrics.record_request(endpoint)
 
         # Validate API key
         validated_api_key = validate_api_key(request.provider, request.api_key)
 
-        # Run chart generation in thread pool
-        def generate_chart():
+        # Render chart in thread pool
+        def generate_chart() -> bytes:
             analyzer = MarketRegimeAnalyzer(
                 symbol=request.symbol, provider_flag=request.provider, api_key=validated_api_key
             )
-            # Generate chart and return file path
-            analyzer.plot_regime_analysis(request.timeframe, request.days)
-            # Return a placeholder file path (in real implementation, this would return actual path)
-            return (
-                f"charts/{request.symbol}_{request.timeframe}_{request.days}d_regime_analysis.png"
-            )
+            return analyzer.render_regime_chart_png(request.timeframe, request.days)
 
-        # Execute chart generation
-        chart_path = await run_in_thread(generate_chart)
-
-        response = ChartResponse(
-            symbol=request.symbol,
-            timeframe=request.timeframe,
-            days=request.days,
-            file_path=chart_path,
-        )
+        png = await run_in_thread(generate_chart)
 
         # Record metrics
         response_time = time.time() - start_time
         api_metrics.record_response_time(endpoint, response_time)
-
-        # Log response
         background_tasks.add_task(log_api_response, endpoint, 200, response_time)
 
-        return response
+        filename = f"{request.symbol}_{request.timeframe}_{request.days}_regime_chart.png"
+        return Response(
+            content=png,
+            media_type="image/png",
+            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        )
 
+    except HTTPException:
+        api_metrics.record_error(endpoint)
+        raise
+    except ValueError as e:
+        api_metrics.record_error(endpoint)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=INVALID_INPUT_DETAIL
+        ) from e
     except Exception as e:
         api_metrics.record_error(endpoint)
-        logger.error(f"Chart generation error: {e}")
+        logger.exception("Chart generation error")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Chart generation failed: {e!s}",
+            detail="Chart generation failed",
         ) from e
 
 
-@router.post("/export/csv", response_model=ExportResponse)
+@router.post(
+    "/export/csv",
+    response_class=Response,
+    responses={200: {"content": {"text/csv": {}}, "description": "CSV export"}},
+)
 async def export_csv(
     request: ExportCSVRequest,
     background_tasks: BackgroundTasks,
     current_user: User | None = Depends(authenticate_request),  # noqa: B008
-) -> ExportResponse:
+) -> Response:
     """
-    Export HMM analysis to CSV for a given symbol.
+    Export the HMM analysis for a symbol as CSV (one row per timeframe).
 
-    This endpoint exports comprehensive analysis data to CSV format for
-    further analysis and reporting.
+    The CSV is built in memory and returned as ``text/csv``. ``filename`` only sets
+    the download name in ``Content-Disposition``; nothing is written on the server.
+    The number of data rows is returned in the ``X-Record-Count`` header.
     """
     start_time = time.time()
     endpoint = "/export/csv"
 
     try:
         # Log request
-        log_api_request(endpoint, request.dict())
+        log_api_request(endpoint, request.model_dump())
         api_metrics.record_request(endpoint)
 
         # Validate API key
         validated_api_key = validate_api_key(request.provider, request.api_key)
 
-        # Run CSV export in thread pool
-        def export_data():
+        def export_data() -> tuple[str, int]:
             analyzer = MarketRegimeAnalyzer(
                 symbol=request.symbol, provider_flag=request.provider, api_key=validated_api_key
             )
-            # Export to CSV
-            analyzer.export_analysis_to_csv(request.filename)
+            export_df = analyzer.build_export_dataframe()
+            return export_df.to_csv(index=False), len(export_df)
 
-            # Generate filename if not provided
-            filename = request.filename or f"{request.symbol}_regime_analysis.csv"
+        csv_text, record_count = await run_in_thread(export_data)
 
-            return filename, 100  # Placeholder record count
-
-        # Execute export
-        filename, record_count = await run_in_thread(export_data)
-
-        response = ExportResponse(
-            symbol=request.symbol,
-            file_path=f"exports/{filename}",
-            filename=filename,
-            records_count=record_count,
-        )
+        if record_count == 0:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="No analysis data could be produced for this symbol",
+            )
 
         # Record metrics
         response_time = time.time() - start_time
         api_metrics.record_response_time(endpoint, response_time)
-
-        # Log response
         background_tasks.add_task(log_api_response, endpoint, 200, response_time)
 
-        return response
+        filename = request.filename or f"{request.symbol}_regime_analysis.csv"
+        return Response(
+            content=csv_text,
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "X-Record-Count": str(record_count),
+            },
+        )
 
+    except HTTPException:
+        api_metrics.record_error(endpoint)
+        raise
+    except ValueError as e:
+        api_metrics.record_error(endpoint)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=INVALID_INPUT_DETAIL
+        ) from e
     except Exception as e:
         api_metrics.record_error(endpoint)
-        logger.error(f"CSV export error: {e}")
+        logger.exception("CSV export error")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"CSV export failed: {e!s}"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="CSV export failed"
         ) from e
 
 

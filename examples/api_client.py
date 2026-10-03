@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from typing import Any
 
@@ -19,21 +20,30 @@ banner = Banner(50)
 
 
 class MarketRegimeAPIClient:
-    def __init__(self, base_url: str = "http://localhost:8000", api_key: str | None = None):
+    """Minimal client for the Market Regime Analysis API.
+
+    Args:
+        base_url: Server URL
+        api_key: Data provider API key forwarded in request bodies (optional)
+        token: JWT for ``Authorization: Bearer`` (mint with ``uv run mra-token --sub <name>``)
+        service_key: Server API key sent as ``X-API-Key`` (one of the server's ``API_KEYS``)
+    """
+
+    def __init__(
+        self,
+        base_url: str = "http://localhost:8000",
+        api_key: str | None = None,
+        token: str | None = None,
+        service_key: str | None = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.session = requests.Session()
-        self.token: str | None = None
-
-    def authenticate(self, username: str = "demo") -> str:
-        """Authenticate and return a JWT token string."""
-        res = self.session.post(f"{self.base_url}/auth/token", params={"username": username})
-        res.raise_for_status()
-        data = res.json()
-        token = str(data["access_token"])  # narrow type for return
         self.token = token
-        self.session.headers.update({"Authorization": f"Bearer {self.token}"})
-        return token
+        if token:
+            self.session.headers.update({"Authorization": f"Bearer {token}"})
+        if service_key:
+            self.session.headers.update({"X-API-Key": service_key})
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         res = self.session.post(f"{self.base_url}{path}", json=payload)
@@ -108,31 +118,40 @@ class MarketRegimeAPIClient:
 
     def generate_charts(
         self, symbol: str, timeframe: str, days: int = 60, provider: str = "yfinance"
-    ) -> dict[str, Any]:
-        return self._post(
-            "/api/v1/charts/generate",
-            {
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "days": days,
-                "provider": provider,
-                "api_key": self.api_key,
-            },
-        )
+    ) -> bytes:
+        """Return the regime chart as PNG bytes."""
+        payload = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "days": days,
+            "provider": provider,
+            "api_key": self.api_key,
+        }
+        res = self.session.post(f"{self.base_url}/api/v1/charts/generate", json=payload)
+        res.raise_for_status()
+        return res.content
 
     def export_csv(
         self, symbol: str, provider: str = "yfinance", filename: str | None = None
-    ) -> dict[str, Any]:
+    ) -> str:
+        """Return the analysis export as CSV text."""
         payload: dict[str, Any] = {"symbol": symbol, "provider": provider, "api_key": self.api_key}
         if filename:
             payload["filename"] = filename
-        return self._post("/api/v1/export/csv", payload)
+        res = self.session.post(f"{self.base_url}/api/v1/export/csv", json=payload)
+        res.raise_for_status()
+        return res.text
 
 
 async def websocket_monitor(symbol: str = "SPY", provider: str = "yfinance") -> None:
     uri = f"ws://localhost:8000/ws/monitoring/{symbol}?provider={provider}&interval=60"
     try:
         async with websockets.connect(uri) as ws:  # type: ignore[call-arg]
+            # Authenticate with the first message (keeps the token out of the URL).
+            # Not needed when the server runs with ENVIRONMENT=development.
+            token = os.getenv("MRA_TOKEN") or os.getenv("MRA_API_KEY")
+            if token:
+                await ws.send(json.dumps({"token": token}))
             print(f"Connected to WebSocket: {symbol}")
             timeout = time.time() + 30  # 30 seconds demo
             while time.time() < timeout:
@@ -151,7 +170,11 @@ def main() -> None:  # noqa: PLR0915 demo script
     print("🚀 Market Regime Analysis - API Examples")
     print("=" * 50)
 
-    client = MarketRegimeAPIClient()
+    # Credentials: a JWT (MRA_TOKEN, from `uv run mra-token --sub demo`) or a server
+    # API key (MRA_API_KEY). Neither is needed against a development server.
+    client = MarketRegimeAPIClient(
+        token=os.getenv("MRA_TOKEN"), service_key=os.getenv("MRA_API_KEY")
+    )
 
     banner.title("1) Health Check")
     try:
@@ -162,11 +185,10 @@ def main() -> None:  # noqa: PLR0915 demo script
         return
 
     banner.title("2) Authentication")
-    try:
-        token = client.authenticate("demo_user")
-        print(f"Token: {token[:16]}…")
-    except Exception as e:
-        print(f"Auth error: {e}")
+    if client.token or "X-API-Key" in client.session.headers:
+        print("Using credentials from MRA_TOKEN / MRA_API_KEY")
+    else:
+        print("No credentials set; only works against a development server")
 
     banner.title("3) Providers")
     try:

@@ -16,6 +16,7 @@ dependencies = [
 
 [project.scripts]
 mra-api = "mra_web.server:main"
+mra-token = "mra_web.auth:main"
 
 [tool.uv.sources]
 mra-lib = { workspace = true }

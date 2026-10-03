@@ -1,6 +1,7 @@
 """Tests for mra_web package — FastAPI app, models, utils, auth, config."""
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 
 import numpy as np
@@ -9,7 +10,6 @@ from pydantic import ValidationError
 
 from mra_web.app import app
 from mra_web.auth import (
-    AuthConfig,
     TokenData,
     User,
     create_access_token,
@@ -54,19 +54,21 @@ from mra_web.utils import (
 
 class TestAPIConfig:
     def test_defaults(self):
-        c = APIConfig(jwt_secret="test-secret")
-        assert c.host == "0.0.0.0"
+        c = APIConfig(jwt_secret="x" * 40)
+        assert c.host == "127.0.0.1"
         assert c.port == 8000
-        assert c.environment == "development"
+        assert c.environment == "production"
         assert c.jwt_algorithm == "HS256"
+        assert c.cors_origins == []
+        assert c.docs_enabled is False
 
     def test_from_env(self, monkeypatch):
         monkeypatch.setenv("API_PORT", "9000")
-        monkeypatch.setenv("JWT_SECRET", "my-secret")
+        monkeypatch.setenv("JWT_SECRET", "s" * 40)
         monkeypatch.setenv("ENVIRONMENT", "production")
         c = APIConfig.from_env()
         assert c.port == 9000
-        assert c.jwt_secret == "my-secret"
+        assert c.jwt_secret == "s" * 40
         assert c.environment == "production"
 
     def test_global_config_exists(self):
@@ -106,15 +108,15 @@ class TestAuth:
         assert data.exp is not None
 
     def test_verify_api_key_valid(self):
-        assert verify_api_key("demo-api-key-12345") is True
-        assert verify_api_key("admin-api-key-67890") is True
+        assert verify_api_key(os.environ["API_KEYS"]) is True
 
     def test_verify_api_key_invalid(self):
         assert verify_api_key("invalid-key") is False
+        assert verify_api_key("demo-api-key-12345") is False
+        assert verify_api_key("admin-api-key-67890") is False
 
     def test_get_api_key_user(self):
-        assert get_api_key_user("demo-api-key-12345") == "demo"
-        assert get_api_key_user("admin-api-key-67890") == "admin"
+        assert get_api_key_user(os.environ["API_KEYS"]).startswith("apikey-")
         assert get_api_key_user("nonexistent") is None
 
     def test_token_data_model(self):
@@ -125,10 +127,6 @@ class TestAuth:
     def test_user_model(self):
         u = User(username="test", email="test@example.com")
         assert u.is_active is True
-
-    def test_auth_config_api_keys(self):
-        assert "demo" in AuthConfig.API_KEYS
-        assert "admin" in AuthConfig.API_KEYS
 
 
 # ── Models tests ──
@@ -512,13 +510,6 @@ class TestAppEndpoints:
         data = resp.json()
         assert data["name"] == "Market Regime Analysis API"
 
-    def test_auth_token(self, client):
-        resp = client.post("/auth/token?username=testuser")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "access_token" in data
-        assert data["username"] == "testuser"
-
-    def test_auth_token_empty_username(self, client):
-        resp = client.post("/auth/token?username=")
-        assert resp.status_code == 400
+    def test_auth_token_endpoint_removed(self, client):
+        # Open token minting was a critical vulnerability; the route must not exist.
+        assert client.post("/auth/token?username=testuser").status_code in (404, 405)

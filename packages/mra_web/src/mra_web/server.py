@@ -3,6 +3,8 @@
 Startup script for the Market Regime Analysis API server.
 
 This script provides an easy way to start the API server with proper configuration.
+The configuration is validated before uvicorn starts, so an unsafe setup (e.g. no
+``JWT_SECRET`` in production) exits with a clear message instead of a traceback.
 """
 
 import argparse
@@ -11,54 +13,75 @@ import sys
 
 import uvicorn
 
-from mra_web.config import config
 
-
-def main():
+def main() -> None:
     """Main startup function."""
     parser = argparse.ArgumentParser(description="Market Regime Analysis API Server")
 
-    parser.add_argument("--host", default=config.host, help="Host to bind to (default: 0.0.0.0)")
-
     parser.add_argument(
-        "--port", type=int, default=config.port, help="Port to bind to (default: 8000)"
+        "--host",
+        default=os.getenv("API_HOST", "127.0.0.1"),
+        help="Host to bind to (default: API_HOST or 127.0.0.1)",
     )
-
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.getenv("API_PORT", "8000")),
+        help="Port to bind to (default: API_PORT or 8000)",
+    )
     parser.add_argument(
         "--reload",
         action="store_true",
-        default=config.reload,
+        default=os.getenv("API_RELOAD", "false").lower() == "true",
         help="Enable auto-reload for development",
     )
-
     parser.add_argument(
-        "--workers", type=int, default=config.workers, help="Number of worker processes"
+        "--workers",
+        type=int,
+        default=int(os.getenv("API_WORKERS", "1")),
+        help="Number of worker processes",
     )
-
     parser.add_argument(
         "--log-level",
+        type=str.upper,
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        default=config.log_level,
+        default=os.getenv("LOG_LEVEL", "INFO").upper(),
         help="Logging level",
     )
-
     parser.add_argument(
-        "--dev", action="store_true", help="Run in development mode (enables reload, debug, etc.)"
+        "--dev",
+        action="store_true",
+        help="Run in development mode (ENVIRONMENT=development, reload, debug logging)",
     )
 
     args = parser.parse_args()
 
-    # Development mode overrides
+    # Development mode overrides (must be set before the config is loaded)
     if args.dev:
         args.reload = True
         args.workers = 1
         args.log_level = "DEBUG"
         os.environ["ENVIRONMENT"] = "development"
         os.environ["DEBUG"] = "true"
-        print("🚀 Starting in DEVELOPMENT mode")
-        print(f"📖 API Documentation: http://{args.host}:{args.port}/docs")
+    os.environ["LOG_LEVEL"] = args.log_level
+
+    from mra_web.config import APIConfig, ConfigError  # noqa: PLC0415
+
+    try:
+        cfg = APIConfig.from_env()
+    except (ConfigError, ValueError) as e:
+        print(f"❌ Refusing to start: {e}", file=sys.stderr)
+        sys.exit(2)
+
+    if cfg.is_development:
+        print("🚀 Starting in DEVELOPMENT mode (unauthenticated requests allowed)")
+        if cfg.docs_enabled:
+            print(f"📖 API Documentation: http://{args.host}:{args.port}/docs")
         print(f"📊 Health Check: http://{args.host}:{args.port}/health")
-        print(f"📈 Metrics: http://{args.host}:{args.port}/metrics")
+
+    if cfg.jwt_secret_ephemeral and args.workers > 1:
+        print("❌ An ephemeral JWT secret cannot be shared across workers; set JWT_SECRET.")
+        sys.exit(2)
 
     # Show configuration
     print(f"🌐 Host: {args.host}")
@@ -67,12 +90,11 @@ def main():
     print(f"📝 Log Level: {args.log_level}")
     print(f"🔄 Reload: {args.reload}")
 
-    # Environment check
-    if args.host == "0.0.0.0" and not args.dev:
-        print("⚠️  WARNING: Binding to 0.0.0.0 in production. Ensure proper firewall configuration.")
+    if args.host in {"0.0.0.0", "::"} and not cfg.is_development:
+        print("⚠️  Binding to all interfaces. Ensure proper firewall / reverse proxy setup.")
 
     # API key reminders
-    print("\n🔑 API Key Configuration:")
+    print("\n🔑 Data provider credentials:")
     print("   Alpha Vantage: Set ALPHA_VANTAGE_API_KEY environment variable")
     print("   Polygon.io: Set POLYGON_API_KEY environment variable")
     print("   Alpaca: Set APCA_API_KEY_ID and APCA_API_SECRET_KEY environment variables")
@@ -80,7 +102,6 @@ def main():
     print("   Yahoo Finance: No API key required (free tier)")
 
     try:
-        # Start server
         uvicorn.run(
             "mra_web.app:app",
             host=args.host,
@@ -90,13 +111,9 @@ def main():
             log_level=args.log_level.lower(),
             access_log=True,
         )
-
     except KeyboardInterrupt:
         print("\n👋 Shutting down API server...")
         sys.exit(0)
-    except Exception as e:
-        print(f"❌ Failed to start server: {e}")
-        sys.exit(1)
 
 
 if __name__ == "__main__":
