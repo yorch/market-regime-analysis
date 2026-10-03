@@ -362,7 +362,8 @@ Every error (auth, validation, routing, rate limit, provider, unexpected) uses o
 | 422 | `VALIDATION_ERROR` | Request body/query invalid; `details.errors` lists `loc`, `msg`, `type` (input values are not echoed) |
 | 429 | `RATE_LIMITED` | Rate limit exceeded (`Retry-After` header) |
 | 500 | `INTERNAL_SERVER_ERROR` | Unexpected failure |
-| 503 | `SERVICE_UNAVAILABLE` | Provider unreachable, or nothing could be analyzed |
+| 502 | `HTTP_502` | The data provider rejected the server's provider credentials |
+| 503 | `SERVICE_UNAVAILABLE` | Provider unreachable or rate-limited (`Retry-After`), or nothing could be analyzed |
 | 504 | `TIMEOUT` | Analysis exceeded `API_TIMEOUT` seconds |
 
 Responses are strict JSON: `NaN`/`Infinity` values (e.g. an undefined correlation or

@@ -18,7 +18,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response
 from mra_lib import MarketRegimeAnalyzer, PortfolioHMMAnalyzer, SimonsRiskCalculator
 from mra_lib.config.data_classes import RegimeAnalysis
 from mra_lib.config.enums import MarketRegime
-from mra_lib.data_providers import MarketDataProvider
+from mra_lib.data_providers import MarketDataProvider, base as _provider_base
 
 from .auth import User, authenticate_request
 from .models import (
@@ -60,6 +60,39 @@ INVALID_INPUT_DETAIL = "Invalid input or no data available for the requested sym
 PROVIDER_UNAVAILABLE_DETAIL = "Data provider unavailable"
 
 
+# Provider exception types added by the CLI/providers work (#19). Looked up lazily
+# so this module works with and without them; they map to more specific statuses.
+_InvalidSymbolError: type[Exception] | None = getattr(_provider_base, "InvalidSymbolError", None)
+_ProviderAuthError: type[Exception] | None = getattr(_provider_base, "AuthError", None)
+_ProviderRateLimitError: type[Exception] | None = getattr(_provider_base, "RateLimitError", None)
+
+PROVIDER_RETRY_AFTER_SECONDS = 60
+
+
+def classify_exception(exc: Exception) -> HTTPException:
+    """Map an analysis exception to an HTTP error with a generic, safe detail."""
+    if _InvalidSymbolError is not None and isinstance(exc, _InvalidSymbolError):
+        return HTTPException(status.HTTP_400_BAD_REQUEST, detail="Unknown or invalid symbol")
+    if _ProviderAuthError is not None and isinstance(exc, _ProviderAuthError):
+        # Upstream rejected the server's provider credentials: a server-side problem.
+        return HTTPException(
+            status.HTTP_502_BAD_GATEWAY, detail="Data provider authentication failed"
+        )
+    if _ProviderRateLimitError is not None and isinstance(exc, _ProviderRateLimitError):
+        return HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Data provider rate limit reached",
+            headers={"Retry-After": str(PROVIDER_RETRY_AFTER_SECONDS)},
+        )
+    if isinstance(exc, ValueError):
+        return HTTPException(status.HTTP_400_BAD_REQUEST, detail=INVALID_INPUT_DETAIL)
+    if isinstance(exc, ConnectionError):
+        return HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, detail=PROVIDER_UNAVAILABLE_DETAIL
+        )
+    return HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @asynccontextmanager
 async def _tracked(
     endpoint: str,
@@ -69,8 +102,9 @@ async def _tracked(
 ) -> AsyncIterator[None]:
     """Record metrics/logs for an endpoint and map exceptions to HTTP errors.
 
-    ``HTTPException`` passes through unchanged; ``ValueError`` becomes 400,
-    ``ConnectionError`` 503 and anything else 500, all with generic details.
+    ``HTTPException`` passes through unchanged; other exceptions are mapped by
+    :func:`classify_exception` (e.g. ``ValueError`` -> 400, ``ConnectionError`` -> 503,
+    anything else -> 500 with ``failure_detail``), always with generic details.
     """
     start_time = time.time()
     log_api_request(endpoint, payload or {})
@@ -80,24 +114,16 @@ async def _tracked(
     except HTTPException:
         api_metrics.record_error(endpoint)
         raise
-    except ValueError as e:
-        api_metrics.record_error(endpoint)
-        logger.info("%s rejected input", endpoint, exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=INVALID_INPUT_DETAIL
-        ) from e
-    except ConnectionError as e:
-        api_metrics.record_error(endpoint)
-        logger.warning("%s provider error", endpoint, exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=PROVIDER_UNAVAILABLE_DETAIL
-        ) from e
     except Exception as e:
         api_metrics.record_error(endpoint)
-        logger.exception("%s failed", endpoint)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=failure_detail
-        ) from e
+        http_error = classify_exception(e)
+        if http_error.status_code >= 500:
+            logger.exception("%s failed", endpoint)
+        else:
+            logger.info("%s rejected input", endpoint, exc_info=True)
+        if http_error.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR:
+            http_error.detail = failure_detail
+        raise http_error from e
     else:
         response_time = time.time() - start_time
         api_metrics.record_response_time(endpoint, response_time)

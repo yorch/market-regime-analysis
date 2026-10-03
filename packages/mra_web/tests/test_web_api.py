@@ -514,3 +514,36 @@ class TestWebSocketLifecycle:
         url = "/ws/monitoring/SPY?provider=mock&interval=3600"
         with client.websocket_connect(url, headers=api_key_headers) as ws:
             assert ws.receive_json()["message_type"] == "connection"
+
+
+class TestExceptionClassification:
+    def test_builtin_mapping(self):
+        from mra_web.endpoints import classify_exception
+
+        assert classify_exception(ValueError("x")).status_code == 400
+        assert classify_exception(ConnectionError("x")).status_code == 503
+        assert classify_exception(RuntimeError("x")).status_code == 500
+
+    def test_provider_error_types(self, monkeypatch):
+        from mra_web import endpoints
+
+        class InvalidSymbolError(ValueError):
+            pass
+
+        class AuthError(ConnectionError):
+            pass
+
+        class RateLimitError(ConnectionError):
+            pass
+
+        monkeypatch.setattr(endpoints, "_InvalidSymbolError", InvalidSymbolError)
+        monkeypatch.setattr(endpoints, "_ProviderAuthError", AuthError)
+        monkeypatch.setattr(endpoints, "_ProviderRateLimitError", RateLimitError)
+
+        assert endpoints.classify_exception(InvalidSymbolError("k")).status_code == 400
+        auth = endpoints.classify_exception(AuthError("apikey=LEAKED"))
+        assert auth.status_code == 502
+        assert "LEAKED" not in str(auth.detail)
+        limited = endpoints.classify_exception(RateLimitError("x"))
+        assert limited.status_code == 503
+        assert limited.headers == {"Retry-After": "60"}
