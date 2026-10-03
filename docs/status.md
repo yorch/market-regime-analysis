@@ -15,7 +15,7 @@ outperform buy-and-hold.** Treat every output as research, not advice.
 
 | Gate | At review (`388235a`) | Now |
 |------|-----------------------|-----|
-| `pytest -m "not integration"` | 472 passed, 1 failed | 881 passed |
+| `pytest -m "not integration"` | 472 passed, 1 failed | 882 passed |
 | Coverage (`just test-cov`; CI fails under 65%) | ~67% (inflated by an unanchored `pass` exclusion) | 92% |
 | `mypy packages/` | 16 errors, soft-fail in CI | 0 errors, **blocking** in CI |
 | `docker compose up` | crash-looped | boots; CI smoke-tests `/health` and `mra --help` in the image |

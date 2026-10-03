@@ -732,10 +732,18 @@ def continuous_monitoring(  # noqa: PLR0913, PLR0917
 @click.option(
     "--host",
     default="127.0.0.1",
+    envvar="API_HOST",
     show_default=True,
-    help="API server host (use 0.0.0.0 to listen on all interfaces)",
+    help="API server host (env API_HOST; use 0.0.0.0 to listen on all interfaces)",
 )
-@click.option("--port", type=click.IntRange(1, 65535), default=8000, help="API server port")
+@click.option(
+    "--port",
+    type=click.IntRange(1, 65535),
+    default=8000,
+    envvar="API_PORT",
+    show_default=True,
+    help="API server port (env API_PORT)",
+)
 @click.option(
     "--dev/--no-dev",
     default=False,

@@ -253,11 +253,26 @@ class TestMonitoringAndServer:
         monkeypatch.setenv("ENVIRONMENT", "production")
         monkeypatch.setenv("JWT_SECRET", "cli-test-secret-0123456789abcdefghijklmnop")
         monkeypatch.setenv("LOG_LEVEL", "INFO")
+        monkeypatch.delenv("API_HOST", raising=False)
+        monkeypatch.delenv("API_PORT", raising=False)
         with patch("uvicorn.run") as run:
             result = runner.invoke(cli, ["start-api"])
         assert result.exit_code == 0, result.output
         assert run.call_args.kwargs["host"] == "127.0.0.1"
+        assert run.call_args.kwargs["port"] == 8000
         assert run.call_args.kwargs["reload"] is False
+
+    def test_cli_start_api_honours_env(self, runner, monkeypatch):
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("JWT_SECRET", "cli-test-secret-0123456789abcdefghijklmnop")
+        monkeypatch.setenv("LOG_LEVEL", "WARNING")
+        monkeypatch.setenv("API_PORT", "9001")
+        with patch("uvicorn.run") as run:
+            result = runner.invoke(cli, ["start-api"])
+        assert result.exit_code == 0, result.output
+        assert run.call_args.kwargs["port"] == 9001
+        assert run.call_args.kwargs["log_level"] == "warning"
+        assert os.environ["LOG_LEVEL"] == "WARNING"
 
     def test_cli_start_api_dev_sets_development_environment(self, runner, monkeypatch):
         # --dev must start without JWT_SECRET, like `mra-api --dev`

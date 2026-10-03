@@ -31,7 +31,8 @@ uv run mra-api --host 0.0.0.0 --port 8000 --workers 4
 
 `mra-api` options: `--host` (`API_HOST`, default `127.0.0.1`), `--port` (`API_PORT`, default
 `8000`), `--workers` (`API_WORKERS`, default 1), `--reload` (`API_RELOAD`), `--log-level`
-(`LOG_LEVEL`), `--dev`. `mra start-api [--host] [--port] [--dev]` runs the same server.
+(`LOG_LEVEL`), `--dev`. `mra start-api [--host] [--port] [--dev]` runs the same server
+(it honours `API_HOST`, `API_PORT` and `LOG_LEVEL`, but always uses one worker).
 
 Outside `ENVIRONMENT=development` the server refuses to start (exit code 2) when `JWT_SECRET`
 is unset, empty, a well-known placeholder, or shorter than 32 characters, or when `API_KEYS`
@@ -251,7 +252,8 @@ Returns the analysis (one row per timeframe that could be analyzed) as **`text/c
 built in memory. `filename` (optional; letters, digits, `.`, `_`, `-`, max 100 chars, `.csv`
 appended if missing) only sets the download name in `Content-Disposition: attachment`;
 nothing is written on the server. The `X-Record-Count` header holds the number of rows. If
-no row could be produced the response is `503`.
+every timeframe fails, the error of the last failure is returned (e.g. `400` for an unknown
+symbol); if they all succeed but produce no rows, the response is `503`.
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/export/csv \
@@ -336,8 +338,10 @@ ASGI middleware (`mra_web/ratelimit.py`), so it covers every route.
 
 Counters live in process memory: with `--workers N`, each worker enforces its own window
 (a client can get up to N × the limit), and they reset on restart. Behind a reverse proxy,
-run uvicorn with `--proxy-headers` and trusted `--forwarded-allow-ips`, otherwise all clients
-share the proxy's address.
+set uvicorn's `FORWARDED_ALLOW_IPS` environment variable to the proxy's address (uvicorn
+trusts `X-Forwarded-For` only from `127.0.0.1` by default); otherwise every client is keyed by
+the proxy's address, for rate limits and WebSocket per-IP caps alike. In Docker the proxy is
+usually not `127.0.0.1`.
 
 Independently, `API_MAX_CONCURRENT_ANALYSES` (default 4) bounds analyses running at once per
 process (HTTP and WebSocket); excess HTTP requests get `503` with `Retry-After: 5`. A
@@ -491,7 +495,8 @@ The repository [`Dockerfile`](../Dockerfile) builds a two-stage image that runs
 port 8000 and has a `/health` `HEALTHCHECK`. `JWT_SECRET` (32+ characters) is required.
 
 ```bash
-# docker compose: reads .env and publishes on 127.0.0.1:${API_PORT:-8000}
+# docker compose: reads .env and publishes on 127.0.0.1:${API_PORT:-8000}. Only the
+# variables listed in docker-compose.yml reach the container; add others there.
 cp .env.example .env   # set JWT_SECRET and any provider keys
 docker compose up -d --build
 

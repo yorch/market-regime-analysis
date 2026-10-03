@@ -294,7 +294,7 @@ from .strategy import RegimeStrategy  # inside backtesting/
 4. Conventions (accounting, fills, metrics) are documented in [packages/mra_lib/README.md](packages/mra_lib/README.md)
 
 ### Security & Configuration
-- All environment variables are listed in [.env.example](.env.example); everything there is read by code
+- User-facing environment variables are listed in [.env.example](.env.example) (everything there is read by code); docker compose only forwards the ones named in `docker-compose.yml`
 - Provider secrets: `ALPHA_VANTAGE_API_KEY` (or `ALPHAVANTAGE_API_KEY`), `POLYGON_API_KEY`, `APCA_API_KEY_ID` + `APCA_API_SECRET_KEY`, `TIINGO_API_KEY`
 - Web API: `ENVIRONMENT` (default `production`), `JWT_SECRET` (required outside development, 32+ chars), `API_KEYS`, `CORS_ORIGINS`, `RATE_LIMIT_PER_MINUTE`, `API_TIMEOUT`, `API_MAX_CONCURRENT_ANALYSES`, `WS_MAX_CONNECTIONS`, `WS_MAX_CONNECTIONS_PER_IP` — see [docs/api.md](docs/api.md)
 - CLI: `DEFAULT_PROVIDER`

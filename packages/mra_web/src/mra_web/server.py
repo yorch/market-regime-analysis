@@ -71,16 +71,16 @@ def serve(
     port: int = 8000,
     reload: bool = False,
     workers: int = 1,
-    log_level: str = "INFO",
+    log_level: str | None = None,
     dev: bool = False,
 ) -> None:
     """Validate the configuration and run the API server under uvicorn.
 
     Shared by ``mra-api`` and ``mra start-api``. With ``dev=True`` it sets
     ``ENVIRONMENT=development`` and ``DEBUG=true`` (so no ``JWT_SECRET`` is needed),
-    enables reload, and logs at DEBUG.
+    enables reload, and logs at DEBUG. ``log_level`` defaults to ``LOG_LEVEL`` (or INFO).
     """
-    log_level = log_level.upper()
+    log_level = (log_level or os.getenv("LOG_LEVEL") or "INFO").upper()
     # Development mode overrides (must be set before the config is loaded)
     if dev:
         reload = True
