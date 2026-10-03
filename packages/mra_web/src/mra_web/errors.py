@@ -14,7 +14,6 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
-from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from mra_web.models import ErrorResponse
@@ -102,16 +101,6 @@ async def validation_exception_handler(_request: Request, exc: Exception) -> JSO
     )
 
 
-async def rate_limit_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
-    """slowapi ``RateLimitExceeded`` (for routes using ``@limiter.limit``)."""
-    return error_response(
-        status.HTTP_429_TOO_MANY_REQUESTS,
-        "Rate limit exceeded",
-        details={"limit": str(getattr(exc, "detail", ""))},
-        headers={"Retry-After": "60"},
-    )
-
-
 async def unhandled_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
     """Anything else: log server-side, return a generic 500.
 
@@ -128,5 +117,4 @@ def install_error_handlers(app: FastAPI) -> None:
     """Register the uniform error envelope on an app."""
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
-    app.add_exception_handler(RateLimitExceeded, rate_limit_exception_handler)
     app.add_exception_handler(Exception, unhandled_exception_handler)

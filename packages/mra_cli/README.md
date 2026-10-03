@@ -15,6 +15,7 @@ uv run mra current-analysis --symbol SPY                    # yfinance (default)
 uv run mra current-analysis --provider mock --symbol SPY    # offline synthetic data
 uv run mra generate-charts --symbol SPY --output spy.png    # headless chart
 uv run mra continuous-monitoring --symbol SPY --once        # single refresh
+uv run mra start-api --dev                                  # web API (needs mra-web)
 uv run mra-optimize --mode grid --symbol SPY --provider yfinance
 ```
 
