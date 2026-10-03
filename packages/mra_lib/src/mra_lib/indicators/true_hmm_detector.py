@@ -19,8 +19,13 @@ Design notes
 - **Regime labels** come from absolute thresholds on de-standardized state
   means (see :mod:`mra_lib.indicators.regime_mapping`).
 - **Posteriors**: every per-bar quantity (state history, confidence) uses
-  the *filtered* (forward-only) posterior ``P(s_t | o_1..o_t)``, so nothing
-  computed for bar ``t`` depends on later bars.
+  the *filtered* (forward-only) posterior ``P(s_t | o_1..o_t)``, which is
+  causal in the observations. The model parameters (scaler, emissions,
+  transitions, labels) are still in-sample for the data they were fitted on;
+  only a model fitted on a prefix (as walk-forward does) is fully out-of-sample.
+- **Short history**: if the data cannot support ``n_states`` and
+  ``adapt_n_states`` is True (default), the largest state count the data can
+  support is used instead (with a warning) rather than failing.
 """
 
 from __future__ import annotations
@@ -132,6 +137,8 @@ class TrueHMMDetector:
         tol: EM convergence threshold on the log-likelihood gain
         thresholds: State -> regime decision-tree thresholds
         min_samples_per_param: Feature rows required per free parameter
+        adapt_n_states: If the data is too short for ``n_states``, fit the
+            largest supported state count (>= 2) instead of raising
     """
 
     def __init__(  # noqa: PLR0913
@@ -146,6 +153,7 @@ class TrueHMMDetector:
         tol: float = 1e-2,
         thresholds: RegimeThresholds | None = None,
         min_samples_per_param: float = MIN_SAMPLES_PER_PARAMETER,
+        adapt_n_states: bool = True,
     ) -> None:
         if n_states < 1:
             raise ValueError("n_states must be >= 1")
@@ -164,6 +172,7 @@ class TrueHMMDetector:
         self.tol = tol
         self.thresholds = thresholds or DEFAULT_THRESHOLDS
         self.min_samples_per_param = min_samples_per_param
+        self.adapt_n_states = adapt_n_states
 
         self.model: hmm.GaussianHMM | None = None
         self.scaler: StandardScaler | None = None
@@ -223,6 +232,8 @@ class TrueHMMDetector:
                 every EM restart fails
         """
         X = self._prepare_features(df)
+        if len(X) < self.min_training_rows and self.adapt_n_states:
+            self._reduce_n_states(len(X))
         if len(X) < self.min_training_rows:
             raise ValueError(
                 f"Insufficient data for a {self.n_states}-state '{self.covariance_type}' HMM: "
@@ -284,15 +295,35 @@ class TrueHMMDetector:
         self.fitted = True
         return self
 
+    def _reduce_n_states(self, n_rows: int) -> None:
+        """Shrink ``n_states`` to the largest count (>= 2) that ``n_rows`` feature rows support."""
+        requested = self.n_states
+        n = requested
+        while n > 2 and n_rows < math.ceil(
+            self.min_samples_per_param
+            * n_free_parameters(n, len(HMM_FEATURES), self.covariance_type)
+        ):
+            n -= 1
+        if n != requested:
+            logger.warning(
+                "Only %d feature rows: fitting a %d-state HMM instead of %d states "
+                "(%g rows per free parameter required)",
+                n_rows,
+                n,
+                requested,
+                self.min_samples_per_param,
+            )
+            self.n_states = n
+
     def _check_convergence(self, model: hmm.GaussianHMM, seed: int | None) -> None:
         """Log (warning) EM log-likelihood decreases and non-convergence of the chosen model."""
         monitor = model.monitor_
         history = np.asarray(list(monitor.history), dtype=float)
         deltas = np.diff(history)
         worst_drop = float(-deltas.min()) if len(deltas) else 0.0
-        converged = bool(monitor.iter < self.n_iter) or (
-            len(deltas) > 0 and 0 <= float(deltas[-1]) < self.tol
-        )
+        last_gain = float(deltas[-1]) if len(deltas) else 0.0
+        # hmmlearn also stops early on a likelihood *decrease*; that is not convergence
+        converged = last_gain >= 0 and (monitor.iter < self.n_iter or last_gain < self.tol)
         self._fit_info = {
             "best_seed": seed,
             "n_iterations": int(monitor.iter),

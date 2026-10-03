@@ -17,8 +17,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-#: Small constant guarding logs of zero volatility.
-_LOG_EPS = 1e-12
+#: Volatility floor guarding logs of flat-price runs (halted/stale bars), so they
+#: do not produce extreme outliers in ``log_volatility``/``vol_expansion``.
+_LOG_EPS = 1e-8
 
 #: Rolling windows (bars) used by :func:`build_hmm_features`.
 VOL_WINDOW = 20
@@ -150,7 +151,7 @@ def volume_ratio(volume: pd.Series, window: int = VOLUME_WINDOW) -> pd.Series:
     looks at the current window, so it is causal; it replaces a whole-series
     ``Volume.sum() > 0`` test that let future bars change past features.
     """
-    vol = volume.astype(float)
+    vol = volume.astype(float).fillna(0.0)  # a missing value is just a bar without volume
     mean = vol.rolling(window).mean()
     valid = (vol > 0) & (mean > 0)
     ratio = (vol / mean.where(mean > 0)).where(valid, 1.0)

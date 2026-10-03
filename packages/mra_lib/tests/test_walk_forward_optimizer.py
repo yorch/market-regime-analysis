@@ -82,8 +82,9 @@ class TestRegimeDetection:
         v = WalkForwardValidator(RegimeStrategy(), **FAST_HMM)
         det = v._fit_detector(data.iloc[:252])
         assert type(det) is TrueHMMDetector
-        # Same class and model defaults the analyzer constructs by default
-        assert det.n_init == TrueHMMDetector().n_init
+        # Same class and model settings as the analyzer (only fewer EM restarts)
+        assert det.n_init == v.hmm_n_init
+        assert det.n_iter == TrueHMMDetector().n_iter
         assert det.covariance_type == TrueHMMDetector().covariance_type
 
     def test_failed_refit_keeps_previous_model(self, data, monkeypatch, caplog):

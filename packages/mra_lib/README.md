@@ -34,8 +34,11 @@ alias that emits `DeprecationWarning`).
 - **Model**: Gaussian HMM, `covariance_type="diag"` (configurable), `min_covar=1e-3`,
   `n_init=10` EM restarts keeping the best log-likelihood, `n_iter=200`. `fit` refuses
   data with fewer than 1.5 feature rows per free parameter (a 6-state model needs 161
-  rows ≈ 201 bars) and logs a warning if EM did not converge or its log-likelihood
-  decreased. `select_n_states(df, candidates=range(2, 7))` picks a state count by BIC;
+  rows ≈ 201 bars). With shorter history (e.g. Alpha Vantage's 100 free daily bars) it
+  fits the largest state count the data supports and logs a warning
+  (`adapt_n_states=False` raises instead). It also logs a warning if EM did not converge
+  or its log-likelihood decreased. Walk-forward validation uses the same model with
+  `hmm_n_init=3` restarts per refit to bound runtime. `select_n_states(df, candidates=range(2, 7))` picks a state count by BIC;
   the default stays at 6 states.
 - **State order and labels**: states are sorted by volatility after fitting, so state
   ints are stable whenever refits reach the same optimum. Each state's mean is

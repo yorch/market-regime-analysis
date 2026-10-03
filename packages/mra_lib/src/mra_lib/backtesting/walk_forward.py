@@ -99,7 +99,7 @@ class WalkForwardValidator:
         initial_capital: float = 100000.0,
         periods_per_year: float = TRADING_DAYS_PER_YEAR,
         risk_free_rate: float = 0.02,
-        hmm_n_init: int | None = None,
+        hmm_n_init: int = 3,
     ) -> None:
         """
         Initialize walk-forward validator.
@@ -117,8 +117,10 @@ class WalkForwardValidator:
             initial_capital: Starting capital for each window
             periods_per_year: Bars per year used for annualization
             risk_free_rate: Annual risk-free rate for Sharpe/Sortino
-            hmm_n_init: EM restarts per HMM fit (best log-likelihood wins);
-                ``None`` uses the :class:`TrueHMMDetector` default
+            hmm_n_init: EM restarts per HMM fit (best log-likelihood wins). Lower
+                than the analyzer's default (10) because walk-forward refits every
+                ``retrain_frequency`` bars; the model class, features, priors and
+                labelling are otherwise identical
         """
         self.strategy = strategy
         self.cost_model = cost_model or EquityCostModel()
@@ -187,12 +189,9 @@ class WalkForwardValidator:
     def _fit_detector(self, train_df: pd.DataFrame) -> TrueHMMDetector:
         # Same model class and defaults as MarketRegimeAnalyzer, so walk-forward
         # results describe the model users see
-        if self.hmm_n_init is None:
-            hmm = TrueHMMDetector(n_states=self.n_hmm_states, n_iter=self.hmm_n_iter)
-        else:
-            hmm = TrueHMMDetector(
-                n_states=self.n_hmm_states, n_iter=self.hmm_n_iter, n_init=self.hmm_n_init
-            )
+        hmm = TrueHMMDetector(
+            n_states=self.n_hmm_states, n_iter=self.hmm_n_iter, n_init=self.hmm_n_init
+        )
         with _quiet_model_warnings():
             hmm.fit(train_df)
         return hmm

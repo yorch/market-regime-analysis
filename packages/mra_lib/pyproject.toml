@@ -5,7 +5,7 @@ description = "Core library for market regime analysis using Hidden Markov Model
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "hmmlearn>=0.3.3",
+    "hmmlearn>=0.3.3,<0.4",  # detector uses private _covars_/_compute_log_likelihood
     "matplotlib>=3.11.2",
     "numpy>=2.5.3",
     "pandas>=3.0.6",

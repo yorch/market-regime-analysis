@@ -79,11 +79,25 @@ def test_defaults_are_small_regularized_model():
 
 
 def test_insufficient_data_error_mentions_parameter_count(synthetic_ohlcv):
-    det = TrueHMMDetector(n_states=6)
+    det = TrueHMMDetector(n_states=6, adapt_n_states=False)
     df = synthetic_ohlcv(n=det.min_training_bars - 1)
     with pytest.raises(ValueError, match=r"free parameters need at least"):
         det.fit(df)
     TrueHMMDetector(n_states=6, n_init=1).fit(synthetic_ohlcv(n=det.min_training_bars))
+
+
+def test_short_history_falls_back_to_fewer_states(synthetic_ohlcv, caplog):
+    """100 bars (Alpha Vantage free tier) cannot fit 6 states; fit the largest that fits."""
+    df = synthetic_ohlcv(n=100)
+    with caplog.at_level(logging.WARNING, logger="mra_lib.indicators.true_hmm_detector"):
+        det = TrueHMMDetector(n_states=6, n_init=2).fit(df)
+    assert 2 <= det.n_states < 6
+    assert det.transition_matrix.shape == (det.n_states, det.n_states)
+    assert any("instead of 6 states" in r.getMessage() for r in caplog.records)
+    _, state, _ = det.predict_regime(df)
+    assert 0 <= state < det.n_states
+    with pytest.raises(ValueError, match="Insufficient data"):
+        TrueHMMDetector(n_init=1).fit(synthetic_ohlcv(n=60))
 
 
 def test_states_sorted_by_volatility(fitted):
