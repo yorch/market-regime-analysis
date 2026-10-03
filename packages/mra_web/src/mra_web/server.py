@@ -55,15 +55,40 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    serve(
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        workers=args.workers,
+        log_level=args.log_level,
+        dev=args.dev,
+    )
 
+
+def serve(
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    reload: bool = False,
+    workers: int = 1,
+    log_level: str = "INFO",
+    dev: bool = False,
+) -> None:
+    """Validate the configuration and run the API server under uvicorn.
+
+    Shared by ``mra-api`` and ``mra start-api``. With ``dev=True`` it sets
+    ``ENVIRONMENT=development`` and ``DEBUG=true`` (so no ``JWT_SECRET`` is needed),
+    enables reload, and logs at DEBUG.
+    """
+    log_level = log_level.upper()
     # Development mode overrides (must be set before the config is loaded)
-    if args.dev:
-        args.reload = True
-        args.workers = 1
-        args.log_level = "DEBUG"
+    if dev:
+        reload = True
+        workers = 1
+        log_level = "DEBUG"
         os.environ["ENVIRONMENT"] = "development"
         os.environ["DEBUG"] = "true"
-    os.environ["LOG_LEVEL"] = args.log_level
+    os.environ["LOG_LEVEL"] = log_level
 
     from mra_web.config import APIConfig, ConfigError  # noqa: PLC0415
 
@@ -76,21 +101,21 @@ def main() -> None:
     if cfg.is_development:
         print("🚀 Starting in DEVELOPMENT mode (unauthenticated requests allowed)")
         if cfg.docs_enabled:
-            print(f"📖 API Documentation: http://{args.host}:{args.port}/docs")
-        print(f"📊 Health Check: http://{args.host}:{args.port}/health")
+            print(f"📖 API Documentation: http://{host}:{port}/docs")
+        print(f"📊 Health Check: http://{host}:{port}/health")
 
-    if cfg.jwt_secret_ephemeral and args.workers > 1:
+    if cfg.jwt_secret_ephemeral and workers > 1:
         print("❌ An ephemeral JWT secret cannot be shared across workers; set JWT_SECRET.")
         sys.exit(2)
 
     # Show configuration
-    print(f"🌐 Host: {args.host}")
-    print(f"🔌 Port: {args.port}")
-    print(f"⚡ Workers: {args.workers}")
-    print(f"📝 Log Level: {args.log_level}")
-    print(f"🔄 Reload: {args.reload}")
+    print(f"🌐 Host: {host}")
+    print(f"🔌 Port: {port}")
+    print(f"⚡ Workers: {workers}")
+    print(f"📝 Log Level: {log_level}")
+    print(f"🔄 Reload: {reload}")
 
-    if args.host in {"0.0.0.0", "::"} and not cfg.is_development:
+    if host in {"0.0.0.0", "::"} and not cfg.is_development:
         print("⚠️  Binding to all interfaces. Ensure proper firewall / reverse proxy setup.")
 
     # API key reminders
@@ -104,11 +129,11 @@ def main() -> None:
     try:
         uvicorn.run(
             "mra_web.app:app",
-            host=args.host,
-            port=args.port,
-            reload=args.reload,
-            workers=args.workers if not args.reload else 1,
-            log_level=args.log_level.lower(),
+            host=host,
+            port=port,
+            reload=reload,
+            workers=workers if not reload else 1,
+            log_level=log_level.lower(),
             access_log=True,
         )
     except KeyboardInterrupt:

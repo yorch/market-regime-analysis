@@ -736,7 +736,11 @@ def continuous_monitoring(  # noqa: PLR0913, PLR0917
     help="API server host (use 0.0.0.0 to listen on all interfaces)",
 )
 @click.option("--port", type=click.IntRange(1, 65535), default=8000, help="API server port")
-@click.option("--dev/--no-dev", default=False, help="Development mode with auto-reload")
+@click.option(
+    "--dev/--no-dev",
+    default=False,
+    help="Development mode: ENVIRONMENT=development (no JWT_SECRET needed), auto-reload",
+)
 @handle_exceptions
 def start_api(host: str, port: int, dev: bool) -> None:
     """Start the REST API server for web access.
@@ -747,29 +751,15 @@ def start_api(host: str, port: int, dev: bool) -> None:
         uv run mra start-api --host 0.0.0.0     # Listen on all interfaces
     """
     try:
-        import uvicorn  # noqa: PLC0415
+        from mra_web.server import serve  # noqa: PLC0415
     except ImportError:
         raise click.ClickException(
             "API server dependencies not available. Install with: uv sync"
         ) from None
 
-    click.echo("🚀 Starting Market Regime Analysis API Server")
-    click.echo(f"🌐 Host: {host}")
-    click.echo(f"🔌 Port: {port}")
-    click.echo(f"🔄 Development mode: {dev}")
-
-    if dev:
-        click.echo(f"📖 API Documentation: http://{host}:{port}/docs")
-        click.echo(f"📊 Health Check: http://{host}:{port}/health")
-        click.echo(f"📈 Metrics: http://{host}:{port}/metrics")
-
-    uvicorn.run(
-        "mra_web.app:app",
-        host=host,
-        port=port,
-        reload=dev,
-        log_level="debug" if dev else "info",
-    )
+    # Same entry point as ``mra-api``: --dev sets ENVIRONMENT=development so the
+    # server starts without JWT_SECRET; otherwise the config is validated first.
+    serve(host=host, port=port, dev=dev)
 
 
 @cli.command()

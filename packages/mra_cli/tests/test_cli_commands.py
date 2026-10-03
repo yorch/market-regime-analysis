@@ -1,5 +1,6 @@
 """End-to-end CLI tests using the offline ``mock`` provider (no network, no keys)."""
 
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -248,11 +249,37 @@ class TestMonitoringAndServer:
             result = runner.invoke(cli, ["continuous-monitoring", "--provider", "mock", "--once"])
         assert result.exit_code == 1
 
-    def test_cli_start_api_defaults_to_localhost(self, runner):
+    def test_cli_start_api_defaults_to_localhost(self, runner, monkeypatch):
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("JWT_SECRET", "cli-test-secret-0123456789abcdefghijklmnop")
+        monkeypatch.setenv("LOG_LEVEL", "INFO")
         with patch("uvicorn.run") as run:
             result = runner.invoke(cli, ["start-api"])
         assert result.exit_code == 0, result.output
         assert run.call_args.kwargs["host"] == "127.0.0.1"
+        assert run.call_args.kwargs["reload"] is False
+
+    def test_cli_start_api_dev_sets_development_environment(self, runner, monkeypatch):
+        # --dev must start without JWT_SECRET, like `mra-api --dev`
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.delenv("JWT_SECRET", raising=False)
+        monkeypatch.setenv("DEBUG", "false")
+        monkeypatch.setenv("LOG_LEVEL", "INFO")
+        with patch("uvicorn.run") as run:
+            result = runner.invoke(cli, ["start-api", "--dev"])
+        assert result.exit_code == 0, result.output
+        assert os.environ["ENVIRONMENT"] == "development"
+        assert run.call_args.kwargs["reload"] is True
+        assert run.call_args.kwargs["log_level"] == "debug"
+
+    def test_cli_start_api_refuses_production_without_secret(self, runner, monkeypatch):
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.delenv("JWT_SECRET", raising=False)
+        monkeypatch.setenv("LOG_LEVEL", "INFO")
+        with patch("uvicorn.run") as run:
+            result = runner.invoke(cli, ["start-api"])
+        assert result.exit_code == 2
+        run.assert_not_called()
 
 
 class TestReviewFixes:
