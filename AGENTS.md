@@ -327,7 +327,7 @@ See `examples/custom_provider.py` for a runnable template.
 all installs use `uv sync --locked`, third-party actions are pinned to commit SHAs, and superseded PR
 runs are cancelled (main/tag runs are not). Four jobs run in parallel; docker depends on them:
 1. **lint** — ruff check + ruff format --check
-2. **typecheck** — mypy (soft-fail until fully annotated)
+2. **typecheck** — mypy (must pass; zero errors)
 3. **test** — `just test-cov` (unit tests, coverage gate from `pyproject.toml`)
 4. **build** — uv build to verify packages build
 5. **docker** — builds the image, smoke-tests it (`docker run` + poll `/health`), pushes to GHCR on
