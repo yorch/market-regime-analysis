@@ -71,40 +71,30 @@ PROVIDER_UNAVAILABLE_DETAIL = "Data provider unavailable"
 PROVIDER_RETRY_AFTER_SECONDS = 60
 
 
-def _exception_chain(exc: BaseException, limit: int = 8) -> list[BaseException]:
-    """``exc`` followed by its causes/contexts (the analyzer wraps provider errors)."""
-    chain: list[BaseException] = []
-    current: BaseException | None = exc
-    while current is not None and current not in chain and len(chain) < limit:
-        chain.append(current)
-        current = current.__cause__ or current.__context__
-    return chain
-
-
 def classify_exception(exc: Exception) -> HTTPException:  # noqa: PLR0911
     """Map an analysis exception to an HTTP error with a generic, safe detail.
 
-    Provider errors are found anywhere in the cause chain, since
-    ``MarketRegimeAnalyzer`` re-raises data-loading failures as ``ValueError``.
+    ``mra_lib`` raises provider errors unchanged (``InvalidSymbolError``,
+    ``AuthError``, ``RateLimitError``, ``ConnectionError``), so they are mapped
+    by type; other library errors are ``ValueError`` subclasses (400).
     """
     if isinstance(exc, PydanticValidationError):
         # Server-side model failure (a ValueError subclass), not bad client input.
         return HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR)
-    chain = _exception_chain(exc)
-    if any(isinstance(e, InvalidSymbolError) for e in chain):
+    if isinstance(exc, InvalidSymbolError):
         return HTTPException(status.HTTP_400_BAD_REQUEST, detail="Unknown or invalid symbol")
-    if any(isinstance(e, AuthError) for e in chain):
+    if isinstance(exc, AuthError):
         # Upstream rejected the server's provider credentials: a server-side problem.
         return HTTPException(
             status.HTTP_502_BAD_GATEWAY, detail="Data provider authentication failed"
         )
-    if any(isinstance(e, RateLimitError) for e in chain):
+    if isinstance(exc, RateLimitError):
         return HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Data provider rate limit reached",
             headers={"Retry-After": str(PROVIDER_RETRY_AFTER_SECONDS)},
         )
-    if any(isinstance(e, ConnectionError | TimeoutError) for e in chain):
+    if isinstance(exc, ConnectionError | TimeoutError):
         return HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, detail=PROVIDER_UNAVAILABLE_DETAIL
         )

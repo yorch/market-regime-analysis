@@ -250,14 +250,13 @@ class TestIsProfitable:
 
 
 class TestPrintSummary:
-    def test_prints_without_error(self, capsys):
+    def test_prints_without_error(self):
         eq = _make_equity([100_000, 105_000, 110_000])
         trades = _make_trades([5000, 5000])
         pm = PerformanceMetrics(trades, eq)
-        pm.print_summary()
-        captured = capsys.readouterr()
-        assert "BACKTEST PERFORMANCE SUMMARY" in captured.out
-        assert "Total Return" in captured.out
+        text = pm.format_summary()
+        assert "BACKTEST PERFORMANCE SUMMARY" in text
+        assert "Total Return" in text
 
 
 class TestFormulasAgainstHandComputed:

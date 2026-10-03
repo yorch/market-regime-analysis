@@ -1,8 +1,8 @@
 """
 Portfolio HMM analyzer for multi-asset regime analysis.
 
-This module implements portfolio-level analysis following Renaissance
-Technologies' approach to multi-asset regime detection and correlation analysis.
+This module implements portfolio-level multi-asset regime detection and
+return-correlation / cointegration analysis.
 """
 
 import logging
@@ -14,9 +14,11 @@ import numpy as np
 import pandas as pd
 from statsmodels.tsa.stattools import coint
 
+from mra_lib._deprecation import write_deprecated_report
 from mra_lib.analyzer import MarketRegimeAnalyzer
 from mra_lib.config.data_classes import RegimeAnalysis
 from mra_lib.config.enums import MarketRegime
+from mra_lib.errors import AuthError, DataLoadError, InvalidSymbolError, RateLimitError
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +30,7 @@ _MIN_PAIR_OBSERVATIONS = 50
 
 class PortfolioHMMAnalyzer:
     """
-    Multi-asset regime analysis following Renaissance approach.
+    Multi-asset regime analysis.
 
     This class extends the single-asset analysis to portfolio-level
     regime detection, correlation analysis, and statistical arbitrage
@@ -50,16 +52,32 @@ class PortfolioHMMAnalyzer:
             periods: Dictionary mapping timeframes to data periods
             provider_flag: 'yfinance' or 'alphavantage'
             api_key: API key for Alpha Vantage (if needed)
+
+        Symbols that fail to load are logged (WARNING), skipped, and recorded in
+        :attr:`failed_symbols` (symbol -> exception); check :attr:`analyzers`
+        to see which symbols are usable.
+
+        Raises:
+            Exception: If *every* symbol fails to load, the most actionable
+                failure is re-raised unchanged so callers can map it by type:
+                any ``AuthError``, else any ``RateLimitError``, else a
+                ``ConnectionError``/``TimeoutError`` if any failure was transient,
+                else ``InvalidSymbolError`` if all symbols were invalid. Otherwise a
+                ``DataLoadError`` listing each symbol's failure is raised, chained
+                to the first.
         """
         self.symbols = symbols
         self.periods = periods
         self.analyzers: dict[str, MarketRegimeAnalyzer] = {}
-        self.portfolio_data: dict[str, pd.DataFrame] = {}
-        # Most recent failure per symbol (initialization or analysis), so callers can
-        # report why symbols are missing instead of only that they are.
+        self.failed_symbols: dict[str, Exception] = {}
+        #: Symbols whose ``analyze_current_regime`` failed in :meth:`collect_analyses`
+        self.analysis_failures: dict[str, Exception] = {}
+        #: Most recent failure per symbol (initialization or analysis), so callers can
+        #: report why symbols are missing instead of only that they are.
         self.errors: dict[str, Exception] = {}
+        self.portfolio_data: dict[str, pd.DataFrame] = {}
 
-        print(f"Initializing portfolio analysis for {len(symbols)} symbols...")
+        logger.info("Initializing portfolio analysis for %d symbols...", len(symbols))
 
         # Initialize individual analyzers
         for symbol in symbols:
@@ -67,17 +85,41 @@ class PortfolioHMMAnalyzer:
                 analyzer = MarketRegimeAnalyzer(
                     symbol, periods, provider_flag=provider_flag, api_key=api_key
                 )
-                self.analyzers[symbol] = analyzer
-                print(f"✓ Initialized {symbol}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - one bad symbol must not sink the portfolio
+                self.failed_symbols[symbol] = e
                 self.errors[symbol] = e
-                print(f"✗ Failed to initialize {symbol}: {e!s}")
+                logger.warning("✗ Failed to initialize %s: %s", symbol, e)
+                continue
+            self.analyzers[symbol] = analyzer
+            logger.info("✓ Initialized %s", symbol)
+
+        if symbols and not self.analyzers:
+            self._raise_all_failed()
 
         self._prepare_portfolio_data()
 
+    def _raise_all_failed(self) -> None:
+        """Raise the root cause when no symbol could be loaded (see ``__init__``)."""
+        failures = list(self.failed_symbols.values())
+        # Most actionable cause first: credentials, then throttling, then outages,
+        # then bad symbols; a mix of anything else is a DataLoadError
+        for kind in (AuthError, RateLimitError):
+            for error in failures:
+                if isinstance(error, kind):
+                    raise error
+        for kinds in ((ConnectionError, TimeoutError), (InvalidSymbolError,)):
+            if all(isinstance(e, kinds) for e in failures):
+                raise failures[0]
+        if any(isinstance(e, ConnectionError | TimeoutError) for e in failures):
+            # Partly transient (e.g. outage + bad symbol): retrying may help
+            raise next(e for e in failures if isinstance(e, ConnectionError | TimeoutError))
+        first = failures[0]
+        detail = "; ".join(f"{sym}: {e}" for sym, e in self.failed_symbols.items())
+        raise DataLoadError(f"No symbol could be loaded ({detail})") from first
+
     def _prepare_portfolio_data(self) -> None:
         """Prepare aligned portfolio data for correlation analysis."""
-        print("Preparing portfolio correlation data...")
+        logger.info("Preparing portfolio correlation data...")
 
         for timeframe in self.periods or {"1D": "2y"}:
             price_data = {}
@@ -97,7 +139,9 @@ class PortfolioHMMAnalyzer:
                 portfolio_df["portfolio_volatility"] = returns.std(axis=1)
 
                 self.portfolio_data[timeframe] = portfolio_df
-                print(f"✓ Prepared {timeframe} portfolio data: {len(portfolio_df)} periods")
+                logger.info(
+                    "✓ Prepared %s portfolio data: %d periods", timeframe, len(portfolio_df)
+                )
 
     def _symbol_columns(self, timeframe: str) -> list[str]:
         """Price columns (symbols) in ``portfolio_data[timeframe]``, excluding derived ones."""
@@ -109,16 +153,18 @@ class PortfolioHMMAnalyzer:
         """
         Run ``analyze_current_regime`` once per symbol.
 
-        Symbols whose analysis fails are logged, recorded in :attr:`errors`, and
-        omitted. Pass the result to the other report methods to avoid re-running
-        each symbol's analysis.
+        Symbols whose analysis fails are logged, omitted, and recorded in
+        :attr:`analysis_failures` and :attr:`errors`. Pass the result to the other report methods
+        to avoid re-running each symbol's analysis.
         """
         analyses: dict[str, RegimeAnalysis] = {}
+        self.analysis_failures = {}
         for symbol, analyzer in self.analyzers.items():
             try:
                 analyses[symbol] = analyzer.analyze_current_regime(timeframe)
                 self.errors.pop(symbol, None)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - documented: failed symbols are omitted
+                self.analysis_failures[symbol] = e
                 self.errors[symbol] = e
                 logger.warning("Error analyzing %s: %s", symbol, e)
         return analyses
@@ -211,58 +257,54 @@ class PortfolioHMMAnalyzer:
             "correlation_risk": 0.0,
         }
 
-        try:
-            if analyses is None:
-                analyses = self.collect_analyses(timeframe)
+        if analyses is None:
+            analyses = self.collect_analyses(timeframe)
 
-            if not analyses:
-                return summary
+        if not analyses:
+            return summary
 
-            # Calculate regime distribution
-            regime_counts: dict[str, int] = {}
-            for analysis in analyses.values():
-                key = analysis.current_regime.value
-                regime_counts[key] = regime_counts.get(key, 0) + 1
+        # Calculate regime distribution
+        regime_counts: dict[str, int] = {}
+        for analysis in analyses.values():
+            key = analysis.current_regime.value
+            regime_counts[key] = regime_counts.get(key, 0) + 1
 
-            summary["regime_distribution"] = regime_counts
+        summary["regime_distribution"] = regime_counts
 
-            total_assets = len(analyses)
-            dominant_regime = max(regime_counts.items(), key=lambda x: x[1])
-            summary["dominant_regime"] = dominant_regime[0]
-            summary["regime_consensus"] = dominant_regime[1] / total_assets
+        total_assets = len(analyses)
+        dominant_regime = max(regime_counts.items(), key=lambda x: x[1])
+        summary["dominant_regime"] = dominant_regime[0]
+        summary["regime_consensus"] = dominant_regime[1] / total_assets
 
-            summary["average_confidence"] = float(
-                np.mean([a.regime_confidence for a in analyses.values()])
-            )
+        summary["average_confidence"] = float(
+            np.mean([a.regime_confidence for a in analyses.values()])
+        )
 
-            # Assess portfolio risk level
-            risky = sum(
-                1
-                for a in analyses.values()
-                if a.current_regime in (MarketRegime.HIGH_VOLATILITY, MarketRegime.UNKNOWN)
-            )
-            if risky / total_assets > 0.5:
-                summary["risk_level"] = "High"
-            elif risky / total_assets > 0.3:
-                summary["risk_level"] = "Medium"
-            else:
-                summary["risk_level"] = "Low"
+        # Assess portfolio risk level
+        risky = sum(
+            1
+            for a in analyses.values()
+            if a.current_regime in (MarketRegime.HIGH_VOLATILITY, MarketRegime.UNKNOWN)
+        )
+        if risky / total_assets > 0.5:
+            summary["risk_level"] = "High"
+        elif risky / total_assets > 0.3:
+            summary["risk_level"] = "Medium"
+        else:
+            summary["risk_level"] = "Low"
 
-            # Correlation risk: needs at least two analyzed symbols with price data
-            symbols_in_data = [s for s in analyses if s in self._symbol_columns(timeframe)]
-            if len(symbols_in_data) > 1:
-                corr_matrix = self.get_return_correlation_matrix(timeframe, symbols_in_data)
-                n = len(corr_matrix)
-                if n > 1:
-                    # Average absolute correlation (excluding diagonal)
-                    total_corr = corr_matrix.abs().to_numpy().sum() - n
-                    avg_corr = float(total_corr / (n * (n - 1)))
-                    if not np.isnan(avg_corr):
-                        summary["correlation_risk"] = avg_corr
-                        summary["diversification_benefit"] = 1.0 - avg_corr
-
-        except Exception as e:
-            logger.warning("Error calculating portfolio summary: %s", e)
+        # Correlation risk: needs at least two analyzed symbols with price data
+        symbols_in_data = [s for s in analyses if s in self._symbol_columns(timeframe)]
+        if len(symbols_in_data) > 1:
+            corr_matrix = self.get_return_correlation_matrix(timeframe, symbols_in_data)
+            n = len(corr_matrix)
+            if n > 1:
+                # Average absolute correlation (excluding diagonal)
+                total_corr = corr_matrix.abs().to_numpy().sum() - n
+                avg_corr = float(total_corr / (n * (n - 1)))
+                if not np.isnan(avg_corr):
+                    summary["correlation_risk"] = avg_corr
+                    summary["diversification_benefit"] = 1.0 - avg_corr
 
         return summary
 
@@ -339,6 +381,10 @@ class PortfolioHMMAnalyzer:
         cache: dict[str, RegimeAnalysis] = dict(analyses or {})
         prices = self.portfolio_data[timeframe]
 
+        if analyses is not None:
+            # Symbols that failed in collect_analyses are skipped, not re-run
+            available_symbols = [s for s in available_symbols if s in analyses]
+
         def _analysis(symbol: str) -> RegimeAnalysis:
             if symbol not in cache:
                 cache[symbol] = self.analyzers[symbol].analyze_current_regime(timeframe)
@@ -381,7 +427,9 @@ class PortfolioHMMAnalyzer:
                     }
                 )
 
-            except Exception as e:
+            except (ValueError, ArithmeticError) as e:
+                # Cointegration/analysis failure for one pair (statsmodels, LinAlgError,
+                # unfitted model): skip the pair, keep scanning the others
                 logger.warning("Error processing pair %s/%s: %s", symbol1, symbol2, e)
                 continue
 
@@ -390,20 +438,25 @@ class PortfolioHMMAnalyzer:
 
         return opportunities[:5]  # Return top 5 opportunities
 
-    def print_portfolio_summary(self, timeframe: str = "1D") -> None:
+    def format_portfolio_summary(self, timeframe: str = "1D") -> str:
         """
-        Print comprehensive portfolio analysis.
+        Format a human-readable portfolio analysis report.
 
         Args:
             timeframe: Timeframe for analysis
-        """
-        print("\n" + "=" * 100)
-        print(f"PORTFOLIO HMM REGIME ANALYSIS ({timeframe})")
-        print("=" * 100)
 
-        # Portfolio overview
-        print(f"Portfolio: {', '.join(self.symbols)}")
-        print(f"Active Symbols: {len(self.analyzers)}")
+        Returns:
+            Multi-line report text (starts with a blank line, no trailing newline)
+        """
+        lines = [
+            "",
+            "=" * 100,
+            f"PORTFOLIO HMM REGIME ANALYSIS ({timeframe})",
+            "=" * 100,
+            # Portfolio overview
+            f"Portfolio: {', '.join(self.symbols)}",
+            f"Active Symbols: {len(self.analyzers)}",
+        ]
 
         # Analyze each symbol once and reuse for every section of the report
         analyses = self.collect_analyses(timeframe)
@@ -411,44 +464,48 @@ class PortfolioHMMAnalyzer:
         # Portfolio metrics
         summary = self.get_portfolio_regime_summary(timeframe, analyses=analyses)
 
-        print("\n📊 PORTFOLIO REGIME SUMMARY:")
-        print(f"   Dominant Regime: {summary['dominant_regime']}")
-        print(f"   Regime Consensus: {summary['regime_consensus']:.1%}")
-        print(f"   Average Confidence: {summary['average_confidence']:.1%}")
-        print(f"   Portfolio Risk: {summary['risk_level']}")
-        print(f"   Diversification Benefit: {summary['diversification_benefit']:.1%}")
-        print(f"   Correlation Risk: {summary['correlation_risk']:.1%}")
+        lines += [
+            "",
+            "📊 PORTFOLIO REGIME SUMMARY:",
+            f"   Dominant Regime: {summary['dominant_regime']}",
+            f"   Regime Consensus: {summary['regime_consensus']:.1%}",
+            f"   Average Confidence: {summary['average_confidence']:.1%}",
+            f"   Portfolio Risk: {summary['risk_level']}",
+            f"   Diversification Benefit: {summary['diversification_benefit']:.1%}",
+            f"   Correlation Risk: {summary['correlation_risk']:.1%}",
+        ]
 
         # Regime distribution
         if summary["regime_distribution"]:
-            print("\n📈 REGIME DISTRIBUTION:")
+            lines += ["", "📈 REGIME DISTRIBUTION:"]
             analyzed = len(analyses)  # denominator = successful analyses
             for regime, count in summary["regime_distribution"].items():
                 percentage = count / analyzed * 100
-                print(f"   {regime}: {count} assets ({percentage:.1f}%)")
+                lines.append(f"   {regime}: {count} assets ({percentage:.1f}%)")
 
         # Individual symbol analysis
-        print("\n🔍 INDIVIDUAL SYMBOL ANALYSIS:")
+        lines += ["", "🔍 INDIVIDUAL SYMBOL ANALYSIS:"]
         for symbol, analyzer in self.analyzers.items():
-            try:
-                if symbol not in analyses:
-                    raise ValueError("analysis failed")
-                analysis = analyses[symbol]
-                price = analyzer.data[timeframe]["Close"].iloc[-1]
-                print(
-                    f"   {symbol}: ${price:.2f} | {analysis.current_regime.value} | "
-                    f"Conf: {analysis.regime_confidence:.1%} | "
-                    f"Strategy: {analysis.recommended_strategy.value}"
-                )
-            except Exception as e:
-                print(f"   {symbol}: Error - {e!s}")
+            if symbol not in analyses:
+                lines.append(f"   {symbol}: Error - analysis failed")
+                continue
+            if timeframe not in analyzer.data or analyzer.data[timeframe].empty:
+                lines.append(f"   {symbol}: Error - no {timeframe} data")
+                continue
+            analysis = analyses[symbol]
+            price = analyzer.data[timeframe]["Close"].iloc[-1]
+            lines.append(
+                f"   {symbol}: ${price:.2f} | {analysis.current_regime.value} | "
+                f"Conf: {analysis.regime_confidence:.1%} | "
+                f"Strategy: {analysis.recommended_strategy.value}"
+            )
 
         # Statistical arbitrage opportunities
         arbitrage_pairs = self.identify_arbitrage_pairs(timeframe, analyses=analyses)
         if arbitrage_pairs:
-            print("\n💰 STATISTICAL ARBITRAGE OPPORTUNITIES:")
+            lines += ["", "💰 STATISTICAL ARBITRAGE OPPORTUNITIES:"]
             for i, opp in enumerate(arbitrage_pairs[:3], 1):
-                print(
+                lines.append(
                     f"   {i}. {opp['pair']}: {opp['signal']} "
                     f"(Z-score: {opp['spread_zscore']:.2f}, "
                     f"Strength: {opp['opportunity_strength']:.3f})"
@@ -457,7 +514,10 @@ class PortfolioHMMAnalyzer:
         # Correlation analysis
         try:
             correlations = self.calculate_regime_correlations(timeframe, analyses=analyses)
-            print("\n🔗 CORRELATION INSIGHTS:")
+        except ValueError as e:  # no portfolio data for this timeframe
+            lines.append(f"   Correlation analysis error: {e!s}")
+        else:
+            lines += ["", "🔗 CORRELATION INSIGHTS:"]
 
             # Highest and lowest pairwise return correlations
             corr = self.get_return_correlation_matrix(timeframe, list(correlations.index))
@@ -469,10 +529,22 @@ class PortfolioHMMAnalyzer:
             if pairs:
                 high = max(pairs, key=lambda x: x[1])
                 low = min(pairs, key=lambda x: x[1])
-                print(f"   Highest return correlation: {high[0]} ({high[1]:.2f})")
-                print(f"   Lowest return correlation: {low[0]} ({low[1]:.2f})")
+                lines.append(f"   Highest return correlation: {high[0]} ({high[1]:.2f})")
+                lines.append(f"   Lowest return correlation: {low[0]} ({low[1]:.2f})")
 
-        except Exception as e:
-            print(f"   Correlation analysis error: {e!s}")
+        lines.append("=" * 100)
+        return "\n".join(lines)
 
-        print("=" * 100)
+    def print_portfolio_summary(self, timeframe: str = "1D") -> None:
+        """
+        Print the portfolio report to stdout.
+
+        .. deprecated::
+            The library no longer prints. Use :meth:`format_portfolio_summary` and
+            print or log the returned string.
+        """
+        write_deprecated_report(
+            self.format_portfolio_summary(timeframe),
+            "PortfolioHMMAnalyzer.print_portfolio_summary",
+            "format_portfolio_summary",
+        )

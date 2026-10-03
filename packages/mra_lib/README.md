@@ -52,6 +52,23 @@ alias that emits `DeprecationWarning`).
   `predict_regime` returns the filtered argmax at the last bar (`use_viterbi=True` for
   the Viterbi path's last state).
 
+## Logging, reports, and errors
+
+- The library never prints. It logs under the `mra_lib` logger (a `NullHandler` is
+  installed), so configure logging to see progress:
+  `logging.basicConfig(level=logging.INFO)`. `verbose=True` on the optimizer,
+  calibrator, and walk-forward validator logs progress at INFO.
+- Human-readable reports are returned as strings: `MarketRegimeAnalyzer.format_analysis_report`,
+  `PortfolioHMMAnalyzer.format_portfolio_summary`, `BacktestEngine.format_results`,
+  `PerformanceMetrics.format_summary`, `StrategyOptimizer.format_top_results`,
+  `CalibrationResult.format_report`. The `print_*` equivalents are deprecated.
+- Errors derive from `mra_lib.errors.MRAError`: `DataLoadError`, `InsufficientDataError`,
+  `ModelNotFittedError` (all `ValueError`s) and the provider errors `ProviderError` →
+  `InvalidSymbolError` (`ValueError`), `AuthError` / `RateLimitError` (`ConnectionError`).
+  `MarketRegimeAnalyzer` re-raises provider errors unchanged; a provider `TimeoutError`
+  surfaces as `ConnectionError`. `PortfolioHMMAnalyzer` skips symbols that fail to load
+  (`failed_symbols`) and raises the root cause if every symbol fails.
+
 ## Backtesting conventions
 
 - **Accounting**: cash-based. Longs pay notional + costs on entry; shorts receive

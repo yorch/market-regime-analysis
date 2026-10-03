@@ -57,9 +57,8 @@ CLI smoke test in the Docker job, documentation refreshed.
   entry regime only, not bar by bar.
 - **Web API scale.** Rate limits, metrics and WebSocket caps are in process memory (per
   worker); fitted models are not cached.
-- **Library hygiene.** `mra_lib` still prints to stdout in places, re-wraps provider errors
-  as `ValueError`, returns many results as dicts, and ships `types/protocols.py`, which nothing
-  implements yet.
+- **Library hygiene.** `mra_lib` logs instead of printing and raises typed errors
+  (`mra_lib/errors.py`), but still returns many results (backtests, trades) as dicts.
 - **Data.** Alpha Vantage free tier: unadjusted daily prices, latest 100 bars, 25 requests/day.
   Yahoo Finance: 15m bars for the last 60 days only. No on-disk cache.
 
@@ -67,8 +66,8 @@ CLI smoke test in the Docker job, documentation refreshed.
 
 In progress:
 
-- **Library refactor** — logging instead of `print`, typed results, and a decision on the
-  protocols module (detector unification landed: `TrueHMMDetector` everywhere).
+- **Typed results** — backtest results and trades are still returned as dicts
+  (detector unification #26 and logging/typed errors #25 have landed).
 
 Needs a decision:
 

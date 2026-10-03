@@ -37,12 +37,12 @@ from mra_lib.data_providers import (
     AuthError,
     InvalidSymbolError,
     MarketDataProvider,
-    ProviderError,
     RateLimitError,
     required_env_vars,
     resolve_api_key,
 )
 from mra_lib.data_providers.credentials import PROVIDER_ENV_PAIRS
+from mra_lib.errors import InsufficientDataError
 from mra_lib.indicators.true_hmm_detector import TrueHMMDetector
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -117,16 +117,48 @@ def _debug_enabled() -> bool:
     return bool(obj.get("debug")) if isinstance(obj, dict) else False
 
 
-def _provider_cause(error: BaseException) -> BaseException:
-    """Return the first ``ProviderError`` in the cause/context chain, else ``error`` itself."""
-    seen: set[int] = set()
-    current: BaseException | None = error
-    while current is not None and id(current) not in seen:
-        if isinstance(current, ProviderError):
-            return current
-        seen.add(id(current))
-        current = current.__cause__ or current.__context__
-    return error
+class _CliLogFormatter(logging.Formatter):
+    """``INFO`` records print as the bare message (progress lines); others get a prefix."""
+
+    def __init__(self) -> None:
+        super().__init__("%(levelname)s %(name)s: %(message)s")
+
+    def format(self, record: logging.LogRecord) -> str:
+        if record.levelno == logging.INFO:
+            return record.getMessage()
+        return super().format(record)
+
+
+class _ClickEchoHandler(logging.Handler):
+    """Write log records to stderr through ``click.echo`` (resolved at emit time).
+
+    Resolving the stream per record keeps output correct when the CLI is invoked
+    repeatedly in one process (e.g. ``CliRunner``), unlike a ``StreamHandler``
+    bound to the stderr object that existed at configuration time.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            click.echo(self.format(record), err=True)
+        except Exception:  # noqa: BLE001 - logging must never raise; report via handleError
+            self.handleError(record)
+
+
+def configure_logging(debug: bool) -> None:
+    """Route log records to stderr; show ``mra_lib`` progress (INFO) as plain lines.
+
+    The library never prints, it logs. Other libraries only surface warnings,
+    ``mra_lib`` logs at INFO (DEBUG with ``--debug``). Idempotent.
+    """
+    root = logging.getLogger()
+    for handler in [h for h in root.handlers if isinstance(h, _ClickEchoHandler)]:
+        root.removeHandler(handler)
+    handler = _ClickEchoHandler()
+    handler.setFormatter(_CliLogFormatter())
+    root.addHandler(handler)
+    if root.level == logging.NOTSET or root.level > logging.WARNING:
+        root.setLevel(logging.WARNING)
+    logging.getLogger("mra_lib").setLevel(logging.DEBUG if debug else logging.INFO)
 
 
 def handle_exceptions(func: F) -> F:
@@ -141,13 +173,12 @@ def handle_exceptions(func: F) -> F:
         except Exception as e:
             if _debug_enabled():
                 raise
-            # The analyzer re-wraps provider errors as ValueError; label by the root cause
-            cause = _provider_cause(e)
-            if isinstance(cause, AuthError):
+            # The library raises provider errors unchanged, so label by type
+            if isinstance(e, AuthError):
                 label = "🔑 Authentication error"
-            elif isinstance(cause, RateLimitError):
+            elif isinstance(e, RateLimitError):
                 label = "⏳ Rate limited"
-            elif isinstance(cause, InvalidSymbolError):
+            elif isinstance(e, InvalidSymbolError):
                 label = "❓ Unknown symbol / no data"
             elif isinstance(e, ValueError):
                 label = "❌ Invalid input"
@@ -288,7 +319,7 @@ def analyze_timeframe_parallel(
     try:
         analysis = analyzer.analyze_current_regime(timeframe)
         return timeframe, analysis
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - returned to the caller as the result
         return timeframe, e
 
 
@@ -340,8 +371,7 @@ def cli(ctx: click.Context, debug: bool, provider: str | None, api_key: str | No
     ctx.obj["provider"] = provider
     ctx.obj["api_key"] = api_key
 
-    logging.basicConfig(format="%(levelname)s %(name)s: %(message)s", level=logging.WARNING)
-    logging.getLogger("mra_lib").setLevel(logging.DEBUG if debug else logging.INFO)
+    configure_logging(debug)
 
 
 @cli.command()
@@ -525,7 +555,10 @@ def export_csv(
 
     click.echo("Exporting analysis data...")
     started = time.time()
-    result = analyzer.export_analysis_to_csv(filename)  # type: ignore[func-returns-value]
+    try:
+        result: Any = analyzer.export_analysis_to_csv(filename)
+    except InsufficientDataError as e:
+        raise click.ClickException("No analysis data to export") from e
 
     # Newer library versions may return the data (or a path) instead of writing it
     if isinstance(result, pd.DataFrame):
@@ -658,9 +691,9 @@ def multi_symbol_analysis(
         provider_flag=provider_name,
         api_key=key,
     )
-    if not portfolio.analyzers:
+    if not portfolio.analyzers:  # defensive: the library raises when every symbol fails
         raise click.ClickException("No symbol could be loaded")
-    portfolio.print_portfolio_summary(timeframe)
+    click.echo(portfolio.format_portfolio_summary(timeframe))
 
 
 @cli.command()
@@ -908,6 +941,8 @@ def calibrate_multipliers(  # noqa: PLR0913, PLR0917
     )
 
     result = calibrator.calibrate_with_details(method=method, verbose=True)
+    if result.total_trades > 0:
+        click.echo(result.format_report())
 
     click.echo(f"\nBaseline Sharpe: {result.baseline_sharpe:.2f}")
     click.echo(f"Total trades analyzed: {result.total_trades}")

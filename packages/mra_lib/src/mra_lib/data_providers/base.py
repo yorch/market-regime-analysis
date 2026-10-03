@@ -16,9 +16,12 @@ Every provider's ``fetch()`` returns a DataFrame that:
 
 Errors
 ------
-Providers raise the exception classes below. They subclass ``ValueError`` or
+Providers raise the exception classes defined in :mod:`mra_lib.errors` and
+re-exported here (``ProviderError`` and its subclasses ``InvalidSymbolError``,
+``AuthError``, ``RateLimitError``). They subclass ``ValueError`` or
 ``ConnectionError`` so existing ``except ValueError`` / ``except ConnectionError``
-handlers keep working.
+handlers keep working, and :class:`~mra_lib.errors.MRAError` so ``except MRAError``
+catches every library failure.
 """
 
 import logging
@@ -30,6 +33,14 @@ from typing import Any, ClassVar
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+
+# Re-exported: providers and callers import the error classes from here
+from mra_lib.errors import (  # noqa: F401
+    AuthError,
+    InvalidSymbolError,
+    ProviderError,
+    RateLimitError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,22 +76,6 @@ OHLCV_COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
 
 _MARKET_TZ = "America/New_York"
 _MARKET_CLOSE_HOUR = 16
-
-
-class ProviderError(Exception):
-    """Marker base for errors raised by data providers."""
-
-
-class InvalidSymbolError(ProviderError, ValueError):
-    """The symbol is unknown to the provider or has no data for the request."""
-
-
-class AuthError(ProviderError, ConnectionError):
-    """The provider rejected the credentials (missing, invalid, or not entitled)."""
-
-
-class RateLimitError(ProviderError, ConnectionError):
-    """The provider is throttling requests or the quota is exhausted."""
 
 
 def period_to_start(period: str, end: datetime | None = None) -> datetime:

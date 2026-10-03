@@ -10,7 +10,7 @@ from enum import Enum
 
 class MarketRegime(Enum):
     """
-    Market regime classifications following Jim Simons' HMM methodology.
+    Market regime classifications produced by the HMM detectors.
 
     These regimes represent the fundamental market states that drive
     different trading strategies and risk management approaches.

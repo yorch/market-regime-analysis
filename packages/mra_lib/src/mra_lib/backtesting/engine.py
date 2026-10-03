@@ -10,6 +10,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
+from mra_lib._deprecation import write_deprecated_report
 from mra_lib.config.enums import MarketRegime, TradingStrategy
 from mra_lib.config.regime_tables import TRADING_DAYS_PER_YEAR
 from mra_lib.risk.risk_calculator import PortfolioPositionLimits, PositionRecord
@@ -479,26 +480,40 @@ class BacktestEngine:
 
         return equity
 
-    def print_results(self, results: dict) -> None:
-        """Print backtest results."""
-        print("\n" + "=" * 100)
-        print("BACKTEST RESULTS")
-        print("=" * 100)
+    def format_results(self, results: dict) -> str:
+        """Format backtest results (and the performance summary, if present) as text."""
+        lines: list[str] = []
+        lines.append("\n" + "=" * 100)
+        lines.append("BACKTEST RESULTS")
+        lines.append("=" * 100)
 
-        print("\n💰 CAPITAL:")
-        print(f"   Initial Capital:    ${self.initial_capital:>12,.2f}")
-        print(f"   Final Capital:      ${results['final_capital']:>12,.2f}")
-        print(f"   Total Return:       {results['total_return']:>13.2%}")
+        lines.append("\n💰 CAPITAL:")
+        lines.append(f"   Initial Capital:    ${self.initial_capital:>12,.2f}")
+        lines.append(f"   Final Capital:      ${results['final_capital']:>12,.2f}")
+        lines.append(f"   Total Return:       {results['total_return']:>13.2%}")
 
-        print("\n📊 TRADES:")
-        print(f"   Total Trades:       {len(results['trades']):>12}")
+        lines.append("\n📊 TRADES:")
+        lines.append(f"   Total Trades:       {len(results['trades']):>12}")
 
         if results["trades"]:
             winning = [t for t in results["trades"] if t["pnl"] > 0]
             losing = [t for t in results["trades"] if t["pnl"] < 0]
-            print(f"   Winning Trades:     {len(winning):>12}")
-            print(f"   Losing Trades:      {len(losing):>12}")
+            lines.append(f"   Winning Trades:     {len(winning):>12}")
+            lines.append(f"   Losing Trades:      {len(losing):>12}")
 
         # Delegate to PerformanceMetrics for detailed stats
         if "performance" in results:
-            results["performance"].print_summary()
+            lines.append(results["performance"].format_summary())
+        return "\n".join(lines)
+
+    def print_results(self, results: dict) -> None:
+        """
+        Print backtest results to stdout.
+
+        .. deprecated::
+            The library no longer prints. Use :meth:`format_results` and print or
+            log the returned string.
+        """
+        write_deprecated_report(
+            self.format_results(results), "BacktestEngine.print_results", "format_results"
+        )

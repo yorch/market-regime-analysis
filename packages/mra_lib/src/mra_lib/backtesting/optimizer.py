@@ -28,6 +28,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from mra_lib._deprecation import write_deprecated_report
 from mra_lib.config.regime_tables import TRADING_DAYS_PER_YEAR
 
 from .strategy import RegimeStrategy
@@ -171,9 +172,11 @@ class StrategyOptimizer:
             validator = self._make_validator(RegimeStrategy())
             self._regime_cache = validator.compute_regimes(self.search_df)
             if verbose:
-                print(
-                    f"  Pre-computed regimes for {len(self._regime_cache.windows)} windows "
-                    f"({self._regime_cache.fit_count} HMM fits) in {time.time() - start:.1f}s"
+                logger.info(
+                    "  Pre-computed regimes for %d windows (%d HMM fits) in %.1fs",
+                    len(self._regime_cache.windows),
+                    self._regime_cache.fit_count,
+                    time.time() - start,
                 )
 
         self.results = []
@@ -203,8 +206,6 @@ class StrategyOptimizer:
                 e,
                 exc_info=logger.isEnabledFor(logging.DEBUG),
             )
-            if verbose:
-                print(f"    Error evaluating params ({type(e).__name__}): {e}")
             return None
 
         if "error" in wf_results:
@@ -242,7 +243,7 @@ class StrategyOptimizer:
         Args:
             param_grid: Dictionary mapping param names to lists of values.
                        If None, uses default grid.
-            verbose: Print progress
+            verbose: Log progress at INFO level (``mra_lib`` logger)
 
         Returns:
             Sorted list of OptimizationResult (best first)
@@ -269,11 +270,12 @@ class StrategyOptimizer:
         total = len(combinations)
 
         if verbose:
-            print(
-                f"\nGrid search: {total} combinations "
-                f"({self.n_skipped_duplicates} equivalent combinations skipped)"
+            logger.info(
+                "Grid search: %d combinations (%d equivalent combinations skipped)",
+                total,
+                self.n_skipped_duplicates,
             )
-            print(f"Parameters: {keys}")
+            logger.info("Parameters: %s", keys)
 
         start = time.time()
         for idx, params in enumerate(combinations):
@@ -281,33 +283,40 @@ class StrategyOptimizer:
                 elapsed = time.time() - start
                 rate = idx / elapsed if elapsed > 0 else 0
                 eta = (total - idx) / rate if rate > 0 else 0
-                print(
-                    f"\n  [{idx + 1}/{total}] "
-                    f"ETA: {eta:.0f}s | "
-                    f"params: {self._format_params(params)}"
+                logger.info(
+                    "  [%d/%d] ETA: %.0fs | params: %s",
+                    idx + 1,
+                    total,
+                    eta,
+                    self._format_params(params),
                 )
 
             result = self._evaluate_params(params, verbose=False)
             if result is not None:
                 self.results.append(result)
                 if verbose:
-                    print(
-                        f"    -> Sharpe={result.sharpe:.2f} "
-                        f"Return={result.total_return:+.2%} "
-                        f"Excess={result.excess_return:+.2%} "
-                        f"WinRate={result.trade_win_rate:.0%} "
-                        f"Trades={result.total_trades} "
-                        f"MaxDD={result.max_drawdown:.2%}"
+                    logger.info(
+                        "    -> Sharpe=%.2f Return=%+.2f%% Excess=%+.2f%% WinRate=%.0f%% "
+                        "Trades=%d MaxDD=%.2f%%",
+                        result.sharpe,
+                        result.total_return * 100,
+                        result.excess_return * 100,
+                        result.trade_win_rate * 100,
+                        result.total_trades,
+                        result.max_drawdown * 100,
                     )
 
         self.results.sort(key=lambda r: r.score, reverse=True)
 
         if verbose:
             elapsed = time.time() - start
-            print(f"\nGrid search complete in {elapsed:.1f}s")
-            print(
-                f"Valid results: {len(self.results)}/{total} "
-                f"(trials={self.n_trials}, failures={self.n_failures})"
+            logger.info("Grid search complete in %.1fs", elapsed)
+            logger.info(
+                "Valid results: %d/%d (trials=%d, failures=%d)",
+                len(self.results),
+                total,
+                self.n_trials,
+                self.n_failures,
             )
 
         return self.results
@@ -326,7 +335,7 @@ class StrategyOptimizer:
             param_ranges: Dict mapping param names to (min, max) tuples
             n_iterations: Number of random samples (duplicates of an already
                 evaluated equivalent sample are skipped and counted)
-            verbose: Print progress
+            verbose: Log progress at INFO level (``mra_lib`` logger)
             seed: Seed for reproducible sampling (None = nondeterministic)
 
         Returns:
@@ -342,7 +351,7 @@ class StrategyOptimizer:
         rng = random.Random(seed)
 
         if verbose:
-            print(f"\nRandom search: {n_iterations} iterations (seed={seed})")
+            logger.info("Random search: %d iterations (seed=%s)", n_iterations, seed)
 
         seen: set[tuple] = set()
         start = time.time()
@@ -365,28 +374,33 @@ class StrategyOptimizer:
             seen.add(canon)
 
             if verbose:
-                print(f"\n  [{idx + 1}/{n_iterations}] params: {self._format_params(params)}")
+                logger.info(
+                    "  [%d/%d] params: %s", idx + 1, n_iterations, self._format_params(params)
+                )
 
             result = self._evaluate_params(params, verbose=False)
             if result is not None:
                 self.results.append(result)
                 if verbose:
-                    print(
-                        f"    -> Sharpe={result.sharpe:.2f} "
-                        f"Return={result.total_return:+.2%} "
-                        f"Excess={result.excess_return:+.2%} "
-                        f"Trades={result.total_trades}"
+                    logger.info(
+                        "    -> Sharpe=%.2f Return=%+.2f%% Excess=%+.2f%% Trades=%d",
+                        result.sharpe,
+                        result.total_return * 100,
+                        result.excess_return * 100,
+                        result.total_trades,
                     )
 
         self.results.sort(key=lambda r: r.score, reverse=True)
 
         if verbose:
             elapsed = time.time() - start
-            print(f"\nRandom search complete in {elapsed:.1f}s")
-            print(
-                f"Valid results: {len(self.results)} "
-                f"(trials={self.n_trials}, failures={self.n_failures}, "
-                f"duplicates skipped={self.n_skipped_duplicates})"
+            logger.info("Random search complete in %.1fs", elapsed)
+            logger.info(
+                "Valid results: %d (trials=%d, failures=%d, duplicates skipped=%d)",
+                len(self.results),
+                self.n_trials,
+                self.n_failures,
+                self.n_skipped_duplicates,
             )
 
         return self.results
@@ -436,26 +450,26 @@ class StrategyOptimizer:
             summary["holdout_end"] = str(self.df.index[-1])
         return summary
 
-    def print_top_results(self, n: int = 10) -> None:
-        """Print top N results (in-sample with respect to parameter selection)."""
-        print("\n" + "=" * 120)
-        print("TOP OPTIMIZATION RESULTS (IN-SAMPLE: ranked on the data used for selection)")
-        print("=" * 120)
+    def format_top_results(self, n: int = 10) -> str:
+        """Format the top N results (in-sample with respect to parameter selection)."""
+        lines: list[str] = []
+        lines.append("\n" + "=" * 120)
+        lines.append("TOP OPTIMIZATION RESULTS (IN-SAMPLE: ranked on the data used for selection)")
+        lines.append("=" * 120)
 
         if not self.results:
-            print("No results to display.")
-            return
-
-        print(
+            lines.append("No results to display.")
+            return "\n".join(lines)
+        lines.append(
             f"Trials: {self.n_trials} | failures: {self.n_failures} | "
             f"equivalent combinations skipped: {self.n_skipped_duplicates}"
         )
-        print(
+        lines.append(
             f"{'Rank':<5} {'Score':<8} {'Sharpe':<8} {'Return':<10} "
             f"{'Excess':<10} {'WinRate':<9} {'PF':<7} {'Trades':<8} "
             f"{'MaxDD':<9} {'WinWin':<8} {'Key Params'}"
         )
-        print("-" * 120)
+        lines.append("-" * 120)
 
         for i, r in enumerate(self.results[:n]):
             sl = r.params.get("stop_loss")
@@ -468,7 +482,7 @@ class StrategyOptimizer:
                 f"bear={f'{bear:.1f}' if bear is not None else '?'} "
                 f"base={f'{base:.0%}' if base is not None else '?'}"
             )
-            print(
+            lines.append(
                 f"{i + 1:<5} {r.score:<8.3f} {r.sharpe:<8.2f} "
                 f"{r.total_return:<10.2%} {r.excess_return:<10.2%} "
                 f"{r.trade_win_rate:<9.1%} {r.profit_factor:<7.2f} "
@@ -476,15 +490,30 @@ class StrategyOptimizer:
                 f"{r.window_win_rate:<8.1%} {key_params}"
             )
 
-        print("=" * 120)
+        lines.append("=" * 120)
 
         best = self.results[0]
-        print("\nBEST PARAMETERS:")
+        lines.append("\nBEST PARAMETERS:")
         for k, v in sorted(best.params.items()):
             if isinstance(v, float):
-                print(f"  {k}: {v:.4f}")
+                lines.append(f"  {k}: {v:.4f}")
             else:
-                print(f"  {k}: {v}")
+                lines.append(f"  {k}: {v}")
+        return "\n".join(lines)
+
+    def print_top_results(self, n: int = 10) -> None:
+        """
+        Print the top N results to stdout.
+
+        .. deprecated::
+            The library no longer prints. Use :meth:`format_top_results` and print
+            or log the returned string.
+        """
+        write_deprecated_report(
+            self.format_top_results(n),
+            "StrategyOptimizer.print_top_results",
+            "format_top_results",
+        )
 
     def _default_grid(self) -> dict[str, list]:
         """Default parameter grid — focused and practical."""

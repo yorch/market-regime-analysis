@@ -203,7 +203,7 @@ class WalkForwardValidator:
             with _quiet_model_warnings():
                 regime, _, conf = hmm.predict_regime(df.iloc[:i], use_viterbi=False)
             return regime, float(conf)
-        except Exception:
+        except Exception:  # noqa: BLE001 - any prediction failure scores the bar UNKNOWN
             return MarketRegime.UNKNOWN, 0.0
 
     @staticmethod
@@ -261,7 +261,7 @@ class WalkForwardValidator:
                     break
             else:
                 return fast
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - fast path is optional (hmmlearn internals)
             logger.debug("Fast regime filter unavailable (%s); using per-bar prediction", exc)
         return [self._predict_one(hmm, df, i) for i in range(start, end)]
 
@@ -296,7 +296,7 @@ class WalkForwardValidator:
                     hmm = new_hmm
                     if cache is not None:
                         cache.fit_count += 1
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - documented: keep the previous model
                     if cache is not None:
                         cache.refit_failures += 1
                     if hmm is not None:
@@ -418,7 +418,7 @@ class WalkForwardValidator:
 
         Args:
             df: Full OHLCV DataFrame
-            verbose: Print progress
+            verbose: Log progress at INFO level (``mra_lib`` logger)
             regime_cache: Optional pre-computed regimes from :meth:`compute_regimes`
                 on the same ``df`` (ignored if it does not match ``df``)
             start_index: First bar eligible for testing (default ``min_train_days``).
@@ -440,7 +440,9 @@ class WalkForwardValidator:
         windows = self.window_bounds(len(df), start_index)
 
         if verbose:
-            print(f"  Walk-forward: {len(windows)} windows, {self.test_days}-day test periods")
+            logger.info(
+                "  Walk-forward: %d windows, %d-day test periods", len(windows), self.test_days
+            )
 
         window_results = []
         for idx, (te, tend) in enumerate(windows):
@@ -448,11 +450,13 @@ class WalkForwardValidator:
             if result is not None:
                 window_results.append(result)
                 if verbose:
-                    print(
-                        f"    Window {idx + 1}/{len(windows)}: "
-                        f"strategy={result['strategy_return']:+.2%} "
-                        f"b&h={result['buy_hold_return']:+.2%} "
-                        f"trades={result['trades']}"
+                    logger.info(
+                        "    Window %d/%d: strategy=%+.2f%% b&h=%+.2f%% trades=%d",
+                        idx + 1,
+                        len(windows),
+                        result["strategy_return"] * 100,
+                        result["buy_hold_return"] * 100,
+                        result["trades"],
                     )
 
         if not window_results:

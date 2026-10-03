@@ -7,6 +7,7 @@ import io
 import json
 import time
 from datetime import UTC, datetime
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -133,6 +134,44 @@ class TestAnalysisEndpoints:
         assert set(body["correlations"]) == {"AAA", "BBB"}
         assert body["correlations"]["AAA"]["AAA"] == pytest.approx(1.0)
         assert -1.0 <= body["correlations"]["AAA"]["BBB"] <= 1.0
+
+    @pytest.mark.parametrize(
+        ("error", "code"),
+        [("InvalidSymbolError", 400), ("AuthError", 502), ("ConnectionError", 503)],
+    )
+    def test_multi_symbol_all_failed_maps_root_cause(
+        self, authed, mock_provider, monkeypatch, error, code
+    ):
+        from mra_lib import data_providers
+
+        cls = getattr(data_providers, error, None) or ConnectionError
+
+        def failing(self, symbol, period, interval):
+            raise cls("apikey=LEAKED")
+
+        monkeypatch.setattr(MockDataProvider, "fetch", failing)
+        resp = authed.post(
+            "/api/v1/analysis/multi-symbol",
+            json={"symbols": ["AAA", "BBB"], "timeframe": "1D", "provider": "mock"},
+        )
+        _assert_envelope(resp, code)
+        assert "LEAKED" not in resp.text
+
+    def test_multi_symbol_mixed_transient_failures_are_503(
+        self, authed, mock_provider, monkeypatch
+    ):
+        from mra_lib.data_providers import RateLimitError
+
+        def failing(self, symbol, period, interval):
+            raise RateLimitError("x") if symbol == "AAA" else ConnectionError("y")
+
+        monkeypatch.setattr(MockDataProvider, "fetch", failing)
+        resp = authed.post(
+            "/api/v1/analysis/multi-symbol",
+            json={"symbols": ["AAA", "BBB"], "timeframe": "1D", "provider": "mock"},
+        )
+        _assert_envelope(resp, 503)
+        assert resp.headers["Retry-After"]
 
     def test_multi_symbol_single_symbol(self, authed, mock_provider):
         resp = authed.post(
@@ -632,19 +671,21 @@ class TestExceptionClassification:
             ("ConnectionError", 503),
         ],
     )
-    def test_wrapped_by_analyzer(self, inner, code):
-        # MarketRegimeAnalyzer re-raises loading failures as ValueError
-        from mra_lib import data_providers
+    def test_raised_by_analyzer(self, inner, code):
+        # MarketRegimeAnalyzer lets provider errors propagate unchanged
+        from mra_lib import MarketRegimeAnalyzer, data_providers
+        from mra_lib.data_providers import MockDataProvider
         from mra_web.endpoints import classify_exception
 
         cls = getattr(data_providers, inner, None) or ConnectionError
-        try:
-            try:
-                raise cls("apikey=LEAKED")
-            except Exception as e:
-                raise ValueError(f"Data loading failed for 1D: {e!s}")  # noqa: B904
-        except ValueError as wrapped:
-            assert classify_exception(wrapped).status_code == code
+        with (
+            patch.object(MockDataProvider, "fetch", side_effect=cls("apikey=LEAKED")),
+            pytest.raises(cls) as info,
+        ):
+            MarketRegimeAnalyzer("SPY", periods={"1D": "2y"}, provider_flag="mock")
+        http_error = classify_exception(info.value)
+        assert http_error.status_code == code
+        assert "LEAKED" not in str(http_error.detail)
 
 
 class TestAnalysisCapacity:

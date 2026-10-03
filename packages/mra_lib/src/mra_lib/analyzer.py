@@ -1,10 +1,11 @@
 """
 Market Regime Analyzer - Main analysis engine.
 
-This module implements the primary analysis engine following Jim Simons'
-complete methodology for market regime detection and trading analysis.
+This module implements the primary analysis engine for HMM-based market
+regime detection and trading analysis.
 """
 
+import logging
 import time
 import warnings
 from collections.abc import Callable
@@ -17,6 +18,7 @@ import pandas as pd
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
 
+from mra_lib._deprecation import write_deprecated_report
 from mra_lib.config.data_classes import RegimeAnalysis
 from mra_lib.config.enums import MarketRegime, TradingStrategy
 from mra_lib.config.regime_tables import (
@@ -37,6 +39,9 @@ from mra_lib.indicators.features import (
     volume_ratio,
 )
 from mra_lib.indicators.true_hmm_detector import TrueHMMDetector
+from mra_lib.errors import DataLoadError, InsufficientDataError, ModelNotFittedError, ProviderError
+
+logger = logging.getLogger(__name__)
 
 MAX_POSITION_MULTIPLIER = 0.5
 """Position multiplier for the strongest regime at full confidence."""
@@ -50,7 +55,7 @@ PERSISTENCE_LOOKBACK = 20
 
 class MarketRegimeAnalyzer:
     """
-    Primary analysis engine implementing full Simons methodology.
+    Primary analysis engine for HMM-based regime analysis.
 
     This class serves as the main interface for market regime analysis,
     integrating HMM detection with comprehensive technical analysis,
@@ -112,30 +117,49 @@ class MarketRegimeAnalyzer:
         """
         Fetch market data using the selected provider for all timeframes.
 
+        Provider errors (``ProviderError`` subclasses such as
+        ``InvalidSymbolError``/``AuthError``/``RateLimitError``) and
+        ``ConnectionError`` propagate unchanged, so callers can handle them by
+        type; a ``TimeoutError`` is raised as ``ConnectionError``.
+
         Raises:
-            ValueError: If data download fails
+            ProviderError: The provider rejected the request
+            ConnectionError: The provider could not be reached (or timed out)
+            DataLoadError: The data was empty or malformed, or the provider failed
+                in an unexpected way (a ``ValueError`` subclass)
         """
-        print(f"Loading data for {self.symbol}...")
+        logger.info("Loading data for %s...", self.symbol)
 
         for timeframe, period in self.periods.items():
             try:
                 df = self.provider.fetch(self.symbol, period, timeframe.lower())
-
-                if df.empty:
-                    raise ValueError(f"No data available for {self.symbol} {timeframe}")
-
-                # Ensure we have OHLCV columns
-                required_cols = ["Open", "High", "Low", "Close", "Volume"]
-                missing_cols = [col for col in required_cols if col not in df.columns]
-                if missing_cols:
-                    raise ValueError(f"Missing columns: {missing_cols}")
-
-                self.data[timeframe] = df
-                print(f"✓ Loaded {len(df)} bars for {timeframe}")
-
+            except (ProviderError, ConnectionError) as e:
+                logger.debug("✗ Failed to load %s data: %s", timeframe, e)
+                raise
+            except TimeoutError as e:
+                # Provider contract: an unreachable API is a ConnectionError
+                logger.debug("✗ Failed to load %s data: %s", timeframe, e)
+                raise ConnectionError(f"Data loading timed out for {timeframe}: {e!s}") from e
             except Exception as e:
-                print(f"✗ Failed to load {timeframe} data: {e!s}")
-                raise ValueError(f"Data loading failed for {timeframe}: {e!s}")
+                logger.debug("✗ Failed to load %s data: %s", timeframe, e)
+                raise DataLoadError(f"Data loading failed for {timeframe}: {e!s}") from e
+
+            if df.empty:
+                raise DataLoadError(
+                    f"Data loading failed for {timeframe}: "
+                    f"No data available for {self.symbol} {timeframe}"
+                )
+
+            # Ensure we have OHLCV columns
+            required_cols = ["Open", "High", "Low", "Close", "Volume"]
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            if missing_cols:
+                raise DataLoadError(
+                    f"Data loading failed for {timeframe}: Missing columns: {missing_cols}"
+                )
+
+            self.data[timeframe] = df
+            logger.info("✓ Loaded %d bars for %s", len(df), timeframe)
 
     def _calculate_technical_indicators(
         self, df: pd.DataFrame, timeframe: str = "1D"
@@ -231,26 +255,26 @@ class MarketRegimeAnalyzer:
 
     def _calculate_indicators(self) -> None:
         """Process all timeframes to calculate technical indicators."""
-        print("Calculating technical indicators...")
+        logger.info("Calculating technical indicators...")
 
         for timeframe, df in self.data.items():
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=FutureWarning)
                 self.indicators[timeframe] = self._calculate_technical_indicators(df, timeframe)
-            print(f"✓ Calculated indicators for {timeframe}")
+            logger.info("✓ Calculated indicators for %s", timeframe)
 
     def _train_hmm_models(self) -> None:
         """Train HMM models for each timeframe."""
-        print("Training HMM models...")
+        logger.info("Training HMM models...")
 
         for timeframe, df in self.data.items():
             try:
                 hmm = self.detector_factory()
                 hmm.fit(df)
                 self.hmm_models[timeframe] = hmm
-                print(f"✓ Trained HMM for {timeframe}")
-            except Exception as e:
-                print(f"✗ Failed to train HMM for {timeframe}: {e!s}")
+                logger.info("✓ Trained HMM for %s", timeframe)
+            except Exception as e:  # noqa: BLE001 - analyze_current_regime reports the missing model
+                logger.warning("✗ Failed to train HMM for %s: %s", timeframe, e)
 
     def _get_trading_strategy(self, regime: MarketRegime) -> TradingStrategy:
         """
@@ -307,7 +331,7 @@ class MarketRegimeAnalyzer:
 
     def _identify_arbitrage_opportunities(self, df: pd.DataFrame) -> list[str]:
         """
-        Identify statistical arbitrage opportunities (core Simons strategy).
+        Identify statistical arbitrage opportunities (mean reversion, momentum breakdown, volatility regime).
 
         Args:
             df: DataFrame with indicators
@@ -463,6 +487,7 @@ class MarketRegimeAnalyzer:
 
         Raises:
             ValueError: If timeframe is not available
+            ModelNotFittedError: If the HMM for ``timeframe`` failed to train
         """
         if timeframe not in self.data:
             raise ValueError(f"Timeframe {timeframe} not available")
@@ -472,7 +497,7 @@ class MarketRegimeAnalyzer:
         hmm = self.hmm_models.get(timeframe)
 
         if hmm is None:
-            raise ValueError(f"HMM model not available for {timeframe}")
+            raise ModelNotFittedError(f"HMM model not available for {timeframe}")
 
         # Predict the full state sequence once over the feature matrix; the
         # current state is its last element.
@@ -515,54 +540,77 @@ class MarketRegimeAnalyzer:
             regime_confidence=confidence,
         )
 
-    def print_analysis_report(self, timeframe: str) -> None:
+    def format_analysis_report(self, timeframe: str, analysis: RegimeAnalysis | None = None) -> str:
         """
-        Print comprehensive formatted analysis report.
+        Format a human-readable analysis report.
 
         Args:
-            timeframe: Timeframe to analyze
+            timeframe: Timeframe to report on
+            analysis: Precomputed analysis for ``timeframe`` (computed if omitted)
+
+        Returns:
+            Multi-line report text (starts with a blank line, no trailing newline)
+
+        Raises:
+            ValueError: If the timeframe is not available or cannot be analyzed
         """
-        try:
+        if analysis is None:
             analysis = self.analyze_current_regime(timeframe)
-            current_price = self.data[timeframe]["Close"].iloc[-1]
+        current_price = self.data[timeframe]["Close"].iloc[-1]
 
-            print("\n" + "=" * 80)
-            print(f"HMM MARKET REGIME ANALYSIS - {self.symbol} ({timeframe})")
-            print("=" * 80)
-            print(f"Current Price: ${current_price:.2f}")
-            print(f"Analysis Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines = [
+            "",
+            "=" * 80,
+            f"HMM MARKET REGIME ANALYSIS - {self.symbol} ({timeframe})",
+            "=" * 80,
+            f"Current Price: ${current_price:.2f}",
+            f"Analysis Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            "",
+            "📊 REGIME CLASSIFICATION:",
+            f"   Current Regime: {analysis.current_regime.value}",
+            f"   HMM State: {analysis.hmm_state}",
+            f"   Confidence: {analysis.regime_confidence:.1%}",
+            f"   Persistence: {analysis.regime_persistence:.1%}",
+            f"   Transition Prob: {analysis.transition_probability:.1%}",
+            "",
+            "📈 TRADING RECOMMENDATION:",
+            f"   Strategy: {analysis.recommended_strategy.value}",
+            f"   Position Size: {analysis.position_sizing_multiplier:.1%}",
+            f"   Risk Level: {analysis.risk_level}",
+        ]
 
-            print("\n📊 REGIME CLASSIFICATION:")
-            print(f"   Current Regime: {analysis.current_regime.value}")
-            print(f"   HMM State: {analysis.hmm_state}")
-            print(f"   Confidence: {analysis.regime_confidence:.1%}")
-            print(f"   Persistence: {analysis.regime_persistence:.1%}")
-            print(f"   Transition Prob: {analysis.transition_probability:.1%}")
+        if analysis.arbitrage_opportunities:
+            lines += ["", "💰 STATISTICAL ARBITRAGE:"]
+            lines += [f"   • {opp}" for opp in analysis.arbitrage_opportunities]
 
-            print("\n📈 TRADING RECOMMENDATION:")
-            print(f"   Strategy: {analysis.recommended_strategy.value}")
-            print(f"   Position Size: {analysis.position_sizing_multiplier:.1%}")
-            print(f"   Risk Level: {analysis.risk_level}")
+        if analysis.statistical_signals:
+            lines += ["", "📡 STATISTICAL SIGNALS:"]
+            lines += [f"   • {signal}" for signal in analysis.statistical_signals]
 
-            if analysis.arbitrage_opportunities:
-                print("\n💰 STATISTICAL ARBITRAGE:")
-                for opp in analysis.arbitrage_opportunities:
-                    print(f"   • {opp}")
+        if analysis.key_levels:
+            lines += ["", "🎯 KEY LEVELS:"]
+            lines += [
+                f"   {level_name.upper()}: ${level_value:.2f}"
+                for level_name, level_value in analysis.key_levels.items()
+            ]
 
-            if analysis.statistical_signals:
-                print("\n📡 STATISTICAL SIGNALS:")
-                for signal in analysis.statistical_signals:
-                    print(f"   • {signal}")
+        lines.append("=" * 80)
+        return "\n".join(lines)
 
-            if analysis.key_levels:
-                print("\n🎯 KEY LEVELS:")
-                for level_name, level_value in analysis.key_levels.items():
-                    print(f"   {level_name.upper()}: ${level_value:.2f}")
+    def print_analysis_report(self, timeframe: str) -> None:
+        """
+        Print the analysis report to stdout.
 
-            print("=" * 80)
-
-        except Exception as e:
-            print(f"Error generating report: {e!s}")
+        .. deprecated::
+            The library no longer prints. Use :meth:`format_analysis_report` and
+            print or log the returned string. Unlike earlier versions, errors
+            are raised instead of being printed.
+        """
+        write_deprecated_report(
+            self.format_analysis_report(timeframe),
+            "MarketRegimeAnalyzer.print_analysis_report",
+            "format_analysis_report",
+        )
 
     def _draw_regime_chart(self, fig, timeframe: str, days: int) -> bool:
         """
@@ -678,7 +726,8 @@ class MarketRegimeAnalyzer:
             The drawn figure
 
         Raises:
-            ValueError: If there is not enough data to plot
+            InsufficientDataError: If there is not enough data to plot (a ``ValueError``)
+            ValueError: If no data is loaded for ``timeframe``
         """
         from matplotlib.backends.backend_agg import FigureCanvasAgg
         from matplotlib.figure import Figure
@@ -687,7 +736,7 @@ class MarketRegimeAnalyzer:
             figure = Figure(figsize=(15, 20))
             FigureCanvasAgg(figure)
         if not self._draw_regime_chart(figure, timeframe, days):
-            raise ValueError("Insufficient data for plotting")
+            raise InsufficientDataError("Insufficient data for plotting")
         return figure
 
     def render_regime_chart_png(self, timeframe: str, days: int = 60, dpi: int = 80) -> bytes:
@@ -730,17 +779,17 @@ class MarketRegimeAnalyzer:
             fig = plt.figure(figsize=(15, 20))
             if not self._draw_regime_chart(fig, timeframe, days):
                 plt.close(fig)
-                print("Insufficient data for plotting")
+                logger.warning("Insufficient data for plotting %s %s", self.symbol, timeframe)
                 return None
             plt.show()
             return fig
 
-        except Exception as e:
+        except Exception:
             if fig is not None:
                 import matplotlib.pyplot as plt
 
                 plt.close(fig)
-            print(f"Error generating chart: {e!s}")
+            logger.exception("Error generating chart for %s %s", self.symbol, timeframe)
             return None
 
     def run_continuous_monitoring(
@@ -764,18 +813,17 @@ class MarketRegimeAnalyzer:
             interval: Seconds between iterations
             max_iterations: Stop after this many iterations (``None`` = run forever)
             max_backoff: Upper bound in seconds for the retry delay after failures
-            on_update: Called with ``(timeframe, analysis)`` for each result; defaults
-                to ``print_analysis_report``
+            on_update: Called with ``(timeframe, analysis)`` for each result; by
+                default the formatted report is logged at INFO level
 
         Returns:
             Number of successful iterations
         """
         import gc
-        import logging
         import signal
         import threading
 
-        log = logging.getLogger(__name__)
+        log = logger
         # A plain flag: setting a threading.Event from a signal handler can deadlock if the
         # signal lands while the main thread holds the Event's internal lock
         stop = {"requested": False}
@@ -812,12 +860,13 @@ class MarketRegimeAnalyzer:
                     analyzed = 0
                     for timeframe in self.periods:
                         try:
+                            analysis = self.analyze_current_regime(timeframe)
                             if on_update is None:
-                                self.print_analysis_report(timeframe)
+                                log.info("%s", self.format_analysis_report(timeframe, analysis))
                             else:
-                                on_update(timeframe, self.analyze_current_regime(timeframe))
+                                on_update(timeframe, analysis)
                             analyzed += 1
-                        except Exception as e:
+                        except Exception as e:  # noqa: BLE001 - other timeframes still report
                             log.warning("Analysis failed for %s %s: %s", self.symbol, timeframe, e)
                     if analyzed == 0:
                         raise RuntimeError("no timeframe could be analyzed")
@@ -829,7 +878,7 @@ class MarketRegimeAnalyzer:
                     while next_tick <= now:  # Skip ticks missed by a slow refresh
                         next_tick += interval
                     delay = next_tick - now
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - resilient loop: log, back off, retry
                     failures += 1
                     delay = min(max(max_backoff, interval), interval * 2 ** (failures - 1))
                     log.error(
@@ -866,6 +915,8 @@ class MarketRegimeAnalyzer:
     def build_export_dataframe(self) -> pd.DataFrame:
         """
         Build the analysis export table: one row per loaded timeframe.
+
+        Timeframes that fail to analyze are logged (WARNING) and skipped.
 
         Returns:
             DataFrame with regime, strategy, indicator and key-level columns
@@ -915,29 +966,32 @@ class MarketRegimeAnalyzer:
 
                 all_data.append(export_row)
 
-            except Exception as e:
-                print(f"Error exporting {timeframe}: {e!s}")
+            except Exception as e:  # noqa: BLE001 - partial export: skip the failed timeframe
+                logger.warning("Error exporting %s: %s", timeframe, e)
 
         return pd.DataFrame(all_data)
 
-    def export_analysis_to_csv(self, filename: str | None = None) -> None:
+    def export_analysis_to_csv(self, filename: str | None = None) -> str:
         """
         Export comprehensive analysis data to CSV for backtesting.
 
         Args:
             filename: Output filename (default: auto-generated)
+
+        Returns:
+            The path the CSV was written to
+
+        Raises:
+            InsufficientDataError: If no timeframe could be analyzed (nothing to export)
+            OSError: If the file cannot be written
         """
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"{self.symbol}_hmm_analysis_{timestamp}.csv"
 
-        try:
-            export_df = self.build_export_dataframe()
-            if not export_df.empty:
-                export_df.to_csv(filename, index=False)
-                print(f"✓ Analysis exported to {filename}")
-            else:
-                print("✗ No data to export")
-
-        except Exception as e:
-            print(f"Export error: {e!s}")
+        export_df = self.build_export_dataframe()
+        if export_df.empty:
+            raise InsufficientDataError(f"No analysis data to export for {self.symbol}")
+        export_df.to_csv(filename, index=False)
+        logger.debug("Analysis exported to %s", filename)
+        return filename

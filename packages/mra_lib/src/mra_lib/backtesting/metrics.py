@@ -16,6 +16,7 @@ import math
 import numpy as np
 import pandas as pd
 
+from mra_lib._deprecation import write_deprecated_report
 from mra_lib.config.regime_tables import TRADING_DAYS_PER_YEAR
 
 from .trade_stats import compute_trade_stats
@@ -261,45 +262,59 @@ class PerformanceMetrics:
         """Get summary of all metrics."""
         return self.metrics
 
+    def format_summary(self) -> str:
+        """Format the performance summary report (no trailing newline)."""
+        lines: list[str] = []
+        lines.append("\n" + "=" * 80)
+        lines.append("BACKTEST PERFORMANCE SUMMARY")
+        lines.append("=" * 80)
+
+        lines.append("\n📈 RETURNS:")
+        lines.append(f"   Total Return:       {self.metrics['total_return']:>10.2%}")
+        lines.append(f"   Annualized Return:  {self.metrics['annualized_return']:>10.2%}")
+        lines.append(f"   Years:              {self.metrics['years']:>10.2f}")
+
+        lines.append("\n📊 RISK METRICS:")
+        lines.append(f"   Volatility (Ann.):  {self.metrics['annualized_volatility']:>10.2%}")
+        lines.append(f"   Max Drawdown:       {self.metrics['max_drawdown']:>10.2%}")
+        lines.append(f"   Avg Drawdown:       {self.metrics['avg_drawdown']:>10.2%}")
+
+        lines.append("\n📉 PERFORMANCE RATIOS:")
+        lines.append(f"   Sharpe Ratio:       {self.metrics['sharpe_ratio']:>10.2f}")
+        lines.append(f"   Sortino Ratio:      {self.metrics['sortino_ratio']:>10.2f}")
+        lines.append(f"   Calmar Ratio:       {self.metrics['calmar_ratio']:>10.2f}")
+
+        lines.append("\n💰 TRADE STATISTICS:")
+        lines.append(f"   Total Trades:       {self.metrics['total_trades']:>10}")
+        lines.append(f"   Winning Trades:     {self.metrics['winning_trades']:>10}")
+        lines.append(f"   Losing Trades:      {self.metrics['losing_trades']:>10}")
+        lines.append(f"   Win Rate:           {self.metrics['win_rate']:>10.2%}")
+        lines.append(f"   Profit Factor:      {self.metrics['profit_factor']:>10.2f}")
+        lines.append(f"   Avg Win:            ${self.metrics['avg_win']:>9.2f}")
+        lines.append(f"   Avg Loss:           ${self.metrics['avg_loss']:>9.2f}")
+        lines.append(f"   Avg Trade:          ${self.metrics['avg_trade']:>9.2f}")
+        lines.append(f"   Expectancy:         ${self.metrics['expectancy']:>9.2f}")
+
+        lines.append("\n🎯 KELLY CRITERION PARAMETERS:")
+        lines.append(f"   Full Kelly:         {self.metrics['kelly_fraction']:>10.2%}")
+        lines.append(f"   Half Kelly:         {self.metrics['half_kelly']:>10.2%}")
+        lines.append(f"   Quarter Kelly:      {self.metrics['quarter_kelly']:>10.2%}")
+        lines.append(f"   Win/Loss Ratio:     {self.metrics['kelly_win_loss_ratio']:>10.2f}")
+
+        lines.append("\n" + "=" * 80)
+        return "\n".join(lines)
+
     def print_summary(self) -> None:
-        """Print formatted summary report."""
-        print("\n" + "=" * 80)
-        print("BACKTEST PERFORMANCE SUMMARY")
-        print("=" * 80)
+        """
+        Print the performance summary to stdout.
 
-        print("\n📈 RETURNS:")
-        print(f"   Total Return:       {self.metrics['total_return']:>10.2%}")
-        print(f"   Annualized Return:  {self.metrics['annualized_return']:>10.2%}")
-        print(f"   Years:              {self.metrics['years']:>10.2f}")
-
-        print("\n📊 RISK METRICS:")
-        print(f"   Volatility (Ann.):  {self.metrics['annualized_volatility']:>10.2%}")
-        print(f"   Max Drawdown:       {self.metrics['max_drawdown']:>10.2%}")
-        print(f"   Avg Drawdown:       {self.metrics['avg_drawdown']:>10.2%}")
-
-        print("\n📉 PERFORMANCE RATIOS:")
-        print(f"   Sharpe Ratio:       {self.metrics['sharpe_ratio']:>10.2f}")
-        print(f"   Sortino Ratio:      {self.metrics['sortino_ratio']:>10.2f}")
-        print(f"   Calmar Ratio:       {self.metrics['calmar_ratio']:>10.2f}")
-
-        print("\n💰 TRADE STATISTICS:")
-        print(f"   Total Trades:       {self.metrics['total_trades']:>10}")
-        print(f"   Winning Trades:     {self.metrics['winning_trades']:>10}")
-        print(f"   Losing Trades:      {self.metrics['losing_trades']:>10}")
-        print(f"   Win Rate:           {self.metrics['win_rate']:>10.2%}")
-        print(f"   Profit Factor:      {self.metrics['profit_factor']:>10.2f}")
-        print(f"   Avg Win:            ${self.metrics['avg_win']:>9.2f}")
-        print(f"   Avg Loss:           ${self.metrics['avg_loss']:>9.2f}")
-        print(f"   Avg Trade:          ${self.metrics['avg_trade']:>9.2f}")
-        print(f"   Expectancy:         ${self.metrics['expectancy']:>9.2f}")
-
-        print("\n🎯 KELLY CRITERION PARAMETERS:")
-        print(f"   Full Kelly:         {self.metrics['kelly_fraction']:>10.2%}")
-        print(f"   Half Kelly:         {self.metrics['half_kelly']:>10.2%}")
-        print(f"   Quarter Kelly:      {self.metrics['quarter_kelly']:>10.2%}")
-        print(f"   Win/Loss Ratio:     {self.metrics['kelly_win_loss_ratio']:>10.2f}")
-
-        print("\n" + "=" * 80)
+        .. deprecated::
+            The library no longer prints. Use :meth:`format_summary` and print or
+            log the returned string.
+        """
+        write_deprecated_report(
+            self.format_summary(), "PerformanceMetrics.print_summary", "format_summary"
+        )
 
     def is_profitable(self, min_sharpe: float = 0.5, min_trades: int = 30) -> bool:
         """
