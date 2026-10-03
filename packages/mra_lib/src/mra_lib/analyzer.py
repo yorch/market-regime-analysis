@@ -684,28 +684,37 @@ class MarketRegimeAnalyzer:
         fig.savefig(buffer, format="png", dpi=dpi)
         return buffer.getvalue()
 
-    def plot_regime_analysis(self, timeframe: str, days: int = 60) -> None:
+    def plot_regime_analysis(self, timeframe: str, days: int = 60) -> Any:
         """
         Generate 5-panel chart with regime background coloring and show it.
 
         Args:
             timeframe: Timeframe to plot
             days: Number of days to show
+
+        Returns:
+            The pyplot Figure (still registered with pyplot, so callers can save
+            or close it), or None if the chart could not be drawn
         """
+        fig = None
         try:
             import matplotlib.pyplot as plt
 
             fig = plt.figure(figsize=(15, 20))
-            try:
-                if not self._draw_regime_chart(fig, timeframe, days):
-                    print("Insufficient data for plotting")
-                    return
-                plt.show()
-            finally:
+            if not self._draw_regime_chart(fig, timeframe, days):
                 plt.close(fig)
+                print("Insufficient data for plotting")
+                return None
+            plt.show()
+            return fig
 
         except Exception as e:
+            if fig is not None:
+                import matplotlib.pyplot as plt
+
+                plt.close(fig)
             print(f"Error generating chart: {e!s}")
+            return None
 
     def run_continuous_monitoring(
         self,

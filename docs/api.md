@@ -285,7 +285,9 @@ uv run examples/api_client.py websocket
 | `API_HOST` / `API_PORT` | `127.0.0.1` / `8000` | Bind address for `mra-api` |
 | `ENABLE_DOCS` | dev only | Serve `/docs`, `/redoc`, `/openapi.json` |
 | `WS_MAX_CONNECTIONS` / `WS_MAX_CONNECTIONS_PER_IP` | `100` / `5` | WebSocket caps |
-| `API_WORKERS`, `API_TIMEOUT`, `API_RELOAD`, `LOG_LEVEL`, `DEBUG` | | Server tuning |
+| `API_TIMEOUT` | `300` | Seconds an analysis may run before the request gets `504` |
+| `API_MAX_CONCURRENT_ANALYSES` | `4` | Analyses running at once per process (HTTP + WebSocket); excess requests get `503` with `Retry-After`. A timed-out analysis keeps its slot until its thread finishes |
+| `API_WORKERS`, `API_RELOAD`, `LOG_LEVEL`, `DEBUG` | | Server tuning |
 
 ```bash
 # Data providers

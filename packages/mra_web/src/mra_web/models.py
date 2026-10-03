@@ -11,6 +11,7 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 from mra_lib.config.enums import MarketRegime
+from mra_lib.config.timeframes import TIMEFRAMES
 from mra_lib.data_providers import MarketDataProvider
 
 # Ticker symbols: letters, digits and . - ^ = (e.g. BRK.B, ^GSPC, ES=F), max 15 chars.
@@ -92,7 +93,7 @@ class DetailedAnalysisRequest(BaseRequest):
     @classmethod
     def validate_timeframe(cls, v: str) -> str:
         """Validate timeframe choice."""
-        allowed_timeframes = ["1D", "1H", "15m"]
+        allowed_timeframes = list(TIMEFRAMES)
         if v not in allowed_timeframes:
             raise ValueError(f"Timeframe must be one of: {', '.join(allowed_timeframes)}")
         return v
@@ -139,7 +140,7 @@ class MultiSymbolAnalysisRequest(BaseRequest):
     @classmethod
     def validate_timeframe(cls, v: str) -> str:
         """Validate timeframe choice."""
-        allowed_timeframes = ["1D", "1H", "15m"]
+        allowed_timeframes = list(TIMEFRAMES)
         if v not in allowed_timeframes:
             raise ValueError(f"Timeframe must be one of: {', '.join(allowed_timeframes)}")
         return v
@@ -162,7 +163,7 @@ class GenerateChartsRequest(BaseRequest):
     @classmethod
     def validate_timeframe(cls, v: str) -> str:
         """Validate timeframe choice."""
-        allowed_timeframes = ["1D", "1H", "15m"]
+        allowed_timeframes = list(TIMEFRAMES)
         if v not in allowed_timeframes:
             raise ValueError(f"Timeframe must be one of: {', '.join(allowed_timeframes)}")
         return v

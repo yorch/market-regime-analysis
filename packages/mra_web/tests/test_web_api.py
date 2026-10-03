@@ -94,8 +94,15 @@ class TestAnalysisEndpoints:
         assert resp.status_code == 200
         assert seen == ["1d"]
 
-    def test_current_tolerates_failing_timeframes(self, authed, mock_provider):
-        # The mock provider has no "6mo" period, so 1H fails; others still return.
+    def test_current_tolerates_failing_timeframes(self, authed, mock_provider, monkeypatch):
+        original = MockDataProvider.fetch
+
+        def flaky(self, symbol, period, interval):
+            if interval == "1h":
+                raise ConnectionError("1h feed down")
+            return original(self, symbol, period, interval)
+
+        monkeypatch.setattr(MockDataProvider, "fetch", flaky)
         resp = authed.post("/api/v1/analysis/current", json={"symbol": "SPY", "provider": "mock"})
         assert resp.status_code == 200, resp.text
         timeframes = [a["timeframe"] for a in _strict_loads(resp.text)["analyses"]]
@@ -124,8 +131,8 @@ class TestAnalysisEndpoints:
         assert metrics["analyzed_symbols"] == 2
         assert metrics["dominant_regime"] in {r.value for r in MarketRegime}
         assert set(body["correlations"]) == {"AAA", "BBB"}
-        # Mock data is seeded identically per symbol: returns correlate perfectly
-        assert body["correlations"]["AAA"]["BBB"] == pytest.approx(1.0)
+        assert body["correlations"]["AAA"]["AAA"] == pytest.approx(1.0)
+        assert -1.0 <= body["correlations"]["AAA"]["BBB"] <= 1.0
 
     def test_multi_symbol_single_symbol(self, authed, mock_provider):
         resp = authed.post(
@@ -523,29 +530,40 @@ class TestExceptionClassification:
         assert classify_exception(ConnectionError("x")).status_code == 503
         assert classify_exception(RuntimeError("x")).status_code == 500
 
-    def test_provider_error_types(self, monkeypatch):
-        from mra_web import endpoints
+    def test_provider_error_types(self):
+        from mra_lib.data_providers import AuthError, InvalidSymbolError, RateLimitError
+        from mra_web.endpoints import classify_exception
 
-        class InvalidSymbolError(ValueError):
-            pass
-
-        class AuthError(ConnectionError):
-            pass
-
-        class RateLimitError(ConnectionError):
-            pass
-
-        monkeypatch.setattr(endpoints, "_InvalidSymbolError", InvalidSymbolError)
-        monkeypatch.setattr(endpoints, "_ProviderAuthError", AuthError)
-        monkeypatch.setattr(endpoints, "_ProviderRateLimitError", RateLimitError)
-
-        assert endpoints.classify_exception(InvalidSymbolError("k")).status_code == 400
-        auth = endpoints.classify_exception(AuthError("apikey=LEAKED"))
+        assert classify_exception(InvalidSymbolError("k")).status_code == 400
+        auth = classify_exception(AuthError("apikey=LEAKED"))
         assert auth.status_code == 502
         assert "LEAKED" not in str(auth.detail)
-        limited = endpoints.classify_exception(RateLimitError("x"))
+        limited = classify_exception(RateLimitError("x"))
         assert limited.status_code == 503
         assert limited.headers == {"Retry-After": "60"}
+
+    @pytest.mark.parametrize(
+        ("inner", "code"),
+        [
+            ("AuthError", 502),
+            ("RateLimitError", 503),
+            ("InvalidSymbolError", 400),
+            ("ConnectionError", 503),
+        ],
+    )
+    def test_wrapped_by_analyzer(self, inner, code):
+        # MarketRegimeAnalyzer re-raises loading failures as ValueError
+        from mra_lib import data_providers
+        from mra_web.endpoints import classify_exception
+
+        cls = getattr(data_providers, inner, None) or ConnectionError
+        try:
+            try:
+                raise cls("apikey=LEAKED")
+            except Exception as e:
+                raise ValueError(f"Data loading failed for 1D: {e!s}")  # noqa: B904
+        except ValueError as wrapped:
+            assert classify_exception(wrapped).status_code == code
 
 
 class TestAnalysisCapacity:

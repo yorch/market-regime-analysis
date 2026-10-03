@@ -19,7 +19,13 @@ from pydantic import ValidationError as PydanticValidationError
 from mra_lib import MarketRegimeAnalyzer, PortfolioHMMAnalyzer, SimonsRiskCalculator
 from mra_lib.config.data_classes import RegimeAnalysis
 from mra_lib.config.enums import MarketRegime
-from mra_lib.data_providers import MarketDataProvider, base as _provider_base
+from mra_lib.config.timeframes import TIMEFRAMES
+from mra_lib.data_providers import (
+    AuthError,
+    InvalidSymbolError,
+    MarketDataProvider,
+    RateLimitError,
+)
 
 from .auth import User, authenticate_request
 from .models import (
@@ -37,7 +43,6 @@ from .models import (
     ProvidersResponse,
 )
 from .utils import (
-    TIMEFRAMES,
     api_metrics,
     convert_regime_analysis_to_response,
     get_regime_from_string,
@@ -61,39 +66,48 @@ INVALID_INPUT_DETAIL = "Invalid input or no data available for the requested sym
 PROVIDER_UNAVAILABLE_DETAIL = "Data provider unavailable"
 
 
-# Provider exception types added by the CLI/providers work (#19). Looked up lazily
-# so this module works with and without them; they map to more specific statuses.
-_InvalidSymbolError: type[Exception] | None = getattr(_provider_base, "InvalidSymbolError", None)
-_ProviderAuthError: type[Exception] | None = getattr(_provider_base, "AuthError", None)
-_ProviderRateLimitError: type[Exception] | None = getattr(_provider_base, "RateLimitError", None)
-
 PROVIDER_RETRY_AFTER_SECONDS = 60
 
 
+def _exception_chain(exc: BaseException, limit: int = 8) -> list[BaseException]:
+    """``exc`` followed by its causes/contexts (the analyzer wraps provider errors)."""
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and current not in chain and len(chain) < limit:
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return chain
+
+
 def classify_exception(exc: Exception) -> HTTPException:  # noqa: PLR0911
-    """Map an analysis exception to an HTTP error with a generic, safe detail."""
+    """Map an analysis exception to an HTTP error with a generic, safe detail.
+
+    Provider errors are found anywhere in the cause chain, since
+    ``MarketRegimeAnalyzer`` re-raises data-loading failures as ``ValueError``.
+    """
     if isinstance(exc, PydanticValidationError):
         # Server-side model failure (a ValueError subclass), not bad client input.
         return HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR)
-    if _InvalidSymbolError is not None and isinstance(exc, _InvalidSymbolError):
+    chain = _exception_chain(exc)
+    if any(isinstance(e, InvalidSymbolError) for e in chain):
         return HTTPException(status.HTTP_400_BAD_REQUEST, detail="Unknown or invalid symbol")
-    if _ProviderAuthError is not None and isinstance(exc, _ProviderAuthError):
+    if any(isinstance(e, AuthError) for e in chain):
         # Upstream rejected the server's provider credentials: a server-side problem.
         return HTTPException(
             status.HTTP_502_BAD_GATEWAY, detail="Data provider authentication failed"
         )
-    if _ProviderRateLimitError is not None and isinstance(exc, _ProviderRateLimitError):
+    if any(isinstance(e, RateLimitError) for e in chain):
         return HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Data provider rate limit reached",
             headers={"Retry-After": str(PROVIDER_RETRY_AFTER_SECONDS)},
         )
-    if isinstance(exc, ValueError):
-        return HTTPException(status.HTTP_400_BAD_REQUEST, detail=INVALID_INPUT_DETAIL)
-    if isinstance(exc, ConnectionError):
+    if any(isinstance(e, ConnectionError | TimeoutError) for e in chain):
         return HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, detail=PROVIDER_UNAVAILABLE_DETAIL
         )
+    if isinstance(exc, ValueError):
+        return HTTPException(status.HTTP_400_BAD_REQUEST, detail=INVALID_INPUT_DETAIL)
     return HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 

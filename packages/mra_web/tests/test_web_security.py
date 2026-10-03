@@ -646,7 +646,7 @@ class TestWebSocketFollowUps:
         with (
             pytest.raises(WebSocketDisconnect) as exc,
             client.websocket_connect(
-                "/ws/monitoring/SPY?provider=mock", headers={"X-API-Key": API_KEY}
+                "/ws/monitoring/SPY?provider=bogus", headers={"X-API-Key": API_KEY}
             ),
         ):
             pass
@@ -676,3 +676,19 @@ def test_chart_for_unloaded_timeframe_is_value_error(mock_provider):
     analyzer = MarketRegimeAnalyzer("TEST", periods={"1D": "2y"}, provider_flag="mock")
     with pytest.raises(ValueError):
         analyzer.render_regime_chart_png("1H", 30)
+
+
+def test_plot_regime_analysis_returns_open_figure(mock_provider, monkeypatch):
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+
+    from mra_lib import MarketRegimeAnalyzer
+
+    monkeypatch.setattr(plt, "show", lambda *a, **k: None)
+    analyzer = MarketRegimeAnalyzer("TEST", periods={"1D": "2y"}, provider_flag="mock")
+    fig = analyzer.plot_regime_analysis("1D", 30)
+    assert fig is not None and plt.fignum_exists(fig.number)
+    plt.close(fig)
+    assert analyzer.plot_regime_analysis("1D", 5) is None

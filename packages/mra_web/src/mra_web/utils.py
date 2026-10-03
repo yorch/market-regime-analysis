@@ -23,6 +23,7 @@ from starlette.concurrency import run_in_threadpool
 
 from mra_lib.config.data_classes import RegimeAnalysis
 from mra_lib.config.enums import MarketRegime, TradingStrategy
+from mra_lib.config.timeframes import DEFAULT_PERIODS
 from mra_lib.data_providers import required_env_vars, resolve_api_key
 
 from .config import get_config
@@ -33,14 +34,13 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-# Timeframes the API analyzes and the history loaded for each. Endpoints pass only
-# the timeframe they need, so a single-timeframe request loads a single dataset.
-TIMEFRAMES: tuple[str, ...] = ("1D", "1H", "15m")
-DEFAULT_PERIODS: dict[str, str] = {"1D": "2y", "1H": "6mo", "15m": "1mo"}
-
 
 def periods_for(*timeframes: str) -> dict[str, str]:
-    """Return the analyzer ``periods`` mapping for the given timeframes."""
+    """Return the analyzer ``periods`` mapping for the given timeframes.
+
+    Endpoints pass only the timeframes they need, so a single-timeframe request
+    loads a single dataset.
+    """
     return {tf: DEFAULT_PERIODS[tf] for tf in timeframes}
 
 
