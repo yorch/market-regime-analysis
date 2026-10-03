@@ -59,6 +59,33 @@ class TestRegimeDetection:
         assert list(fast_r) == list(slow_r)
         np.testing.assert_allclose(fast_c.to_numpy(), slow_c.to_numpy(), atol=1e-6)
 
+    def test_fast_path_used_without_fallback(self, data, monkeypatch, caplog):
+        """The O(n) filter agrees with predict_regime, so only the 3 cross-checks run per segment."""
+        v = WalkForwardValidator(RegimeStrategy(), retrain_frequency=20, **FAST_HMM)
+        calls = {"n": 0}
+        real = WalkForwardValidator._predict_one
+
+        def counting(hmm, df, i):
+            calls["n"] += 1
+            return real(hmm, df, i)
+
+        monkeypatch.setattr(WalkForwardValidator, "_predict_one", staticmethod(counting))
+        with caplog.at_level(logging.DEBUG, logger="mra_lib.backtesting.walk_forward"):
+            v._detect_regimes_walk_forward(data, 252, 315)
+        assert not [r for r in caplog.records if "per-bar prediction" in r.getMessage()]
+        n_segments = len(range(252, 315, 20))
+        assert calls["n"] <= 3 * n_segments
+
+    def test_uses_same_detector_class_as_analyzer(self, data):
+        from mra_lib.indicators.true_hmm_detector import TrueHMMDetector
+
+        v = WalkForwardValidator(RegimeStrategy(), **FAST_HMM)
+        det = v._fit_detector(data.iloc[:252])
+        assert type(det) is TrueHMMDetector
+        # Same class and model defaults the analyzer constructs by default
+        assert det.n_init == TrueHMMDetector().n_init
+        assert det.covariance_type == TrueHMMDetector().covariance_type
+
     def test_failed_refit_keeps_previous_model(self, data, monkeypatch, caplog):
         v = WalkForwardValidator(RegimeStrategy(), retrain_frequency=20, **FAST_HMM)
         real_fit = WalkForwardValidator._fit_detector

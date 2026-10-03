@@ -9,6 +9,8 @@ import pytest
 from mra_lib.analyzer import MarketRegimeAnalyzer
 from mra_lib.config.enums import MarketRegime, TradingStrategy
 from mra_lib.config.regime_tables import REGIME_MULTIPLIERS, REGIME_STRATEGIES
+from mra_lib.indicators.base import RegimeDetector
+from mra_lib.indicators.true_hmm_detector import TrueHMMDetector
 
 
 def _make_ohlcv(n=300, seed=42):
@@ -255,7 +257,19 @@ class TestCalculateTechnicalIndicators:
         df["Volume"] = 0
         result = a._calculate_technical_indicators(df)
         assert "volume_ma" in result.columns
-        assert (result["volume_ma"] == 1).all()
+        # Volume handling is decided per bar (causal): bars without volume get a
+        # neutral ratio of 1 once the 20-bar window is complete.
+        ratio = result["volume_ratio"].dropna()
+        assert len(ratio) == len(df) - 19
+        assert (ratio == 1).all()
+
+    def test_volume_ratio_is_causal(self):
+        a = _build_analyzer()
+        df = _make_ohlcv(100)
+        df.loc[df.index[:60], "Volume"] = 0  # volume only appears later
+        full = a._calculate_technical_indicators(df)["volume_ratio"]
+        prefix = a._calculate_technical_indicators(df.iloc[:60])["volume_ratio"]
+        pd.testing.assert_series_equal(full.iloc[:60], prefix)
 
     def test_autocorrelation_features(self):
         a = _build_analyzer()
@@ -284,9 +298,7 @@ class TestAnalyzeCurrentRegime:
         df = a.data["1D"]
         a.indicators["1D"] = a._calculate_technical_indicators(df)
 
-        from mra_lib.indicators.hmm_detector import HiddenMarkovRegimeDetector
-
-        hmm = HiddenMarkovRegimeDetector(n_states=4)
+        hmm = TrueHMMDetector(n_states=4, n_init=3)
         hmm.fit(df)
         a.hmm_models["1D"] = hmm
 
@@ -318,15 +330,36 @@ class TestInitialization:
         assert "1D" in analyzer.data
         assert "1D" in analyzer.indicators
         assert "1D" in analyzer.hmm_models
+        # Default model is the same TrueHMMDetector that walk-forward validates
+        assert type(analyzer.hmm_models["1D"]) is TrueHMMDetector
+
+    @patch("mra_lib.analyzer.MarketDataProvider")
+    def test_injected_detector_factory(self, mock_provider_cls):
+        mock_provider = MagicMock()
+        mock_provider.fetch.return_value = _make_ohlcv(300)
+        mock_provider_cls.create_provider.return_value = mock_provider
+        built: list[TrueHMMDetector] = []
+
+        def factory() -> TrueHMMDetector:
+            det = TrueHMMDetector(n_states=3, n_init=2)
+            built.append(det)
+            return det
+
+        analyzer = MarketRegimeAnalyzer(
+            "TEST", periods={"1D": "2y"}, provider_flag="yfinance", detector_factory=factory
+        )
+        assert len(built) == 1
+        assert analyzer.hmm_models["1D"] is built[0]
+        assert isinstance(built[0], RegimeDetector)
+        result = analyzer.analyze_current_regime("1D")
+        assert 0 <= result.hmm_state < 3
 
 
 class _FakeDetector:
     """Detector stub with a controlled state sequence and transition matrix."""
 
     def __init__(self, states, confidence, regime=MarketRegime.BULL_TRENDING):
-        from mra_lib.indicators.hmm_detector import HiddenMarkovRegimeDetector
-
-        self._real = HiddenMarkovRegimeDetector(n_states=3)
+        self._real = TrueHMMDetector(n_states=3)
         self._real.fitted = True
         self._real.transition_matrix = np.array(
             [[0.7, 0.2, 0.1], [0.3, 0.6, 0.1], [0.25, 0.25, 0.5]]
@@ -383,12 +416,10 @@ class TestPersistenceAndTransitionRegression:
 
     @pytest.mark.parametrize("seed", [1, 7, 42])
     def test_persistence_positive_on_synthetic_data(self, seed):
-        from mra_lib.indicators.hmm_detector import HiddenMarkovRegimeDetector
-
         a = _build_analyzer(df=_make_ohlcv(300, seed=seed))
         df = a.data["1D"]
         a.indicators["1D"] = a._calculate_technical_indicators(df)
-        hmm = HiddenMarkovRegimeDetector(n_states=4)
+        hmm = TrueHMMDetector(n_states=4, n_init=3)
         hmm.fit(df)
         a.hmm_models["1D"] = hmm
         result = a.analyze_current_regime("1D")

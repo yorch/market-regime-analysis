@@ -3,13 +3,13 @@
 import pandas as pd
 
 from mra_lib.config.enums import MarketRegime
-from mra_lib.indicators.hmm_detector import HiddenMarkovRegimeDetector
+from mra_lib.indicators.true_hmm_detector import TrueHMMDetector
 from mra_lib.risk.risk_calculator import SimonsRiskCalculator
 
 
-def test_gmm_detector_fits_and_predicts_on_synthetic_data(synthetic_ohlcv):
+def test_detector_fits_and_predicts_on_synthetic_data(synthetic_ohlcv):
     df = synthetic_ohlcv(n=365)
-    hmm = HiddenMarkovRegimeDetector(n_states=6)
+    hmm = TrueHMMDetector(n_states=6)
 
     hmm.fit(df)
     regime, state, confidence = hmm.predict_regime(df)
@@ -19,19 +19,19 @@ def test_gmm_detector_fits_and_predicts_on_synthetic_data(synthetic_ohlcv):
     assert 0.0 <= confidence <= 1.0
 
 
-def test_gmm_detector_feature_engineering_produces_finite_features(synthetic_ohlcv):
+def test_detector_feature_engineering_produces_finite_features(synthetic_ohlcv):
     df = synthetic_ohlcv(n=365)
-    features = HiddenMarkovRegimeDetector(n_states=6)._prepare_features(df)
+    features = TrueHMMDetector(n_states=6)._prepare_features(df)
 
     assert isinstance(features, pd.DataFrame)
-    assert len(features.columns) > 5
+    assert 5 <= len(features.columns) <= 7
     assert len(features) > 0
     assert not features.isna().any().any()
 
 
 def test_risk_sizes_are_bounded_for_detected_regime(synthetic_ohlcv):
     df = synthetic_ohlcv(n=365)
-    hmm = HiddenMarkovRegimeDetector(n_states=6).fit(df)
+    hmm = TrueHMMDetector(n_states=6).fit(df)
     regime, _, confidence = hmm.predict_regime(df)
 
     kelly = SimonsRiskCalculator.calculate_kelly_optimal_size(
