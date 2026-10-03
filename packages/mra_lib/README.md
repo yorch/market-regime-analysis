@@ -1,6 +1,6 @@
 # mra-lib
 
-Core library for market regime analysis using Hidden Markov Models. Contains all analysis logic with zero UI or framework dependencies.
+Core library for market regime analysis using Hidden Markov Models. Contains all analysis logic and no CLI or web framework dependencies (it still prints reports and uses matplotlib for charts).
 
 ## Key Modules
 

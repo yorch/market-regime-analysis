@@ -222,7 +222,12 @@ curl -X POST http://localhost:8000/api/v1/position-sizing \
 
 `regime` must be one of `Bull Trending`, `Bear Trending`, `Mean Reverting`,
 `High Volatility`, `Low Volatility`, `Breakout`, `Unknown`; `base_size`, `confidence` and
-`persistence` are in `[0, 1]`, `correlation` in `[-1, 1]`.
+`persistence` are in `[0, 1]`, `correlation` in `[-1, 1]`. Positive sizes are bounded to
+1–50% at each step (a zero size stays zero). In `calculations`, `regime_multiplier` is
+`regime_adjusted_size / base_size` (regime, confidence and persistence factors combined),
+`correlation_adjustment` is `correlation_adjusted_size / regime_adjusted_size`, and
+`confidence_factor` / `persistence_factor` echo the inputs, not the scaling actually applied
+(`0.3 + 0.7 × confidence`, `0.7 + 0.3 × persistence`).
 
 ### GET `/api/v1/providers`
 
@@ -474,6 +479,7 @@ Read by `mra_web/config.py` (and `mra_web/server.py` for the bind options):
 | `API_MAX_CONCURRENT_ANALYSES` | `4` | Analyses running at once per process (HTTP + WebSocket) |
 | `WS_MAX_CONNECTIONS` / `WS_MAX_CONNECTIONS_PER_IP` | `100` / `5` | WebSocket caps per process |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
+| `DEBUG` | `false` | Only reported by `/debug/config` (`--dev` sets it) |
 
 Data provider credentials: `ALPHA_VANTAGE_API_KEY` (or `ALPHAVANTAGE_API_KEY`),
 `ALPHA_VANTAGE_PREMIUM`, `POLYGON_API_KEY`, `APCA_API_KEY_ID` + `APCA_API_SECRET_KEY`,

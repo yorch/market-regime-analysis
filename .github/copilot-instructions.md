@@ -6,7 +6,7 @@ layout, commands, conventions, CI, and security configuration.
 
 Quick reference:
 
-- uv workspace with three packages: `mra_lib` (core library, no UI deps), `mra_cli` (Click CLI,
+- uv workspace with three packages: `mra_lib` (core library, no CLI/web framework deps), `mra_cli` (Click CLI,
   `uv run mra`), `mra_web` (FastAPI API, `uv run mra-api`).
 - Install: `uv sync`. Offline demo data: `--provider mock`.
 - Before committing: `just qa` (ruff format check + ruff lint + mypy, which is blocking in CI)
