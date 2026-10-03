@@ -47,13 +47,10 @@ CLI smoke test in the Docker job, documentation refreshed.
   in-sample with respect to parameter selection; a holdout split exists
   (`--holdout-frac`, default 0.2), but there is no multiple-testing correction (e.g.
   deflated Sharpe) for the number of trials.
-- **Two detectors.** The analyzer (CLI/API) uses the GMM-based detector
-  (`indicators/hmm_detector.py`); walk-forward validation and `regime-forecast` use the
-  hmmlearn detector (`indicators/true_hmm_detector.py`). Validation results therefore say
-  little about the model users see, and the two can disagree.
-- **Model fit quality.** Features include non-stationary series; models are
-  overparameterized, so reported confidence is often ≈ 1.0. The hmmlearn detector's
-  percentile-based state labelling is biased. Treat confidence as uncalibrated.
+- **Model fit quality.** One detector (`TrueHMMDetector`) is now used everywhere, on a
+  stationary 6-feature set. Confidence is less saturated but still high in persistent
+  states, and different seeds can reach different EM optima; treat confidence as
+  uncalibrated.
 - **Strategy maps differ.** The backtest `RegimeStrategy` regime→direction map differs from
   the shared `REGIME_STRATEGIES` table used for recommendations.
 - **Calibrator attribution.** `calibrate-multipliers` attributes each trade's P&L to its
@@ -70,9 +67,8 @@ CLI smoke test in the Docker job, documentation refreshed.
 
 In progress:
 
-- **Detector unification and library refactor** — one detector everywhere, stationary
-  feature set, logging instead of `print`, typed results, and a decision on the protocols
-  module.
+- **Library refactor** — logging instead of `print`, typed results, and a decision on the
+  protocols module (detector unification landed: `TrueHMMDetector` everywhere).
 
 Needs a decision:
 

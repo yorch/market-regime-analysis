@@ -189,9 +189,7 @@ Alpaca uses the free IEX feed by default. Its volume covers only IEX trades, so 
 
 ### Hidden Markov Models
 
-The system provides two HMM implementations:
-- **GMM-based detector** (`hmm_detector.py`): Gaussian Mixture Models as HMM approximation with post-hoc transition matrix estimation
-- **True HMM detector** (`true_hmm_detector.py`): Full `hmmlearn` implementation with Baum-Welch training and Viterbi decoding
+One model is used everywhere: `TrueHMMDetector` (`true_hmm_detector.py`), a Gaussian HMM (`hmmlearn`, Baum-Welch training) on six causal, stationary features with diagonal covariances and multiple EM restarts. States are labelled by absolute thresholds on their de-standardized means, and per-bar history uses filtered (forward-only) posteriors. The analyzer, `regime-forecast` and walk-forward validation therefore report the same model. See `packages/mra_lib/README.md` for details.
 
 ### Statistical Features
 
