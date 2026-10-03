@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
+import mra_web
 from mra_web.app import app
 from mra_web.auth import (
     TokenData,
@@ -480,7 +481,9 @@ class TestApp:
         assert app.title == "Market Regime Analysis API"
 
     def test_app_version(self):
-        assert app.version == "1.0.0"
+        from importlib.metadata import version
+
+        assert app.version == mra_web.__version__ == version("mra-web")
 
 
 class TestAppEndpoints:
@@ -497,6 +500,9 @@ class TestAppEndpoints:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "healthy"
+        assert data["version"] == mra_web.__version__
+        assert client.get("/api/v1/health").json()["version"] == mra_web.__version__
+        assert client.get("/").json()["version"] == mra_web.__version__
 
     def test_ready(self, client):
         resp = client.get("/ready")

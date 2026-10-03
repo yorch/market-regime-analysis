@@ -48,7 +48,7 @@ cannot be combined with `--workers` > 1.
 | GET | `/health`, `/api/v1/health` | public | `{"status": "healthy", "timestamp", "version"}` |
 | GET | `/ready` | public | readiness checks |
 | GET | `/metrics` | required | API metrics + WebSocket connection stats |
-| GET | `/api/v1/metrics` | required | API metrics |
+| GET | `/api/v1/metrics` | required | same as `/metrics` |
 | POST | `/api/v1/analysis/detailed` | required | `AnalysisResponse` (one timeframe) |
 | POST | `/api/v1/analysis/current` | required | `MultiAnalysisResponse` (1D, 1H, 15m) |
 | POST | `/api/v1/analysis/multi-symbol` | required | `PortfolioAnalysisResponse` |
@@ -215,9 +215,10 @@ curl -X POST http://localhost:8000/api/v1/position-sizing \
   "final_recommendation": 0.020683,
   "calculations": {
     "base_position_size": 0.02,
-    "regime_multiplier": 1.03415,
-    "confidence_factor": 0.8,
-    "persistence_factor": 0.75,
+    "regime_multiplier": 1.3,
+    "confidence_factor": 0.86,
+    "persistence_factor": 0.925,
+    "combined_multiplier": 1.03415,
     "correlation_adjustment": 1.0
   },
   "timestamp": "2026-10-03T17:21:48.120717Z"
@@ -227,11 +228,16 @@ curl -X POST http://localhost:8000/api/v1/position-sizing \
 `regime` must be one of `Bull Trending`, `Bear Trending`, `Mean Reverting`,
 `High Volatility`, `Low Volatility`, `Breakout`, `Unknown`; `base_size`, `confidence` and
 `persistence` are in `[0, 1]`, `correlation` in `[-1, 1]`. Positive sizes are bounded to
-1–50% at each step (a zero size stays zero). In `calculations`, `regime_multiplier` is
-`regime_adjusted_size / base_size` (regime, confidence and persistence factors combined),
-`correlation_adjustment` is `correlation_adjusted_size / regime_adjusted_size`, and
-`confidence_factor` / `persistence_factor` echo the inputs, not the scaling actually applied
-(`0.3 + 0.7 × confidence`, `0.7 + 0.3 × persistence`).
+1–50% at each step (a zero size stays zero). The `calculations` object reports the factors
+actually applied:
+
+- `regime_multiplier` — the regime's own multiplier (0 for `Unknown`).
+- `confidence_factor` — `0.3 + 0.7 × confidence`.
+- `persistence_factor` — `0.7 + 0.3 × persistence`.
+- `combined_multiplier` — `regime_adjusted_size / base_size`, i.e. the product of the three
+  factors above after the 1–50% bounding (`null` when `base_size` is 0).
+- `correlation_adjustment` — `correlation_adjusted_size / regime_adjusted_size` (`null` when
+  `regime_adjusted_size` is 0).
 
 ### GET `/api/v1/providers`
 
@@ -278,7 +284,7 @@ then one `level_<name>` column per key level.
 
 ### Metrics
 
-`GET /api/v1/metrics` returns:
+`GET /metrics` and `GET /api/v1/metrics` are the same handler and return:
 
 ```json
 {
@@ -287,12 +293,13 @@ then one `level_<name>` column per key level.
   "error_counts": {"/analysis/detailed": 1},
   "average_response_times": {"/analysis/detailed": 0.91, "/export/csv": 3.59},
   "total_requests": 3,
-  "total_errors": 1
+  "total_errors": 1,
+  "websocket_connections": {"total_connections": 0, "active_symbols": [], "connections_by_symbol": {}}
 }
 ```
 
-`GET /metrics` returns the same plus `websocket_connections` (`total_connections`,
-`active_symbols`, `connections_by_symbol`). Counters are per worker process and reset on
+`websocket_connections` reports `total_connections`, `active_symbols` and
+`connections_by_symbol`. Counters are per worker process and reset on
 restart.
 
 ## Errors

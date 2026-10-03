@@ -27,6 +27,7 @@ from mra_lib.data_providers import (
     RateLimitError,
 )
 
+from . import __version__
 from .auth import User, authenticate_request
 from .models import (
     AnalysisResponse,
@@ -53,6 +54,7 @@ from .utils import (
     to_jsonable,
     validate_api_key,
 )
+from .websocket import manager
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -348,13 +350,20 @@ async def position_sizing(
             regime_adjusted, request.correlation
         )
 
+        regime_multiplier, confidence_factor, persistence_factor = (
+            SimonsRiskCalculator.regime_sizing_factors(
+                regime, request.confidence, request.persistence
+            )
+        )
+
         calculations = {
             "base_position_size": request.base_size,
-            "regime_multiplier": regime_adjusted / request.base_size
+            "regime_multiplier": regime_multiplier,
+            "confidence_factor": confidence_factor,
+            "persistence_factor": persistence_factor,
+            "combined_multiplier": regime_adjusted / request.base_size
             if request.base_size > 0
             else None,
-            "confidence_factor": request.confidence,
-            "persistence_factor": request.persistence,
             "correlation_adjustment": correlation_adjusted / regime_adjusted
             if regime_adjusted > 0
             else None,
@@ -491,16 +500,27 @@ async def export_csv(
         )
 
 
-# Health check endpoints
-@router.get("/health")
+# Health and metrics: one implementation each, served at both the root paths
+# (``/health``, ``/metrics``; registered by ``create_app``) and under ``/api/v1``.
 async def health_check() -> dict[str, Any]:
     """Basic health check endpoint."""
-    return {"status": "healthy", "timestamp": time.time(), "version": "1.0.0"}
+    return {"status": "healthy", "timestamp": time.time(), "version": __version__}
 
 
-@router.get("/metrics")
 async def get_metrics(
     current_user: User = Depends(authenticate_request),  # noqa: B008
 ) -> dict[str, Any]:
-    """Get API metrics and statistics."""
-    return api_metrics.get_metrics()
+    """Get API metrics and usage statistics (authenticated)."""
+    metrics = api_metrics.get_metrics()
+    metrics["websocket_connections"] = {
+        "total_connections": manager.get_connection_count(),
+        "active_symbols": manager.get_active_symbols(),
+        "connections_by_symbol": {
+            symbol: manager.get_connection_count(symbol) for symbol in manager.get_active_symbols()
+        },
+    }
+    return metrics
+
+
+router.add_api_route("/health", health_check, methods=["GET"])
+router.add_api_route("/metrics", get_metrics, methods=["GET"])

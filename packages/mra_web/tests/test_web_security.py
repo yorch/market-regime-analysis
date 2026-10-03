@@ -165,6 +165,21 @@ class TestAuthMatrix:
         assert client.get("/metrics").status_code == 401
         assert client.get("/api/v1/metrics").status_code == 401
         assert client.get("/metrics", headers=auth_headers).status_code == 200
+        assert client.get("/api/v1/metrics", headers=auth_headers).status_code == 200
+
+    def test_metrics_paths_share_one_implementation(self, client, auth_headers):
+        bodies = [
+            client.get(path, headers=auth_headers).json()
+            for path in ("/metrics", "/api/v1/metrics")
+        ]
+        for body in bodies:
+            assert {"uptime_seconds", "total_requests", "websocket_connections"} <= set(body)
+            assert body["websocket_connections"]["total_connections"] == 0
+
+    def test_health_paths_share_one_implementation(self, client):
+        bodies = [client.get(path).json() for path in ("/health", "/api/v1/health")]
+        assert all(set(b) == {"status", "timestamp", "version"} for b in bodies)
+        assert all(b["status"] == "healthy" for b in bodies)
 
     def test_ws_status_requires_auth(self, client, api_key_headers):
         assert client.get("/ws/monitoring/status").status_code == 401

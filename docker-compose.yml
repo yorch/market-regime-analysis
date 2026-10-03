@@ -11,6 +11,13 @@ services:
       ENVIRONMENT: "${ENVIRONMENT:-production}"
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
       ENABLE_DOCS: "${ENABLE_DOCS:-false}"
+      # >1 needs the fixed JWT_SECRET below (it is required here anyway); the
+      # rate limiter and WebSocket/analysis caps below are per worker process.
+      API_WORKERS: "${API_WORKERS:-1}"
+      API_TIMEOUT: "${API_TIMEOUT:-300}"
+      API_MAX_CONCURRENT_ANALYSES: "${API_MAX_CONCURRENT_ANALYSES:-4}"
+      WS_MAX_CONNECTIONS: "${WS_MAX_CONNECTIONS:-100}"
+      WS_MAX_CONNECTIONS_PER_IP: "${WS_MAX_CONNECTIONS_PER_IP:-5}"
 
       # ── Authentication (JWT_SECRET is required) ─────────────────────────
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set (>=32 chars)}"
@@ -19,6 +26,8 @@ services:
 
       # ── HTTP policy ────────────────────────────────────────────────────
       CORS_ORIGINS: "${CORS_ORIGINS:-}"
+      CORS_METHODS: "${CORS_METHODS:-GET,POST,OPTIONS}"
+      CORS_HEADERS: "${CORS_HEADERS:-Authorization,Content-Type,X-API-Key}"
       RATE_LIMIT_PER_MINUTE: "${RATE_LIMIT_PER_MINUTE:-60}"
 
       # ── Data provider credentials ──────────────────────────────────────

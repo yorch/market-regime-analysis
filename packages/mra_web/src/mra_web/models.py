@@ -316,7 +316,14 @@ class PositionSizingResponse(BaseModel):
     regime_adjusted_size: float = Field(description="Regime-adjusted position size")
     correlation_adjusted_size: float = Field(description="Correlation-adjusted position size")
     final_recommendation: float = Field(description="Final position size recommendation")
-    calculations: dict[str, Any] = Field(default_factory=dict, description="Detailed calculations")
+    calculations: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Detailed calculations: regime_multiplier (the regime's own multiplier), "
+            "confidence_factor and persistence_factor (as applied), combined_multiplier "
+            "(regime_adjusted_size / base_size) and correlation_adjustment"
+        ),
+    )
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(UTC), description="Calculation timestamp"
     )
