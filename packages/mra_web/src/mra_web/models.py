@@ -11,6 +11,8 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 from mra_lib.config.enums import MarketRegime
+from mra_lib.config.timeframes import TIMEFRAMES
+from mra_lib.data_providers import MarketDataProvider
 
 # Ticker symbols: letters, digits and . - ^ = (e.g. BRK.B, ^GSPC, ES=F), max 15 chars.
 # The first character may not be '.', '-' or '=' (avoids CSV formula injection too).
@@ -21,17 +23,15 @@ MAX_SYMBOLS = 20
 EXPORT_FILENAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 
 
-ALLOWED_PROVIDERS = ("yfinance", "alphavantage", "polygon", "alpaca", "tiingo")
-
-
 def validate_provider_name(value: str) -> str:
-    """Return ``value`` if it is an allowed data provider.
+    """Return ``value`` if it names a registered data provider.
 
     Raises:
-        ValueError: If the provider is not allowed.
+        ValueError: If the provider is unknown.
     """
-    if value not in ALLOWED_PROVIDERS:
-        raise ValueError(f"Provider must be one of: {', '.join(ALLOWED_PROVIDERS)}")
+    allowed = sorted(MarketDataProvider.get_available_providers())
+    if value not in allowed:
+        raise ValueError(f"Provider must be one of: {', '.join(allowed)}")
     return value
 
 
@@ -61,7 +61,7 @@ class BaseRequest(BaseModel):
     @field_validator("provider")
     @classmethod
     def validate_provider(cls, v: str) -> str:
-        """Validate provider choice."""
+        """Validate provider choice against the provider registry."""
         return validate_provider_name(v)
 
 
@@ -93,7 +93,7 @@ class DetailedAnalysisRequest(BaseRequest):
     @classmethod
     def validate_timeframe(cls, v: str) -> str:
         """Validate timeframe choice."""
-        allowed_timeframes = ["1D", "1H", "15m"]
+        allowed_timeframes = list(TIMEFRAMES)
         if v not in allowed_timeframes:
             raise ValueError(f"Timeframe must be one of: {', '.join(allowed_timeframes)}")
         return v
@@ -140,7 +140,7 @@ class MultiSymbolAnalysisRequest(BaseRequest):
     @classmethod
     def validate_timeframe(cls, v: str) -> str:
         """Validate timeframe choice."""
-        allowed_timeframes = ["1D", "1H", "15m"]
+        allowed_timeframes = list(TIMEFRAMES)
         if v not in allowed_timeframes:
             raise ValueError(f"Timeframe must be one of: {', '.join(allowed_timeframes)}")
         return v
@@ -163,7 +163,7 @@ class GenerateChartsRequest(BaseRequest):
     @classmethod
     def validate_timeframe(cls, v: str) -> str:
         """Validate timeframe choice."""
-        allowed_timeframes = ["1D", "1H", "15m"]
+        allowed_timeframes = list(TIMEFRAMES)
         if v not in allowed_timeframes:
             raise ValueError(f"Timeframe must be one of: {', '.join(allowed_timeframes)}")
         return v
@@ -299,8 +299,9 @@ class PortfolioAnalysisResponse(BaseModel):
     portfolio_metrics: dict[str, Any] = Field(
         default_factory=dict, description="Portfolio-wide metrics"
     )
-    correlations: dict[str, dict[str, float]] = Field(
-        default_factory=dict, description="Cross-asset correlations"
+    correlations: dict[str, dict[str, float | None]] = Field(
+        default_factory=dict,
+        description="Cross-asset return correlations (null where undefined)",
     )
     analysis_timestamp: datetime = Field(
         default_factory=lambda: datetime.now(UTC), description="Analysis timestamp"

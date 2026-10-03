@@ -62,7 +62,8 @@ curl -X POST "http://localhost:8000/api/v1/analysis/detailed" \
 
 #### POST `/api/v1/analysis/current`
 
-Multi-timeframe analysis across 1D, 1H, and 15m intervals.
+Multi-timeframe analysis across 1D, 1H, and 15m intervals. Each timeframe is loaded and
+analyzed independently; timeframes that fail are omitted (503 only if all fail).
 
 ```bash
 curl -X POST "http://localhost:8000/api/v1/analysis/current" \
@@ -75,7 +76,9 @@ curl -X POST "http://localhost:8000/api/v1/analysis/current" \
 
 #### POST `/api/v1/analysis/multi-symbol`
 
-Portfolio analysis across multiple symbols.
+Portfolio analysis across multiple symbols (max 20). Each symbol is analyzed once;
+`correlations` are correlations of returns over the symbols that loaded (`null` where
+undefined), and `correlation_risk` is `null` with fewer than two analyzed symbols.
 
 ```bash
 curl -X POST "http://localhost:8000/api/v1/analysis/multi-symbol" \
@@ -156,7 +159,10 @@ WebSocket connections must authenticate (except in development). The server chec
 order, an `X-API-Key` header, an `Authorization: Bearer` header, or a `token` query
 parameter (a JWT or API key) before accepting the handshake. Clients that cannot set headers
 can instead send `{"token": "<JWT or API key>"}` as the first message within 5 seconds.
-Invalid or missing credentials close the socket with code `1008`. Browser `Origin` headers
+Invalid or missing credentials, an unknown `provider`, or an `interval` outside 60-3600
+seconds close the socket with code `1008`. Analysis runs in a worker thread (bounded by
+`API_TIMEOUT`); the server stops monitoring as soon as the client disconnects, and closes
+with `1011` after 5 consecutive failed analyses (each reported as a generic `error` message). Browser `Origin` headers
 must be listed in `CORS_ORIGINS`. Connections are capped (`WS_MAX_CONNECTIONS`, default 100;
 `WS_MAX_CONNECTIONS_PER_IP`, default 5); over the cap the handshake is refused (code `1013`).
 `api_key` in the query string is the **data provider** key, not an API credential.
@@ -279,7 +285,9 @@ uv run examples/api_client.py websocket
 | `API_HOST` / `API_PORT` | `127.0.0.1` / `8000` | Bind address for `mra-api` |
 | `ENABLE_DOCS` | dev only | Serve `/docs`, `/redoc`, `/openapi.json` |
 | `WS_MAX_CONNECTIONS` / `WS_MAX_CONNECTIONS_PER_IP` | `100` / `5` | WebSocket caps |
-| `API_WORKERS`, `API_TIMEOUT`, `API_RELOAD`, `LOG_LEVEL`, `DEBUG` | | Server tuning |
+| `API_TIMEOUT` | `300` | Seconds an analysis may run before the request gets `504` |
+| `API_MAX_CONCURRENT_ANALYSES` | `4` | Analyses running at once per process (HTTP + WebSocket); excess requests get `503` with `Retry-After`. A timed-out analysis keeps its slot until its thread finishes |
+| `API_WORKERS`, `API_RELOAD`, `LOG_LEVEL`, `DEBUG` | | Server tuning |
 
 ```bash
 # Data providers
@@ -337,13 +345,31 @@ All API responses follow a consistent format:
 
 ### Error Response
 
+Every error (auth, validation, routing, rate limit, provider, unexpected) uses one envelope:
+
 ```json
 {
-  "error_code": "HTTP_503",
+  "error_code": "SERVICE_UNAVAILABLE",
   "message": "Data provider unavailable",
-  "timestamp": 1705314600.0
+  "details": {},
+  "timestamp": "2024-01-15T10:30:00Z"
 }
 ```
+
+| Status | `error_code` | When |
+|--------|--------------|------|
+| 400 | `BAD_REQUEST`, `API_KEY_REQUIRED` | Invalid input / no data for the symbol; provider key missing (`details.required_env_vars`) |
+| 401 | `UNAUTHORIZED` | Missing or invalid credentials |
+| 404 / 405 | `NOT_FOUND` / `METHOD_NOT_ALLOWED` | Unknown route or method |
+| 422 | `VALIDATION_ERROR` | Request body/query invalid; `details.errors` lists `loc`, `msg`, `type` (input values are not echoed) |
+| 429 | `RATE_LIMITED` | Rate limit exceeded (`Retry-After` header) |
+| 500 | `INTERNAL_SERVER_ERROR` | Unexpected failure |
+| 502 | `HTTP_502` | The data provider rejected the server's provider credentials |
+| 503 | `SERVICE_UNAVAILABLE` | Provider unreachable or rate-limited (`Retry-After`), or nothing could be analyzed |
+| 504 | `TIMEOUT` | Analysis exceeded `API_TIMEOUT` seconds |
+
+Responses are strict JSON: `NaN`/`Infinity` values (e.g. an undefined correlation or
+confidence) are returned as `null`.
 
 Error messages are generic on purpose: provider errors can embed request URLs that carry
 API keys, so exception text is only written to the server log (with `apikey=`, `token=`,
@@ -352,7 +378,8 @@ bearer tokens and configured secrets redacted). Rate-limited requests return `42
 
 ## 🚀 Performance
 
-- **Async Support**: Non-blocking I/O for concurrent requests
+- **Async Support**: Analysis runs in a thread pool, so the event loop stays responsive
+- **Per-timeframe loading**: Single-timeframe requests load only that timeframe
 - **Rate Limiting**: Per-client limit on all HTTP routes (`RATE_LIMIT_PER_MINUTE`)
 - **WebSocket Streaming**: Real-time updates with minimal latency
 

@@ -9,16 +9,16 @@ import logging
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
 from mra_web.auth import User, authenticate_request
 from mra_web.config import APIConfig, config
 from mra_web.endpoints import router as api_router
+from mra_web.errors import install_error_handlers
 from mra_web.ratelimit import RateLimitMiddleware
 from mra_web.security import install_log_scrubber
-from mra_web.utils import NumpyJSONResponse, api_metrics, create_error_response
+from mra_web.utils import NumpyJSONResponse, api_metrics
 from mra_web.websocket import manager, ws_router
 
 # Setup logging
@@ -114,33 +114,8 @@ def create_app(cfg: APIConfig | None = None) -> FastAPI:
         response.headers["X-Process-Time"] = str(time.time() - start_time)
         return response
 
-    # Exception handlers
-    @app.exception_handler(HTTPException)
-    async def http_exception_handler(_request: Request, exc: HTTPException):
-        """Handle HTTP exceptions with standardized error format."""
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=exc.detail
-            if isinstance(exc.detail, dict)
-            else {
-                "error_code": f"HTTP_{exc.status_code}",
-                "message": exc.detail,
-                "timestamp": time.time(),
-            },
-            headers=getattr(exc, "headers", None),
-        )
-
-    @app.exception_handler(Exception)
-    async def general_exception_handler(_request: Request, exc: Exception):
-        """Handle unexpected exceptions without exposing internals."""
-        logger.error("Unhandled exception", exc_info=exc)
-        error_response = create_error_response(
-            "INTERNAL_SERVER_ERROR", "An unexpected error occurred"
-        )
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content=error_response.model_dump(mode="json"),
-        )
+    # One error envelope for every error response
+    install_error_handlers(app)
 
     # Include routers
     app.include_router(api_router, prefix="")
