@@ -7,7 +7,9 @@ complete methodology for market regime detection and trading analysis.
 
 import time
 import warnings
+from collections.abc import Callable
 from datetime import datetime
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -59,11 +61,10 @@ class MarketRegimeAnalyzer:
             api_key: API key for Alpha Vantage (if needed)
         """
         self.symbol = symbol
-        self.periods = periods or {
-            "1D": "2y",  # Daily data for 2 years
-            "1H": "6mo",  # Hourly data for 6 months
-            "15m": "2mo",  # 15-min data for 2 months
-        }
+        # Defaults (1D: 2y, 1H: 6mo, 15m: 1mo) are supported by every provider
+        from mra_lib.config.timeframes import DEFAULT_PERIODS
+
+        self.periods = periods or dict(DEFAULT_PERIODS)
 
         # Data storage
         self.data: dict[str, pd.DataFrame] = {}
@@ -651,43 +652,113 @@ class MarketRegimeAnalyzer:
         except Exception as e:
             print(f"Error generating chart: {e!s}")
 
-    def run_continuous_monitoring(self, interval: int = 300) -> None:
+    def run_continuous_monitoring(
+        self,
+        interval: int = 300,
+        *,
+        max_iterations: int | None = None,
+        max_backoff: float = 3600.0,
+        on_update: Callable[[str, RegimeAnalysis], None] | None = None,
+    ) -> int:
         """
-        Real-time monitoring with auto-refresh and memory management.
+        Periodically refresh data, retrain, and report the regime for every timeframe.
+
+        Each iteration is isolated: a failed refresh is logged and retried with
+        exponential backoff (``interval``, ``2*interval``, ... capped at
+        ``max(max_backoff, interval)``) instead of ending the loop. Successful
+        iterations are scheduled on a fixed monotonic cadence, so slow refreshes do
+        not make the schedule drift. Ctrl+C or SIGTERM stops the loop cleanly.
 
         Args:
-            interval: Refresh interval in seconds
+            interval: Seconds between iterations
+            max_iterations: Stop after this many iterations (``None`` = run forever)
+            max_backoff: Upper bound in seconds for the retry delay after failures
+            on_update: Called with ``(timeframe, analysis)`` for each result; defaults
+                to ``print_analysis_report``
+
+        Returns:
+            Number of successful iterations
         """
-        print(f"Starting continuous monitoring (refresh every {interval}s)")
-        print("Press Ctrl+C to stop...")
+        import gc
+        import logging
+        import signal
+        import threading
+
+        log = logging.getLogger(__name__)
+        stop = threading.Event()
+        previous_handler: Any = None
+        install_handler = threading.current_thread() is threading.main_thread()
+        if install_handler:
+
+            def _on_sigterm(signum: int, frame: Any) -> None:
+                _ = signum, frame
+                log.info("SIGTERM received, stopping monitoring")
+                stop.set()
+
+            previous_handler = signal.signal(signal.SIGTERM, _on_sigterm)
+
+        log.info("Starting continuous monitoring of %s (every %ss)", self.symbol, interval)
+        successes = 0
+        failures = 0
+        iteration = 0
+        next_tick = time.monotonic()
 
         try:
-            while True:
-                print(f"\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Refreshing...")
+            while not stop.is_set():
+                iteration += 1
+                log.info(
+                    "Refresh #%d at %s", iteration, datetime.now().isoformat(timespec="seconds")
+                )
+                try:
+                    # The constructor already loaded fresh data for the first pass
+                    if iteration > 1 or not self.data:
+                        self._load_data()
+                        self._calculate_indicators()
+                        self._train_hmm_models()
 
-                # Reload data and retrain models
-                self._load_data()
-                self._calculate_indicators()
-                self._train_hmm_models()
+                    analyzed = 0
+                    for timeframe in self.periods:
+                        try:
+                            if on_update is None:
+                                self.print_analysis_report(timeframe)
+                            else:
+                                on_update(timeframe, self.analyze_current_regime(timeframe))
+                            analyzed += 1
+                        except Exception as e:
+                            log.warning("Analysis failed for %s %s: %s", self.symbol, timeframe, e)
+                    if analyzed == 0:
+                        raise RuntimeError("no timeframe could be analyzed")
 
-                # Print analysis for all timeframes
-                for timeframe in self.periods.keys():
-                    try:
-                        self.print_analysis_report(timeframe)
-                    except Exception as e:
-                        print(f"Error in {timeframe} analysis: {e!s}")
-
-                # Memory cleanup
-                import gc
+                    successes += 1
+                    failures = 0
+                    next_tick += interval
+                    now = time.monotonic()
+                    while next_tick <= now:  # Skip ticks missed by a slow refresh
+                        next_tick += interval
+                    delay = next_tick - now
+                except Exception as e:
+                    failures += 1
+                    delay = min(max(max_backoff, interval), interval * 2 ** (failures - 1))
+                    log.error(
+                        "Monitoring iteration %d failed (%d in a row): %s; retrying in %.0fs",
+                        iteration,
+                        failures,
+                        e,
+                        delay,
+                    )
+                    next_tick = time.monotonic() + delay
 
                 gc.collect()
-
-                time.sleep(interval)
-
+                if max_iterations is not None and iteration >= max_iterations:
+                    break
+                stop.wait(delay)
         except KeyboardInterrupt:
-            print("\nMonitoring stopped by user")
-        except Exception as e:
-            print(f"Monitoring error: {e!s}")
+            log.info("Monitoring stopped by user")
+        finally:
+            if install_handler:
+                signal.signal(signal.SIGTERM, previous_handler)
+
+        return successes
 
     def export_analysis_to_csv(self, filename: str | None = None) -> None:
         """
