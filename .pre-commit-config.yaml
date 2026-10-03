@@ -18,7 +18,8 @@ repos:
         types_or: [python, pyi]
         require_serial: true
 
-      # Manual until the existing mypy errors are fixed (CI typecheck is soft-fail too):
+      # Manual stage (whole-package run); CI's typecheck job blocks on mypy, so run it
+      # (or `just types`) before pushing:
       #   uv run pre-commit run mypy --hook-stage manual --all-files
       - id: mypy
         name: mypy
