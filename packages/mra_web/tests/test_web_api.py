@@ -161,6 +161,71 @@ class TestAnalysisEndpoints:
         assert resp.status_code == 200
         assert sorted(calls) == ["AAA", "BBB"]
 
+    @pytest.mark.parametrize(
+        ("error", "code", "error_code", "message"),
+        [
+            ("AuthError", 502, "HTTP_502", "Data provider authentication failed"),
+            ("InvalidSymbolError", 400, "BAD_REQUEST", "Unknown or invalid symbol"),
+            ("RateLimitError", 503, "SERVICE_UNAVAILABLE", "Data provider rate limit reached"),
+        ],
+    )
+    def test_multi_symbol_all_failed_reports_cause(  # noqa: PLR0913, PLR0917
+        self, authed, mock_provider, monkeypatch, error, code, error_code, message
+    ):
+        from mra_lib import data_providers
+
+        exc_cls = getattr(data_providers, error)
+
+        def failing(self, symbol, period, interval):
+            raise exc_cls(f"{symbol} failed apikey=LEAKED123")
+
+        monkeypatch.setattr(MockDataProvider, "fetch", failing)
+        resp = authed.post(
+            "/api/v1/analysis/multi-symbol",
+            json={"symbols": ["AAA", "BBB"], "timeframe": "1D", "provider": "mock"},
+        )
+        body = _assert_envelope(resp, code, error_code)
+        assert body["message"] == message
+        assert "LEAKED" not in resp.text
+
+    def test_multi_symbol_mixed_failures_prefer_provider_cause(
+        self, authed, mock_provider, monkeypatch
+    ):
+        from mra_lib.data_providers import InvalidSymbolError, RateLimitError
+
+        def failing(self, symbol, period, interval):
+            if symbol == "AAA":
+                raise RateLimitError("throttled")
+            raise InvalidSymbolError("unknown symbol")
+
+        monkeypatch.setattr(MockDataProvider, "fetch", failing)
+        resp = authed.post(
+            "/api/v1/analysis/multi-symbol",
+            json={"symbols": ["AAA", "BAD"], "timeframe": "1D", "provider": "mock"},
+        )
+        _assert_envelope(resp, 503, "SERVICE_UNAVAILABLE")
+        assert resp.headers["retry-after"] == "60"
+
+    def test_multi_symbol_partial_failure_is_200(self, authed, mock_provider, monkeypatch):
+        from mra_lib.data_providers import InvalidSymbolError
+
+        original = MockDataProvider.fetch
+
+        def partial(self, symbol, period, interval):
+            if symbol == "BAD":
+                raise InvalidSymbolError("unknown symbol BAD")
+            return original(self, symbol, period, interval)
+
+        monkeypatch.setattr(MockDataProvider, "fetch", partial)
+        resp = authed.post(
+            "/api/v1/analysis/multi-symbol",
+            json={"symbols": ["AAA", "BAD"], "timeframe": "1D", "provider": "mock"},
+        )
+        assert resp.status_code == 200, resp.text
+        body = _strict_loads(resp.text)
+        assert [a["symbol"] for a in body["analyses"]] == ["AAA"]
+        assert body["portfolio_metrics"]["analyzed_symbols"] == 1
+
     def test_position_sizing(self, authed):
         resp = authed.post(
             "/api/v1/position-sizing",

@@ -40,6 +40,7 @@ def _build_portfolio(symbols, analyses_map, portfolio_data=None, periods=None):
     p.periods = periods or {"1D": "2y"}
     p.analyzers = {}
     p.portfolio_data = portfolio_data or {}
+    p.errors = {}
 
     for sym in symbols:
         mock_analyzer = MagicMock()
@@ -316,6 +317,23 @@ class TestPreparePortfolioData:
             )
             assert "SPY" in p.analyzers
             assert "BAD" not in p.analyzers
+            assert isinstance(p.errors["BAD"], RuntimeError)
+            assert "SPY" not in p.errors
+
+    def test_collect_analyses_records_errors(self):
+        """Per-symbol analysis failures are recorded; a later success clears them."""
+        p = _build_portfolio(["SPY", "BAD"], {"SPY": _mock_analysis()})
+        failure = ValueError("no data")
+        p.analyzers["BAD"].analyze_current_regime = MagicMock(side_effect=failure)
+
+        analyses = p.collect_analyses("1D")
+
+        assert list(analyses) == ["SPY"]
+        assert p.errors == {"BAD": failure}
+
+        p.analyzers["BAD"].analyze_current_regime = MagicMock(return_value=_mock_analysis())
+        p.collect_analyses("1D")
+        assert p.errors == {}
 
 
 class TestPortfolioRegressionFixes:
