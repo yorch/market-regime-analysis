@@ -11,19 +11,56 @@ Calculates comprehensive trading performance statistics including:
 All metrics calculated from actual trade results.
 """
 
+import math
+
 import numpy as np
 import pandas as pd
+
+from mra_lib.config.regime_tables import TRADING_DAYS_PER_YEAR
+
+from .trade_stats import compute_trade_stats
+
+#: Default number of return periods per year (daily bars); see
+#: ``mra_lib.config.regime_tables.periods_per_year(timeframe)`` for intraday.
+DEFAULT_PERIODS_PER_YEAR = TRADING_DAYS_PER_YEAR
+
+#: Denominators smaller than this are treated as zero; the ratio is then 0.0.
+_EPS = 1e-12
+
+#: Cap on annualized log-growth before exponentiation (avoids OverflowError).
+_MAX_LOG_GROWTH = 700.0
 
 
 class PerformanceMetrics:
     """
     Calculate comprehensive performance metrics from backtest results.
 
-    This class computes all statistics needed for strategy evaluation
-    and Kelly Criterion parameter estimation.
+    Conventions:
+
+    * Returns are simple per-period returns of the equity curve. If
+      ``initial_capital`` is given it is used as the starting point, so the
+      first bar's P&L (e.g. entry costs) is included.
+    * ``periods_per_year`` annualizes everything (252 for daily bars; pass
+      e.g. ``252 * 26`` for 15-minute bars).
+    * Sharpe = mean(r - rf/ppy) / std(r) * sqrt(ppy).
+    * Sortino = mean(r - rf/ppy) / DD * sqrt(ppy), where the downside deviation
+      DD = sqrt(mean(min(r - rf/ppy, 0)^2)) over *all* observations.
+    * Calmar = annualized return / |max drawdown| (negative for losing strategies).
+    * Any ratio whose denominator is (numerically) zero is reported as 0.0.
+    * Annualized return (CAGR) is -100% if equity ends at or below zero.
+    * Max drawdown duration counts a trailing drawdown that has not recovered.
+    * Profit factor follows :mod:`mra_lib.backtesting.trade_stats`
+      (``inf`` with no losing trades, ``nan`` when undefined).
     """
 
-    def __init__(self, trades: list[dict], equity_curve: pd.Series, risk_free_rate: float = 0.02):
+    def __init__(
+        self,
+        trades: list[dict],
+        equity_curve: pd.Series,
+        risk_free_rate: float = 0.02,
+        periods_per_year: float = TRADING_DAYS_PER_YEAR,
+        initial_capital: float | None = None,
+    ):
         """
         Initialize performance calculator.
 
@@ -34,52 +71,71 @@ class PerformanceMetrics:
                 - shares, direction ('LONG' or 'SHORT')
                 - pnl (after costs)
                 - return_pct
-            equity_curve: Time series of portfolio value
+            equity_curve: Time series of portfolio value (one point per bar)
             risk_free_rate: Annual risk-free rate (default: 2%)
+            periods_per_year: Return periods per year used for annualization
+            initial_capital: Equity before the first bar. If None, the first
+                equity point is used as the base.
         """
+        if periods_per_year <= 0:
+            raise ValueError("periods_per_year must be positive")
         self.trades = trades
         self.equity_curve = equity_curve
         self.risk_free_rate = risk_free_rate
+        self.periods_per_year = periods_per_year
+        self.initial_capital = initial_capital
 
-        # Calculate metrics
+        values = [float(v) for v in equity_curve.to_numpy()]
+        if initial_capital is not None:
+            values = [float(initial_capital), *values]
+        self._values = np.asarray(values, dtype=float)
+
+        if len(self._values) >= 2:
+            prev = self._values[:-1]
+            safe_prev = np.where(prev > 0, prev, 1.0)
+            rets = np.where(prev > 0, self._values[1:] / safe_prev - 1.0, np.nan)
+            self.returns = pd.Series(rets).dropna()
+        else:
+            self.returns = pd.Series(dtype=float)
+
         self.metrics = self._calculate_all_metrics()
 
     def _calculate_all_metrics(self) -> dict:
-        """Calculate comprehensive performance metrics."""
-        metrics = {}
-
-        # Basic statistics
+        """Calculate comprehensive performance metrics (each section exactly once)."""
+        metrics: dict = {}
         metrics.update(self._calculate_basic_stats())
-
-        # Risk metrics
         metrics.update(self._calculate_risk_metrics())
-
-        # Trade statistics
         metrics.update(self._calculate_trade_stats())
-
-        # Drawdown analysis
         metrics.update(self._calculate_drawdown_metrics())
-
-        # Ratio metrics
-        metrics.update(self._calculate_ratio_metrics())
-
-        # Kelly Criterion parameters
-        metrics.update(self._calculate_kelly_parameters())
-
+        metrics.update(
+            self._calculate_ratio_metrics(
+                annual_return=metrics["annualized_return"],
+                max_dd=metrics["max_drawdown"],
+            )
+        )
+        metrics.update(self._calculate_kelly_parameters(metrics))
         return metrics
 
     def _calculate_basic_stats(self) -> dict:
         """Calculate basic return statistics."""
-        if len(self.equity_curve) < 2:
+        if len(self._values) < 2 or self._values[0] <= 0:
             return {
                 "total_return": 0.0,
                 "annualized_return": 0.0,
-                "total_trades": 0,
+                "total_trades": len(self.trades),
+                "years": 0.0,
             }
 
-        total_return = self.equity_curve.iloc[-1] / self.equity_curve.iloc[0] - 1
-        years = len(self.equity_curve) / 252  # Assuming daily data
-        annualized_return = (1 + total_return) ** (1 / years) - 1 if years > 0 else 0
+        start, end = float(self._values[0]), float(self._values[-1])
+        total_return = end / start - 1
+        n_periods = len(self._values) - 1
+        years = n_periods / self.periods_per_year
+        if end <= 0:
+            annualized_return = -1.0
+        else:
+            # log/exp with a clamp: short intraday curves can overflow a float power
+            growth = math.log(end / start) / years
+            annualized_return = math.exp(min(growth, _MAX_LOG_GROWTH)) - 1
 
         return {
             "total_return": total_return,
@@ -88,158 +144,89 @@ class PerformanceMetrics:
             "years": years,
         }
 
+    def _excess_returns(self) -> np.ndarray:
+        return np.asarray(self.returns.to_numpy(), dtype=float) - (
+            self.risk_free_rate / self.periods_per_year
+        )
+
+    def _downside_deviation(self) -> float:
+        downside = np.minimum(self._excess_returns(), 0.0)
+        return float(np.sqrt(np.mean(downside**2))) if len(downside) else 0.0
+
+    def _volatility(self) -> float:
+        if len(self.returns) < 2:
+            return 0.0
+        vol = float(self.returns.std(ddof=1))
+        return vol if math.isfinite(vol) else 0.0
+
     def _calculate_risk_metrics(self) -> dict:
-        """Calculate volatility and risk metrics."""
-        if len(self.equity_curve) < 2:
-            return {
-                "volatility": 0.0,
-                "annualized_volatility": 0.0,
-            }
-
-        returns = self.equity_curve.pct_change().dropna()
-        volatility = returns.std()
-        annualized_volatility = volatility * np.sqrt(252)
-
-        # Downside deviation (for Sortino)
-        downside_returns = returns[returns < 0]
-        downside_deviation = downside_returns.std() if len(downside_returns) > 0 else 0.0
-        annualized_downside_dev = downside_deviation * np.sqrt(252)
-
+        """Calculate volatility and downside deviation (per period and annualized)."""
+        volatility = self._volatility()
+        downside_deviation = self._downside_deviation() if len(self.returns) >= 2 else 0.0
+        scale = math.sqrt(self.periods_per_year)
         return {
             "volatility": volatility,
-            "annualized_volatility": annualized_volatility,
+            "annualized_volatility": volatility * scale,
             "downside_deviation": downside_deviation,
-            "annualized_downside_deviation": annualized_downside_dev,
+            "annualized_downside_deviation": downside_deviation * scale,
         }
 
     def _calculate_trade_stats(self) -> dict:
-        """Calculate trade-level statistics."""
-        if not self.trades:
-            return {
-                "win_rate": 0.0,
-                "profit_factor": 0.0,
-                "avg_win": 0.0,
-                "avg_loss": 0.0,
-                "avg_trade": 0.0,
-                "winning_trades": 0,
-                "losing_trades": 0,
-            }
-
-        # Separate winning and losing trades
-        trade_pnls = [t["pnl"] for t in self.trades]
-        winning_trades = [pnl for pnl in trade_pnls if pnl > 0]
-        losing_trades = [pnl for pnl in trade_pnls if pnl < 0]
-
-        # Win rate
-        win_rate = len(winning_trades) / len(trade_pnls) if trade_pnls else 0.0
-
-        # Average win/loss
-        avg_win = np.mean(winning_trades) if winning_trades else 0.0
-        avg_loss = abs(np.mean(losing_trades)) if losing_trades else 0.0
-
-        # Profit factor
-        total_wins = sum(winning_trades) if winning_trades else 0.0
-        total_losses = abs(sum(losing_trades)) if losing_trades else 0.0
-        if total_losses > 0:
-            profit_factor = total_wins / total_losses
-        else:
-            # No losing trades - use large finite value or NaN for undefined
-            profit_factor = 999.0 if total_wins > 0 else 0.0
-
-        # Average trade
-        avg_trade = np.mean(trade_pnls) if trade_pnls else 0.0
-
-        # Expectancy (average P&L per trade)
-        expectancy = win_rate * avg_win - (1 - win_rate) * avg_loss
-
-        return {
-            "win_rate": win_rate,
-            "profit_factor": profit_factor,
-            "avg_win": avg_win,
-            "avg_loss": avg_loss,
-            "avg_trade": avg_trade,
-            "expectancy": expectancy,
-            "winning_trades": len(winning_trades),
-            "losing_trades": len(losing_trades),
-            "total_wins": total_wins,
-            "total_losses": total_losses,
-        }
+        """Calculate trade-level statistics via the shared helper."""
+        stats: dict = dict(compute_trade_stats(self.trades))
+        stats.pop("total_trades", None)
+        return stats
 
     def _calculate_drawdown_metrics(self) -> dict:
-        """Calculate drawdown statistics."""
-        if len(self.equity_curve) < 2:
+        """Calculate drawdown statistics (including a trailing, unrecovered drawdown)."""
+        if len(self._values) < 2:
             return {
                 "max_drawdown": 0.0,
                 "max_drawdown_duration": 0,
                 "avg_drawdown": 0.0,
+                "drawdown_periods": 0,
             }
 
-        # Calculate drawdown series
-        running_max = self.equity_curve.expanding().max()
-        drawdown = (self.equity_curve - running_max) / running_max
+        equity = pd.Series(self._values)
+        running_max = equity.cummax()
+        drawdown = ((equity - running_max) / running_max.where(running_max > 0)).fillna(0.0)
 
-        # Maximum drawdown
-        max_drawdown = drawdown.min()
-
-        # Drawdown duration
-        is_in_drawdown = drawdown < 0
-        drawdown_periods = []
+        drawdown_periods: list[int] = []
         current_duration = 0
-
-        for in_dd in is_in_drawdown:
+        for in_dd in drawdown < 0:
             if in_dd:
                 current_duration += 1
-            else:
-                if current_duration > 0:
-                    drawdown_periods.append(current_duration)
+            elif current_duration > 0:
+                drawdown_periods.append(current_duration)
                 current_duration = 0
+        if current_duration > 0:
+            # Trailing drawdown that has not recovered by the end of the curve
+            drawdown_periods.append(current_duration)
 
-        max_drawdown_duration = max(drawdown_periods) if drawdown_periods else 0
-        avg_drawdown = drawdown[drawdown < 0].mean() if any(drawdown < 0) else 0.0
-
+        negative = drawdown[drawdown < 0]
         return {
-            "max_drawdown": max_drawdown,
-            "max_drawdown_duration": max_drawdown_duration,
-            "avg_drawdown": avg_drawdown,
+            "max_drawdown": float(drawdown.min()),
+            "max_drawdown_duration": max(drawdown_periods) if drawdown_periods else 0,
+            "avg_drawdown": float(negative.mean()) if len(negative) else 0.0,
             "drawdown_periods": len(drawdown_periods),
         }
 
-    def _calculate_ratio_metrics(self) -> dict:
-        """Calculate performance ratios."""
-        annual_return = (
-            self.metrics.get("annualized_return", 0.0) if hasattr(self, "metrics") else 0.0
-        )
-        annual_vol = (
-            self.metrics.get("annualized_volatility", 0.0) if hasattr(self, "metrics") else 0.0
-        )
-        downside_dev = (
-            self.metrics.get("annualized_downside_deviation", 0.0)
-            if hasattr(self, "metrics")
-            else 0.0
-        )
-        max_dd = self.metrics.get("max_drawdown", -0.01) if hasattr(self, "metrics") else -0.01
+    def _calculate_ratio_metrics(self, annual_return: float, max_dd: float) -> dict:
+        """Calculate Sharpe, Sortino and Calmar ratios."""
+        scale = math.sqrt(self.periods_per_year)
+        sharpe = 0.0
+        sortino = 0.0
 
-        # Need to get from already calculated metrics
-        if not hasattr(self, "metrics"):
-            # First pass - calculate from scratch
-            basic = self._calculate_basic_stats()
-            risk = self._calculate_risk_metrics()
-            dd = self._calculate_drawdown_metrics()
-            annual_return = basic["annualized_return"]
-            annual_vol = risk["annualized_volatility"]
-            downside_dev = risk["annualized_downside_deviation"]
-            max_dd = dd["max_drawdown"]
+        if len(self.returns) >= 2:
+            mean_excess = float(np.mean(self._excess_returns()))
+            vol = self._volatility()
+            if vol > _EPS:
+                sharpe = mean_excess / vol * scale
+            downside_dev = self._downside_deviation()
+            if downside_dev > _EPS:
+                sortino = mean_excess / downside_dev * scale
 
-        # Sharpe Ratio
-        sharpe = ((annual_return - self.risk_free_rate) / annual_vol) if annual_vol > 0 else 0.0
-
-        # Sortino Ratio
-        sortino = (
-            ((annual_return - self.risk_free_rate) / downside_dev) if downside_dev > 0 else 0.0
-        )
-
-        # Calmar Ratio (return / max drawdown)
-        calmar = abs(annual_return / max_dd) if max_dd < 0 else 0.0
+        calmar = annual_return / abs(max_dd) if abs(max_dd) > _EPS else 0.0
 
         return {
             "sharpe_ratio": sharpe,
@@ -247,43 +234,26 @@ class PerformanceMetrics:
             "calmar_ratio": calmar,
         }
 
-    def _calculate_kelly_parameters(self) -> dict:
-        """
-        Calculate Kelly Criterion parameters from trade statistics.
-
-        These are the critical parameters missing from the original system!
-        """
-        if not hasattr(self, "metrics"):
-            trade_stats = self._calculate_trade_stats()
-        else:
-            trade_stats = {
-                k: v
-                for k, v in self.metrics.items()
-                if k in ["win_rate", "avg_win", "avg_loss", "profit_factor"]
-            }
-
+    def _calculate_kelly_parameters(self, trade_stats: dict) -> dict:
+        """Calculate Kelly Criterion parameters from trade statistics."""
         win_rate = trade_stats.get("win_rate", 0.0)
         avg_win = trade_stats.get("avg_win", 0.0)
         avg_loss = trade_stats.get("avg_loss", 0.0)
 
         # Kelly Criterion: f* = (bp - q) / b
         # where b = avg_win / avg_loss, p = win_rate, q = 1 - win_rate
-        if avg_loss > 0:
-            b = avg_win / avg_loss  # Win/loss ratio
-            p = win_rate
-            q = 1 - win_rate
-            kelly_fraction = (b * p - q) / b if b > 0 else 0.0
+        if avg_loss > 0 and avg_win > 0:
+            b = avg_win / avg_loss
+            kelly_fraction = (b * win_rate - (1 - win_rate)) / b
+        elif avg_loss > 0:
+            kelly_fraction = -1.0  # Only losers: bet nothing (negative edge)
         else:
             kelly_fraction = 0.0
 
-        # Fractional Kelly (safer)
-        half_kelly = kelly_fraction * 0.5
-        quarter_kelly = kelly_fraction * 0.25
-
         return {
             "kelly_fraction": kelly_fraction,
-            "half_kelly": half_kelly,
-            "quarter_kelly": quarter_kelly,
+            "half_kelly": kelly_fraction * 0.5,
+            "quarter_kelly": kelly_fraction * 0.25,
             "kelly_win_loss_ratio": avg_win / avg_loss if avg_loss > 0 else 0.0,
         }
 
@@ -342,7 +312,7 @@ class PerformanceMetrics:
         Returns:
             True if strategy meets profitability criteria
         """
-        return (
+        return bool(
             self.metrics["total_trades"] >= min_trades
             and self.metrics["sharpe_ratio"] >= min_sharpe
             and self.metrics["total_return"] > 0

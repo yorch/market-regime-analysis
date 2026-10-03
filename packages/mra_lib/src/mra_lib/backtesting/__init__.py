@@ -14,6 +14,7 @@ from .engine import BacktestEngine
 from .metrics import PerformanceMetrics
 from .optimizer import OptimizationResult, StrategyOptimizer
 from .strategy import RegimeStrategy
+from .trade_stats import compute_trade_stats, finite_profit_factor
 from .transaction_costs import (
     EquityCostModel,
     FuturesCostModel,
@@ -21,7 +22,7 @@ from .transaction_costs import (
     RetailCostModel,
     TransactionCostModel,
 )
-from .walk_forward import WalkForwardValidator
+from .walk_forward import RegimeCache, WalkForwardValidator
 
 __all__ = [
     "BacktestEngine",
@@ -31,6 +32,7 @@ __all__ = [
     "HighFrequencyCostModel",
     "OptimizationResult",
     "PerformanceMetrics",
+    "RegimeCache",
     "RegimeMultiplierCalibrator",
     "RegimeStrategy",
     "RegimeTradeStats",
@@ -38,4 +40,6 @@ __all__ = [
     "StrategyOptimizer",
     "TransactionCostModel",
     "WalkForwardValidator",
+    "compute_trade_stats",
+    "finite_profit_factor",
 ]

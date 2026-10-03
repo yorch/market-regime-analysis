@@ -54,8 +54,15 @@ class TestCalculateTotalCost:
             spread_bps=10.0, commission_per_share=0.0, commission_min=0.0, slippage_bps=0.0
         )
         result = model.calculate_total_cost(100.0, 100, "BUY")
-        # 10 bps on $10,000 notional = $10
-        assert result["spread_cost"] == pytest.approx(10.0)
+        # Half of a 10 bps spread per side on $10,000 notional = $5
+        assert result["spread_cost"] == pytest.approx(5.0)
+
+    def test_roundtrip_pays_full_spread_once(self):
+        model = TransactionCostModel(
+            spread_bps=10.0, commission_per_share=0.0, commission_min=0.0, slippage_bps=0.0
+        )
+        # Full 10 bps spread on $10,000 notional = $10 over the round trip
+        assert model.calculate_roundtrip_cost(100.0, 100) == pytest.approx(10.0)
 
     def test_commission_minimum_applied(self):
         model = TransactionCostModel(
