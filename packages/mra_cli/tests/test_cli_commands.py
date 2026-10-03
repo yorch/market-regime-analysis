@@ -171,23 +171,25 @@ class TestOutputCommands:
     def test_cli_generate_charts_library_failure_exits_nonzero(self, runner, tmp_path: Path):
         from mra_lib import MarketRegimeAnalyzer
 
-        # The library swallows errors and returns None without drawing anything
-        with patch.object(MarketRegimeAnalyzer, "plot_regime_analysis", return_value=None):
-            result = runner.invoke(
-                cli,
-                ["generate-charts", "--provider", "mock", "-o", str(tmp_path / "c.png")],
-            )
+        out = tmp_path / "c.png"
+        with patch.object(
+            MarketRegimeAnalyzer,
+            "render_regime_chart",
+            side_effect=ValueError("Insufficient data for plotting"),
+        ):
+            result = runner.invoke(cli, ["generate-charts", "--provider", "mock", "-o", str(out)])
         assert result.exit_code == 1
         assert "Chart generation failed" in result.output
+        assert "Insufficient data" in result.output
+        assert not out.exists()
 
-    def test_cli_generate_charts_accepts_png_bytes(self, runner, tmp_path: Path):
-        from mra_lib import MarketRegimeAnalyzer
-
-        out = tmp_path / "c.png"
-        with patch.object(MarketRegimeAnalyzer, "plot_regime_analysis", return_value=b"PNG"):
-            result = runner.invoke(cli, ["generate-charts", "--provider", "mock", "-o", str(out)])
+    def test_cli_generate_charts_format_from_extension(self, runner, tmp_path: Path):
+        out = tmp_path / "chart.svg"
+        result = runner.invoke(
+            cli, ["generate-charts", "--provider", "mock", "--days", "30", "-o", str(out)]
+        )
         assert result.exit_code == 0, result.output
-        assert out.read_bytes() == b"PNG"
+        assert out.read_text().lstrip().startswith("<?xml")
 
     def test_cli_export_csv(self, runner, tmp_path: Path):
         out = tmp_path / "a.csv"
@@ -284,20 +286,20 @@ class TestReviewFixes:
         assert result.exit_code == 1
         assert "POLYGON_API_KEY" in result.output
 
-    def test_cli_generate_charts_swallowed_error_exits_nonzero(self, runner, tmp_path: Path):
+    def test_cli_generate_charts_interactive_shows_and_closes(self, runner, monkeypatch):
+        import matplotlib
         import matplotlib.pyplot as plt
 
-        from mra_lib import MarketRegimeAnalyzer
+        monkeypatch.setattr(matplotlib, "get_backend", lambda: "macosx")
+        shown = []
+        monkeypatch.setattr(plt, "show", lambda *a, **k: shown.append(plt.get_fignums()))
+        before = set(plt.get_fignums())
 
-        def half_drawn(self, timeframe, days):
-            plt.subplots(2, 1)
-            print("Error generating chart: boom")
+        result = runner.invoke(cli, ["generate-charts", "--provider", "mock", "--days", "30"])
 
-        out = tmp_path / "c.png"
-        with patch.object(MarketRegimeAnalyzer, "plot_regime_analysis", half_drawn):
-            result = runner.invoke(cli, ["generate-charts", "--provider", "mock", "-o", str(out)])
-        assert result.exit_code == 1
-        assert not out.exists()
+        assert result.exit_code == 0, result.output
+        assert len(shown) == 1 and shown[0]  # a figure was open when show() ran
+        assert set(plt.get_fignums()) == before  # and closed afterwards
 
     def test_cli_monitoring_retries_failed_startup(self, runner):
         from mra_lib import MarketRegimeAnalyzer

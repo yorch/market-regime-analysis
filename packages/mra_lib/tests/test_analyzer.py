@@ -460,3 +460,42 @@ class TestRegimeTablesSingleSource:
         }
         for regime, mult in REGIME_MULTIPLIERS.items():
             assert sizes[regime] == pytest.approx(0.1 * mult if mult > 0 else 0.0)
+
+
+@pytest.fixture(scope="module")
+def chart_analyzer():
+    return MarketRegimeAnalyzer("TEST", periods={"1D": "2y"}, provider_flag="mock")
+
+
+class TestRenderRegimeChart:
+    @pytest.fixture
+    def analyzer(self, chart_analyzer):
+        return chart_analyzer
+
+    def test_render_regime_chart_standalone_figure(self, analyzer):
+        import matplotlib.pyplot as plt
+        from matplotlib.figure import Figure
+
+        before = set(plt.get_fignums())
+        fig = analyzer.render_regime_chart("1D", 60)
+        assert isinstance(fig, Figure)
+        assert len(fig.axes) == 5
+        # Standalone Agg figure: nothing registered with pyplot, nothing to leak
+        assert set(plt.get_fignums()) == before
+
+    def test_render_regime_chart_draws_on_given_figure(self, analyzer):
+        import matplotlib.pyplot as plt
+
+        fig = plt.figure(figsize=(15, 20))
+        try:
+            assert analyzer.render_regime_chart("1D", 60, figure=fig) is fig
+            assert len(fig.axes) == 5
+        finally:
+            plt.close(fig)
+
+    def test_render_regime_chart_insufficient_data_raises(self, analyzer):
+        with pytest.raises(ValueError, match="Insufficient data"):
+            analyzer.render_regime_chart("1D", 5)
+
+    def test_render_regime_chart_png(self, analyzer):
+        assert analyzer.render_regime_chart_png("1D", 60).startswith(b"\x89PNG")
