@@ -221,10 +221,21 @@ Contributions are welcome. Please ensure:
 ## Development
 
 ```bash
-just qa          # Format + lint + type-check (run before committing)
+just qa          # Format check + lint + type-check (run before committing; `just fix` to autofix)
 just test        # All tests
 just test-unit   # Unit tests only (no integration/slow)
 just test-lib    # Core library tests only
+```
+
+### Docker
+
+The image runs the web API on port 8000; compose publishes it on `127.0.0.1` only and requires a
+`JWT_SECRET` of at least 32 characters:
+
+```bash
+cp .env.example .env   # set JWT_SECRET (and any provider keys)
+just docker-up         # docker compose up -d
+just docker-health     # GET http://127.0.0.1:8000/health
 ```
 
 See [AGENTS.md](AGENTS.md) for full development guide, architecture details, and contribution guidelines.
