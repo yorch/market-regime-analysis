@@ -73,7 +73,6 @@ exclude = ["packages/.*/tests/"]
 [[tool.mypy.overrides]]
 module = [
     "hmmlearn.*",
-    "alpha_vantage.*",
     "yfinance.*",
     "polygon.*",
     "requests",

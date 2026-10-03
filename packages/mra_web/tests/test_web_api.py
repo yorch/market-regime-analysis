@@ -285,12 +285,6 @@ class TestErrorEnvelope:
         assert "LEAKED" not in resp.text
         assert body["message"] == "An unexpected error occurred"
 
-    def test_slowapi_rate_limit_handler(self):
-        from mra_web.errors import rate_limit_exception_handler
-
-        resp = asyncio.run(rate_limit_exception_handler(None, Exception()))  # type: ignore[arg-type]
-        assert resp.status_code == 429
-
 
 # ── Strict JSON ──
 

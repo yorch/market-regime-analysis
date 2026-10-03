@@ -9,7 +9,6 @@ dependencies = [
     "numpy>=2.5.3",
     "pydantic>=2.13.5",
     "python-jose[cryptography]>=3.5.0",
-    "slowapi>=0.1.10",
     # [standard] provides the `websockets` implementation used by the WebSocket routes
     "uvicorn[standard]>=0.54.0",
 ]
