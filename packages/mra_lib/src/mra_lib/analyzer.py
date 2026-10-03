@@ -29,6 +29,7 @@ from mra_lib.config.regime_tables import (
 )
 from mra_lib.config.timeframes import DEFAULT_PERIODS
 from mra_lib.data_providers import MarketDataProvider, ProviderConfig
+from mra_lib.errors import DataLoadError, InsufficientDataError, ModelNotFittedError, ProviderError
 from mra_lib.indicators.base import RegimeDetector
 from mra_lib.indicators.features import (
     average_true_range,
@@ -39,7 +40,6 @@ from mra_lib.indicators.features import (
     volume_ratio,
 )
 from mra_lib.indicators.true_hmm_detector import TrueHMMDetector
-from mra_lib.errors import DataLoadError, InsufficientDataError, ModelNotFittedError, ProviderError
 
 logger = logging.getLogger(__name__)
 

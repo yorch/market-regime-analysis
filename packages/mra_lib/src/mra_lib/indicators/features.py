@@ -17,6 +17,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from mra_lib.errors import InsufficientDataError
+
 #: Volatility floor guarding logs of flat-price runs (halted/stale bars), so they
 #: do not produce extreme outliers in ``log_volatility``/``vol_expansion``.
 _LOG_EPS = 1e-8
@@ -194,7 +196,7 @@ def build_hmm_features(df: pd.DataFrame) -> pd.DataFrame:
     if "Close" not in df.columns:
         raise ValueError("OHLCV data must contain a 'Close' column")
     if len(df) <= HMM_WARMUP_BARS:
-        raise ValueError(
+        raise InsufficientDataError(
             f"Insufficient data for feature calculation "
             f"(need more than {HMM_WARMUP_BARS} bars, got {len(df)})"
         )

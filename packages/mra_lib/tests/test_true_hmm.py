@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from mra_lib.config.enums import MarketRegime
+from mra_lib.errors import InsufficientDataError, ModelNotFittedError
 from mra_lib.indicators.true_hmm_detector import TrueHMMDetector, select_n_states
 
 
@@ -57,7 +58,7 @@ def test_true_hmm_is_deterministic_for_fixed_seed(synthetic_ohlcv):
 
 
 def test_true_hmm_predict_before_fit_raises(synthetic_ohlcv):
-    with pytest.raises(ValueError, match="fitted"):
+    with pytest.raises(ModelNotFittedError, match="fitted"):
         TrueHMMDetector(n_states=4).predict_regime(synthetic_ohlcv(n=100))
 
 
@@ -81,9 +82,17 @@ def test_defaults_are_small_regularized_model():
 def test_insufficient_data_error_mentions_parameter_count(synthetic_ohlcv):
     det = TrueHMMDetector(n_states=6, adapt_n_states=False)
     df = synthetic_ohlcv(n=det.min_training_bars - 1)
-    with pytest.raises(ValueError, match=r"free parameters need at least"):
+    with pytest.raises(InsufficientDataError, match=r"free parameters need at least"):
         det.fit(df)
     TrueHMMDetector(n_states=6, n_init=1).fit(synthetic_ohlcv(n=det.min_training_bars))
+
+
+def test_typed_errors_remain_value_errors(synthetic_ohlcv):
+    """Typed detector errors stay catchable as ``ValueError`` for existing callers."""
+    with pytest.raises(ValueError, match="fitted"):
+        TrueHMMDetector(n_states=4).predict_regime(synthetic_ohlcv(n=100))
+    with pytest.raises(InsufficientDataError):
+        TrueHMMDetector(n_states=2).fit(synthetic_ohlcv(n=30))
 
 
 def test_short_history_falls_back_to_fewer_states(synthetic_ohlcv, caplog):
