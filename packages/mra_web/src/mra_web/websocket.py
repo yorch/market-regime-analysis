@@ -15,10 +15,12 @@ import json
 import logging
 from datetime import UTC, datetime
 
-from fastapi import Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.routing import APIRouter
+from starlette.concurrency import run_in_threadpool
 
 from mra_lib import MarketRegimeAnalyzer
+from mra_lib.config.data_classes import RegimeAnalysis
 
 from .auth import (
     User,
@@ -29,7 +31,7 @@ from .auth import (
 )
 from .config import APIConfig
 from .models import MonitoringMessage, MonitoringUpdate, normalize_symbol, validate_provider_name
-from .utils import validate_api_key
+from .utils import periods_for, to_jsonable, validate_api_key
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -110,13 +112,15 @@ class ConnectionManager:
         del self.connection_data[websocket]
         logger.info("WebSocket disconnected for %s", symbol)
 
-    async def send_personal_message(self, message: str, websocket: WebSocket) -> None:
-        """Send a message to a specific WebSocket connection."""
+    async def send_personal_message(self, message: str, websocket: WebSocket) -> bool:
+        """Send a message to one connection; False (and unregister) if sending failed."""
         try:
             await websocket.send_text(message)
         except Exception:
             logger.info("Failed to send message to WebSocket", exc_info=True)
             self.disconnect(websocket)
+            return False
+        return True
 
     async def broadcast_to_symbol(self, symbol: str, message: str) -> None:
         """Broadcast a message to all connections monitoring a specific symbol."""
@@ -223,13 +227,12 @@ class _Rejected(Exception):
 
 
 def _check_handshake(
-    websocket: WebSocket, symbol: str, cfg: APIConfig
-) -> tuple[User | None, str, str, str | None, int]:
-    """Validate origin, credentials and parameters before accepting.
+    websocket: WebSocket, symbol: str, provider: str, cfg: APIConfig
+) -> tuple[User | None, str]:
+    """Validate origin, credentials, symbol and provider before accepting.
 
     Returns:
-        (user or None if first-message auth is needed, symbol, provider,
-        provider API key, interval)
+        (user, or None if first-message auth is needed; normalized symbol)
 
     Raises:
         _Rejected: If the handshake must be refused.
@@ -242,33 +245,31 @@ def _check_handshake(
     try:
         user = _authenticate_handshake(websocket, cfg)
         symbol = normalize_symbol(symbol)
-        interval = int(websocket.query_params.get("interval", "300"))  # Default 5 minutes
+        validate_provider_name(provider)
     except (HTTPException, ValueError) as e:
         raise _Rejected() from e
-    if interval < 60 or interval > 3600:
-        raise _Rejected()
-
-    try:
-        provider = validate_provider_name(websocket.query_params.get("provider", "alphavantage"))
-    except ValueError as e:
-        raise _Rejected() from e
-    provider_api_key = websocket.query_params.get("api_key")
-    return user, symbol, provider, provider_api_key, interval
+    return user, symbol
 
 
 @ws_router.websocket("/monitoring/{symbol}")
-async def websocket_monitoring_endpoint(websocket: WebSocket, symbol: str) -> None:
+async def websocket_monitoring_endpoint(
+    websocket: WebSocket,
+    symbol: str,
+    provider: str = Query("alphavantage", description="Data provider"),
+    api_key: str | None = Query(None, description="Data provider API key"),
+    interval: int = Query(300, ge=60, le=3600, description="Update interval (seconds)"),
+) -> None:
     """
     WebSocket endpoint for real-time regime monitoring.
 
     Query parameters: ``provider``, ``api_key`` (data provider key), ``interval``
-    (seconds, 60-3600) and optionally ``token`` (API credential).
+    (seconds, 60-3600) and optionally ``token`` (API credential). Invalid query
+    parameters close the handshake with 1008.
     """
     cfg = get_app_config(websocket)
+    provider_api_key = api_key
     try:
-        user, symbol, provider, provider_api_key, interval = _check_handshake(
-            websocket, symbol, cfg
-        )
+        user, symbol = _check_handshake(websocket, symbol, provider, cfg)
     except _Rejected as rejected:
         await websocket.close(code=rejected.code)
         return
@@ -312,7 +313,8 @@ async def websocket_monitoring_endpoint(websocket: WebSocket, symbol: str) -> No
                 "message": f"Started monitoring {symbol} with {interval}s intervals",
             },
         )
-        await manager.send_personal_message(welcome_message.model_dump_json(), websocket)
+        if not await manager.send_personal_message(welcome_message.model_dump_json(), websocket):
+            return
 
         # Start monitoring loop
         await monitoring_loop(websocket, symbol, provider, validated_api_key, interval)
@@ -330,127 +332,141 @@ async def websocket_monitoring_endpoint(websocket: WebSocket, symbol: str) -> No
         manager.release(client_ip)
 
 
-async def monitoring_loop(  # noqa: PLR0912, PLR0915
+MAX_CONSECUTIVE_ERRORS = 5
+
+
+def analyze_symbol(symbol: str, provider: str, api_key: str) -> RegimeAnalysis:
+    """Blocking: load daily data and analyze the current regime (runs in a thread)."""
+    analyzer = MarketRegimeAnalyzer(
+        symbol=symbol, periods=periods_for("1D"), provider_flag=provider, api_key=api_key
+    )
+    return analyzer.analyze_current_regime("1D")
+
+
+async def _wait_for_disconnect(websocket: WebSocket) -> None:
+    """Consume (and ignore) client frames until the client disconnects."""
+    while True:
+        message = await websocket.receive()
+        if message["type"] == "websocket.disconnect":
+            return
+
+
+def _update_messages(
+    symbol: str, analysis: RegimeAnalysis, previous_regime: str | None
+) -> list[MonitoringMessage]:
+    """Build the update message (plus an alert on regime change)."""
+    current_regime = analysis.current_regime.value
+    regime_changed = previous_regime is not None and current_regime != previous_regime
+    confidence = to_jsonable(analysis.regime_confidence)
+
+    alert_level = "low"
+    if regime_changed:
+        alert_level = "high"
+    elif confidence is None or confidence < 0.6:
+        alert_level = "medium"
+
+    update = MonitoringUpdate(
+        symbol=symbol,
+        current_regime=current_regime,
+        regime_confidence=confidence if confidence is not None else 0.0,
+        regime_change=regime_changed,
+        previous_regime=previous_regime,
+        alert_level=alert_level,
+    )
+    messages = [
+        MonitoringMessage(message_type="update", symbol=symbol, data=update.model_dump(mode="json"))
+    ]
+    if regime_changed:
+        messages.append(
+            MonitoringMessage(
+                message_type="alert",
+                symbol=symbol,
+                data={
+                    "alert_type": "regime_change",
+                    "previous_regime": previous_regime,
+                    "new_regime": current_regime,
+                    "confidence": confidence,
+                    "message": f"Regime changed from {previous_regime} to {current_regime}",
+                },
+            )
+        )
+    return messages
+
+
+async def monitoring_loop(
     websocket: WebSocket, symbol: str, provider: str, api_key: str, interval: int
 ) -> None:
     """
-    Main monitoring loop for WebSocket connections.
+    Main monitoring loop for one WebSocket connection.
+
+    Analysis runs in the thread pool (with ``API_TIMEOUT``), so the event loop is
+    never blocked. A concurrent receive task detects client disconnects, which
+    stop the loop immediately, also while waiting for the next interval. A failed
+    send stops the loop. After ``MAX_CONSECUTIVE_ERRORS`` failed analyses the
+    socket is closed with 1011.
 
     Args:
-        websocket: WebSocket connection
+        websocket: Accepted WebSocket connection
         symbol: Trading symbol to monitor
         provider: Data provider
         api_key: Provider API key
         interval: Update interval in seconds
     """
-    previous_regime = None
+    timeout = get_app_config(websocket).timeout
+    disconnected = asyncio.create_task(_wait_for_disconnect(websocket))
+    previous_regime: str | None = None
     error_count = 0
-    max_errors = 5
 
     try:
         while True:
+            analysis_task = asyncio.create_task(
+                asyncio.wait_for(
+                    run_in_threadpool(analyze_symbol, symbol, provider, api_key), timeout
+                )
+            )
+            await asyncio.wait({analysis_task, disconnected}, return_when=asyncio.FIRST_COMPLETED)
+            if disconnected.done():
+                analysis_task.cancel()  # the worker thread finishes in the background
+                return
+
             try:
-                # Create analyzer
-                analyzer = MarketRegimeAnalyzer(
-                    symbol=symbol, provider_flag=provider, api_key=api_key
-                )
-
-                # Analyze current regime (using 1D timeframe for monitoring)
-                analysis = analyzer.analyze_current_regime("1D")
-
-                # Check for regime change
-                current_regime = analysis.current_regime.value
-                regime_changed = previous_regime is not None and current_regime != previous_regime
-
-                # Determine alert level
-                alert_level = "low"
-                if regime_changed:
-                    alert_level = "high"
-                elif analysis.regime_confidence < 0.6:
-                    alert_level = "medium"
-
-                # Create monitoring update
-                update = MonitoringUpdate(
-                    symbol=symbol,
-                    current_regime=current_regime,
-                    regime_confidence=analysis.regime_confidence,
-                    regime_change=regime_changed,
-                    previous_regime=previous_regime,
-                    alert_level=alert_level,
-                )
-
-                # Send update message
-                message = MonitoringMessage(
-                    message_type="update", symbol=symbol, data=update.model_dump(mode="json")
-                )
-
-                await manager.send_personal_message(message.model_dump_json(), websocket)
-
-                # Send alert if regime changed
-                if regime_changed:
-                    alert_message = MonitoringMessage(
-                        message_type="alert",
-                        symbol=symbol,
-                        data={
-                            "alert_type": "regime_change",
-                            "previous_regime": previous_regime,
-                            "new_regime": current_regime,
-                            "confidence": analysis.regime_confidence,
-                            "message": f"Regime changed from {previous_regime} to {current_regime}",
-                        },
-                    )
-                    await manager.send_personal_message(alert_message.model_dump_json(), websocket)
-
-                # Update previous regime
-                previous_regime = current_regime
-
-                # Reset error count on successful analysis
-                error_count = 0
-
-            except WebSocketDisconnect:
-                logger.info("WebSocket disconnected for %s", symbol)
-                break
-
+                analysis = analysis_task.result()
             except Exception:
                 error_count += 1
                 logger.exception("Monitoring error for %s", symbol)
+                # Generic text only: exception messages can carry provider keys
+                messages = [
+                    MonitoringMessage(
+                        message_type="error",
+                        symbol=symbol,
+                        data={
+                            "error": "Analysis failed",
+                            "error_count": error_count,
+                            "max_errors": MAX_CONSECUTIVE_ERRORS,
+                        },
+                    )
+                ]
+            else:
+                error_count = 0
+                messages = _update_messages(symbol, analysis, previous_regime)
+                previous_regime = analysis.current_regime.value
 
-                # Send a generic error message (never exception text: it can carry keys)
-                error_message = MonitoringMessage(
-                    message_type="error",
-                    symbol=symbol,
-                    data={
-                        "error": "Analysis failed",
-                        "error_count": error_count,
-                        "max_errors": max_errors,
-                    },
-                )
+            for message in messages:
+                if not await manager.send_personal_message(message.model_dump_json(), websocket):
+                    return
 
-                try:
-                    await manager.send_personal_message(error_message.model_dump_json(), websocket)
-                except Exception:
-                    break
+            if error_count >= MAX_CONSECUTIVE_ERRORS:
+                logger.error("Too many errors for %s monitoring, stopping", symbol)
+                disconnected.cancel()
+                await websocket.close(code=WS_INTERNAL_ERROR, reason="Too many analysis errors")
+                return
 
-                # Stop monitoring if too many errors
-                if error_count >= max_errors:
-                    logger.error("Too many errors for %s monitoring, stopping", symbol)
-                    break
-
-            # Stop if the client went away (send failure unregisters the socket)
-            if websocket not in manager.connection_data:
-                break
-
-            # Wait for next interval
-            try:
-                await asyncio.sleep(interval)
-            except asyncio.CancelledError:
-                break
-
-    except WebSocketDisconnect:
-        logger.info("Client disconnected from %s monitoring", symbol)
-    except Exception:
-        logger.exception("Monitoring loop error for %s", symbol)
+            # Sleep until the next tick, waking early if the client disconnects
+            await asyncio.wait({disconnected}, timeout=interval)
+            if disconnected.done():
+                return
     finally:
+        disconnected.cancel()
         manager.disconnect(websocket)
 
 

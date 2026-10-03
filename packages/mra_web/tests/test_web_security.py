@@ -288,13 +288,13 @@ class _StubAnalyzer:
         if _StubAnalyzer.error is not None:
             raise _StubAnalyzer.error
         self.symbol = symbol
+        self.periods = periods or {"1D": "2y", "1H": "6mo"}
 
     def build_export_dataframe(self) -> pd.DataFrame:
+        if "15m" in self.periods:  # simulate one unavailable timeframe
+            raise ConnectionError("15m unavailable apikey=LEAKED123456")
         return pd.DataFrame(
-            [
-                {"symbol": self.symbol, "timeframe": "1D", "regime": "Bull Trending"},
-                {"symbol": self.symbol, "timeframe": "1H", "regime": "Mean Reverting"},
-            ]
+            [{"symbol": self.symbol, "timeframe": tf, "regime": "Bull"} for tf in self.periods]
         )
 
     def render_regime_chart_png(self, timeframe, days=60):
@@ -364,12 +364,14 @@ class TestExportAndCharts:
         assert "LEAKED" not in resp.text
         assert "apikey" not in resp.text
 
-    @pytest.mark.parametrize("path", ["/api/v1/export/csv", "/api/v1/charts/generate"])
-    def test_export_errors_do_not_leak(self, client, auth_headers, stub_analyzer, path):
+    @pytest.mark.parametrize(
+        ("path", "code"), [("/api/v1/export/csv", 503), ("/api/v1/charts/generate", 500)]
+    )
+    def test_export_errors_do_not_leak(self, client, auth_headers, stub_analyzer, path, code):
         stub_analyzer.error = RuntimeError("token=LEAKED123456")
         body = {"symbol": "SPY", "timeframe": "1D", "provider": "yfinance"}
         resp = client.post(path, json=body, headers=auth_headers)
-        assert resp.status_code == 500
+        assert resp.status_code == code
         assert "LEAKED" not in resp.text
 
 
