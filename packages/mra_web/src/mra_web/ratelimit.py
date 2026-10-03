@@ -73,7 +73,7 @@ def client_ip(scope: Scope) -> str:
     client = scope.get("client")
     if not client:
         return "unknown"
-    host = client[0]
+    host = str(client[0])
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
