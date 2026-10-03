@@ -12,6 +12,7 @@ untouched remainder (``CalibrationResult.holdout_metrics``).
 Trades are attributed to the regime at entry.
 """
 
+import logging
 import math
 from dataclasses import dataclass, field
 
@@ -25,6 +26,8 @@ from .strategy import RegimeStrategy
 from .trade_stats import PROFIT_FACTOR_CAP, compute_trade_stats, finite_profit_factor
 from .transaction_costs import EquityCostModel, TransactionCostModel
 from .walk_forward import WalkForwardValidator
+
+logger = logging.getLogger(__name__)
 
 # Calibration methods
 CALIBRATION_METHODS = ("sharpe_weighted", "win_rate", "profit_factor", "kelly")
@@ -63,6 +66,73 @@ class CalibrationResult:
     in_sample: bool = True
     #: Walk-forward summary of the calibrated strategy on the holdout segment
     holdout_metrics: dict | None = None
+
+    def format_report(self) -> str:
+        """
+        Format the calibration table, calibrated multipliers, and the evaluation label.
+
+        The label is the holdout (out-of-sample) evaluation when available, else a
+        note that the calibration is in-sample.
+
+        Returns:
+            Multi-line report text (starts with a blank line, no trailing newline)
+        """
+        lines = [
+            "\n" + "=" * 100,
+            "REGIME MULTIPLIER CALIBRATION RESULTS (calibration period, in-sample)",
+            f"Method: {self.method}",
+            "=" * 100,
+            f"\n{'Regime':<20} {'Trades':>7} {'Win%':>7} {'AvgWin':>10} "
+            f"{'AvgLoss':>10} {'PF':>7} {'Sharpe':>8} {'Kelly':>7} "
+            f"{'Score':>8} {'Mult':>7}",
+            "-" * 100,
+        ]
+
+        for regime in MarketRegime:
+            rs = self.regime_stats.get(regime, RegimeTradeStats(regime=regime))
+            score = self.raw_scores.get(regime, 0.0)
+            mult = self.multipliers.get(regime, 0.0)
+
+            if rs.n_trades == 0:
+                lines.append(
+                    f"{regime.value:<20} {'--':>7} {'--':>7} {'--':>10} "
+                    f"{'--':>10} {'--':>7} {'--':>8} {'--':>7} "
+                    f"{'--':>8} {mult:>7.2f}"
+                )
+            else:
+                lines.append(
+                    f"{regime.value:<20} {rs.n_trades:>7} {rs.win_rate:>7.1%} "
+                    f"${rs.avg_win:>9.2f} ${rs.avg_loss:>9.2f} "
+                    f"{rs.profit_factor:>7.2f} {rs.sharpe:>8.2f} "
+                    f"{rs.kelly_fraction:>7.2%} {score:>8.3f} {mult:>7.2f}"
+                )
+
+        lines.append("=" * 100)
+
+        lines.append("\nCALIBRATED MULTIPLIERS:")
+        for regime in MarketRegime:
+            mult = self.multipliers.get(regime, 0.0)
+            bar = "#" * int(mult * 10)
+            lines.append(f"  {regime.value:<20} {mult:>5.2f}  {bar}")
+
+        holdout = self.holdout_metrics
+        if holdout is None:
+            lines.append(
+                "\nNOTE: IN-SAMPLE calibration - multipliers were fit and scored on the "
+                "same data; expect weaker results out of sample."
+            )
+        else:
+            pf = holdout["profit_factor"]
+            lines += [
+                "\nHOLDOUT (out-of-sample) evaluation of calibrated multipliers:",
+                f"  Return:        {holdout['compounded_strategy_return']:+.2%}",
+                f"  Buy & Hold:    {holdout['compounded_bh_return']:+.2%}",
+                f"  Sharpe:        {holdout['sharpe_ratio']:.2f}",
+                f"  Max Drawdown:  {holdout['max_drawdown']:.2%}",
+                f"  Trades:        {holdout['total_trades']}",
+                f"  Profit Factor: {pf:.2f}" if not math.isnan(pf) else "  Profit Factor: n/a",
+            ]
+        return "\n".join(lines)
 
 
 class RegimeMultiplierCalibrator:
@@ -338,7 +408,7 @@ class RegimeMultiplierCalibrator:
                     'profit_factor', 'kelly')
             base_strategy: Baseline strategy for collecting trades.
                           If None, uses uniform multipliers (all 1.0).
-            verbose: Print progress
+            verbose: Log progress at INFO level (``mra_lib`` logger)
 
         Returns:
             Dictionary mapping MarketRegime to calibrated multiplier
@@ -365,7 +435,9 @@ class RegimeMultiplierCalibrator:
         Args:
             method: Scoring method
             base_strategy: Baseline strategy (None = uniform multipliers)
-            verbose: Print progress
+            verbose: Log progress at INFO level (``mra_lib`` logger)
+
+        Use :meth:`CalibrationResult.format_report` for a printable report.
 
         Returns:
             CalibrationResult with multipliers and diagnostics
@@ -385,15 +457,14 @@ class RegimeMultiplierCalibrator:
             )
 
         if verbose:
-            print(f"  Calibrating multipliers using '{method}' method...")
-            print("  Running walk-forward with uniform multipliers...")
+            logger.info("  Calibrating multipliers using '%s' method...", method)
+            logger.info("  Running walk-forward with uniform multipliers...")
 
         # Collect trades
         trades, baseline_sharpe = self._collect_trades(base_strategy, verbose=verbose)
 
         if not trades:
-            if verbose:
-                print("  WARNING: No trades collected. Returning default multipliers.")
+            logger.warning("No trades collected; returning default multipliers")
             return CalibrationResult(
                 multipliers={r: 1.0 if r != MarketRegime.UNKNOWN else 0.0 for r in MarketRegime},
                 regime_stats={r: RegimeTradeStats(regime=r) for r in MarketRegime},
@@ -416,10 +487,6 @@ class RegimeMultiplierCalibrator:
         if self.split_index < len(self.df):
             calibrated = self._strategy_from_multipliers(multipliers, base_strategy)
             holdout_metrics = self.evaluate_holdout(calibrated)
-
-        if verbose:
-            self._print_calibration_report(regime_stats, raw_scores, multipliers, method)
-            self._print_evaluation_label(holdout_metrics)
 
         return CalibrationResult(
             multipliers=multipliers,
@@ -448,22 +515,6 @@ class RegimeMultiplierCalibrator:
             confidence_scaling=base.confidence_scaling,
         )
 
-    def _print_evaluation_label(self, holdout_metrics: dict | None) -> None:
-        if holdout_metrics is None:
-            print(
-                "\nNOTE: IN-SAMPLE calibration - multipliers were fit and scored on the "
-                "same data; expect weaker results out of sample."
-            )
-            return
-        pf = holdout_metrics["profit_factor"]
-        print("\nHOLDOUT (out-of-sample) evaluation of calibrated multipliers:")
-        print(f"  Return:        {holdout_metrics['compounded_strategy_return']:+.2%}")
-        print(f"  Buy & Hold:    {holdout_metrics['compounded_bh_return']:+.2%}")
-        print(f"  Sharpe:        {holdout_metrics['sharpe_ratio']:.2f}")
-        print(f"  Max Drawdown:  {holdout_metrics['max_drawdown']:.2%}")
-        print(f"  Trades:        {holdout_metrics['total_trades']}")
-        print(f"  Profit Factor: {pf:.2f}" if not math.isnan(pf) else "  Profit Factor: n/a")
-
     def create_calibrated_strategy(
         self,
         method: str = "sharpe_weighted",
@@ -476,7 +527,7 @@ class RegimeMultiplierCalibrator:
         Args:
             method: Scoring method
             base_params: Additional strategy parameters (stop_loss, etc.)
-            verbose: Print progress
+            verbose: Log progress at INFO level (``mra_lib`` logger)
 
         Returns:
             RegimeStrategy with empirically calibrated multipliers
@@ -493,50 +544,3 @@ class RegimeMultiplierCalibrator:
             min_confidence=params.get("min_confidence", 0.0),
             confidence_scaling=params.get("confidence_scaling", True),
         )
-
-    def _print_calibration_report(
-        self,
-        stats: dict[MarketRegime, RegimeTradeStats],
-        scores: dict[MarketRegime, float],
-        multipliers: dict[MarketRegime, float],
-        method: str,
-    ) -> None:
-        """Print formatted calibration results."""
-        print("\n" + "=" * 100)
-        print("REGIME MULTIPLIER CALIBRATION RESULTS (calibration period, in-sample)")
-        print(f"Method: {method}")
-        print("=" * 100)
-
-        print(
-            f"\n{'Regime':<20} {'Trades':>7} {'Win%':>7} {'AvgWin':>10} "
-            f"{'AvgLoss':>10} {'PF':>7} {'Sharpe':>8} {'Kelly':>7} "
-            f"{'Score':>8} {'Mult':>7}"
-        )
-        print("-" * 100)
-
-        for regime in MarketRegime:
-            rs = stats.get(regime, RegimeTradeStats(regime=regime))
-            score = scores.get(regime, 0.0)
-            mult = multipliers.get(regime, 0.0)
-
-            if rs.n_trades == 0:
-                print(
-                    f"{regime.value:<20} {'--':>7} {'--':>7} {'--':>10} "
-                    f"{'--':>10} {'--':>7} {'--':>8} {'--':>7} "
-                    f"{'--':>8} {mult:>7.2f}"
-                )
-            else:
-                print(
-                    f"{regime.value:<20} {rs.n_trades:>7} {rs.win_rate:>7.1%} "
-                    f"${rs.avg_win:>9.2f} ${rs.avg_loss:>9.2f} "
-                    f"{rs.profit_factor:>7.2f} {rs.sharpe:>8.2f} "
-                    f"{rs.kelly_fraction:>7.2%} {score:>8.3f} {mult:>7.2f}"
-                )
-
-        print("=" * 100)
-
-        print("\nCALIBRATED MULTIPLIERS:")
-        for regime in MarketRegime:
-            mult = multipliers.get(regime, 0.0)
-            bar = "#" * int(mult * 10)
-            print(f"  {regime.value:<20} {mult:>5.2f}  {bar}")

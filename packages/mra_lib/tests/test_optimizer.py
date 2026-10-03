@@ -146,16 +146,15 @@ class TestFormatParams:
 
 
 class TestPrintTopResults:
-    def test_no_results(self, capsys):
+    def test_no_results(self):
         import pandas as pd
 
         df = pd.DataFrame({"Close": [1]})
         opt = StrategyOptimizer(df)
-        opt.print_top_results()
-        captured = capsys.readouterr()
-        assert "No results to display" in captured.out
+        text = opt.format_top_results()
+        assert "No results to display" in text
 
-    def test_with_results(self, capsys):
+    def test_with_results(self):
         import pandas as pd
 
         df = pd.DataFrame({"Close": [1]})
@@ -178,12 +177,11 @@ class TestPrintTopResults:
                 window_win_rate=0.6,
             )
         ]
-        opt.print_top_results(n=5)
-        captured = capsys.readouterr()
-        assert "TOP OPTIMIZATION RESULTS" in captured.out
-        assert "BEST PARAMETERS" in captured.out
+        text = opt.format_top_results(n=5)
+        assert "TOP OPTIMIZATION RESULTS" in text
+        assert "BEST PARAMETERS" in text
 
-    def test_missing_param_keys(self, capsys):
+    def test_missing_param_keys(self):
         import pandas as pd
 
         df = pd.DataFrame({"Close": [1]})
@@ -202,6 +200,5 @@ class TestPrintTopResults:
             )
         ]
         # Should handle missing stop_loss/bull_mult gracefully
-        opt.print_top_results()
-        captured = capsys.readouterr()
-        assert "?" in captured.out
+        text = opt.format_top_results()
+        assert "?" in text

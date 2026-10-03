@@ -298,19 +298,27 @@ class TestMonitoringAndServer:
 
 
 class TestReviewFixes:
-    def test_cli_labels_wrapped_provider_errors_by_cause(self, runner):
-        from mra_lib.data_providers import AuthError
+    @pytest.mark.parametrize(
+        ("error", "label"),
+        [
+            ("AuthError", "Authentication error"),
+            ("RateLimitError", "Rate limited"),
+            ("InvalidSymbolError", "Unknown symbol / no data"),
+            ("ConnectionError", "Network error"),
+        ],
+    )
+    def test_cli_labels_provider_errors_raised_by_analyzer(self, runner, error, label):
+        # The analyzer lets provider errors propagate unchanged, so the CLI labels them
+        # by type (no cause-chain walking)
+        from mra_lib import data_providers
+        from mra_lib.data_providers import MockDataProvider
 
-        def wrapped(*_args):
-            try:
-                raise AuthError("bad key")
-            except AuthError as e:
-                raise ValueError("Data loading failed for 1D: bad key") from e
-
-        with patch("mra_cli.main._analyze_single_timeframe", side_effect=wrapped):
+        cls = getattr(data_providers, error, None) or ConnectionError
+        with patch.object(MockDataProvider, "fetch", side_effect=cls("boom")):
             result = runner.invoke(cli, ["detailed-analysis", "--provider", "mock"])
         assert result.exit_code == 1
-        assert "Authentication error" in result.output
+        assert label in result.output
+        assert "boom" in result.output
 
     def test_cli_group_key_not_reused_for_other_provider(self, runner):
         result = runner.invoke(
@@ -403,6 +411,7 @@ def test_cli_calibrate_multipliers_writes_valid_json(runner, tmp_path: Path):
         trades_per_regime={regime: 3},
         raw_scores={regime: float("inf")},
         regime_stats={regime: stats},
+        format_report=lambda: "CALIBRATION REPORT",
     )
     out = tmp_path / "cal.json"
     with patch("mra_cli.main.RegimeMultiplierCalibrator") as calibrator:
@@ -414,3 +423,30 @@ def test_cli_calibrate_multipliers_writes_valid_json(runner, tmp_path: Path):
     data = json.loads(out.read_text())
     assert data["regime_stats"]["Bull Trending"]["profit_factor"] is None
     assert data["raw_scores"]["Bull Trending"] is None
+
+
+def test_cli_shows_library_progress_from_logging(runner):
+    # mra_lib logs (never prints); the CLI renders INFO records as plain progress lines
+    result = runner.invoke(cli, ["detailed-analysis", "--provider", "mock"])
+    assert result.exit_code == 0, result.output
+    assert "Loading data for SPY..." in result.stderr
+    assert "✓ Trained HMM for 1D" in result.stderr
+    assert "INFO" not in result.output
+    assert "HMM MARKET REGIME ANALYSIS - SPY (1D)" in result.stdout
+
+
+def test_cli_export_csv_with_no_data_fails(runner, tmp_path):
+    import pandas as pd
+
+    from mra_lib import MarketRegimeAnalyzer
+
+    with patch.object(
+        MarketRegimeAnalyzer,
+        "build_export_dataframe",
+        return_value=pd.DataFrame(),
+    ):
+        result = runner.invoke(
+            cli, ["export-csv", "--provider", "mock", "--filename", str(tmp_path / "x.csv")]
+        )
+    assert result.exit_code == 1
+    assert "No analysis data to export" in result.output

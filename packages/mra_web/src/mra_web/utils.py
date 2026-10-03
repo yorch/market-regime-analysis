@@ -275,8 +275,10 @@ def log_api_request(
 ) -> None:
     """Log API request for monitoring and debugging."""
     logger.info(
-        f"API Request - Endpoint: {endpoint}, Client: {client_ip or 'unknown'}, "
-        f"Data: {sanitize_log_data(request_data)}"
+        "API Request - Endpoint: %s, Client: %s, Data: %s",
+        endpoint,
+        client_ip or "unknown",
+        sanitize_log_data(request_data),
     )
 
 
@@ -285,8 +287,11 @@ def log_api_response(
 ) -> None:
     """Log API response for monitoring and debugging."""
     logger.info(
-        f"API Response - Endpoint: {endpoint}, Status: {response_status}, "
-        f"Time: {response_time:.3f}s, Client: {client_ip or 'unknown'}"
+        "API Response - Endpoint: %s, Status: %s, Time: %.3fs, Client: %s",
+        endpoint,
+        response_status,
+        response_time,
+        client_ip or "unknown",
     )
 
 

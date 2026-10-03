@@ -19,6 +19,7 @@ Provider API keys are read from the environment (e.g. ``ALPHA_VANTAGE_API_KEY``,
 
 import argparse
 import json
+import logging
 import math
 import sys
 import time
@@ -70,6 +71,34 @@ RANGES: dict[str, tuple] = {
     "min_confidence": (0.0, 0.5),
     "bear_short": (0, 1),
 }
+
+
+class _StdoutLogHandler(logging.Handler):
+    """Write ``mra_lib`` log records to the *current* ``sys.stdout``.
+
+    The library logs its search progress instead of printing; this keeps that
+    progress interleaved with the report in this script's stdout. INFO records
+    are written as bare messages, other levels with a ``LEVEL name:`` prefix.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            if record.levelno == logging.INFO:
+                msg = record.getMessage()
+            else:
+                msg = f"{record.levelname} {record.name}: {record.getMessage()}"
+            sys.stdout.write(msg + "\n")
+        except Exception:  # noqa: BLE001 - logging must never raise; report via handleError
+            self.handleError(record)
+
+
+def configure_logging(verbose: bool) -> None:
+    """Show library progress (INFO) when ``verbose``, otherwise only warnings. Idempotent."""
+    lib_logger = logging.getLogger("mra_lib")
+    for handler in [h for h in lib_logger.handlers if isinstance(h, _StdoutLogHandler)]:
+        lib_logger.removeHandler(handler)
+    lib_logger.addHandler(_StdoutLogHandler())
+    lib_logger.setLevel(logging.INFO if verbose else logging.WARNING)
 
 
 def load_data(symbol: str, provider_name: str, period: str = "5y") -> pd.DataFrame:
@@ -184,7 +213,7 @@ def run_grid_search(
 
     optimizer = _make_optimizer(df, holdout_frac)
     optimizer.grid_search(param_grid=GRID, verbose=verbose)
-    optimizer.print_top_results(n=15)
+    print(optimizer.format_top_results(n=15))
     return optimizer
 
 
@@ -204,7 +233,7 @@ def run_random_search(
     optimizer.random_search(
         param_ranges=RANGES, n_iterations=n_iterations, verbose=verbose, seed=seed
     )
-    optimizer.print_top_results(n=15)
+    print(optimizer.format_top_results(n=15))
     return optimizer
 
 
@@ -306,6 +335,7 @@ def main() -> None:
         parser.error("--holdout-frac must be in [0, 1)")
 
     verbose = not args.quiet
+    configure_logging(verbose)
 
     print("=" * 100)
     print("MARKET REGIME STRATEGY OPTIMIZER")
@@ -315,7 +345,7 @@ def main() -> None:
 
     try:
         df = load_data(args.symbol, args.provider, args.period)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - top-level CLI: report and exit non-zero
         print(f"Failed to load data: {e}")
         sys.exit(1)
 

@@ -44,6 +44,7 @@ from scipy.special import logsumexp
 from sklearn.preprocessing import StandardScaler
 
 from mra_lib.config.enums import MarketRegime
+from mra_lib.errors import InsufficientDataError, ModelNotFittedError
 
 from .base import regime_persistence, transition_probability
 from .features import HMM_FEATURES, HMM_WARMUP_BARS, build_hmm_features
@@ -55,6 +56,9 @@ logger = logging.getLogger(__name__)
 MIN_SAMPLES_PER_PARAMETER = 1.5
 
 _COVARIANCE_TYPES = ("diag", "full", "spherical", "tied")
+
+#: Smallest state count ``_reduce_n_states`` will fall back to.
+MIN_STATES = 2
 
 
 def n_free_parameters(n_states: int, n_features: int, covariance_type: str) -> int:
@@ -235,7 +239,7 @@ class TrueHMMDetector:
         if len(X) < self.min_training_rows and self.adapt_n_states:
             self._reduce_n_states(len(X))
         if len(X) < self.min_training_rows:
-            raise ValueError(
+            raise InsufficientDataError(
                 f"Insufficient data for a {self.n_states}-state '{self.covariance_type}' HMM: "
                 f"{self.n_parameters} free parameters need at least {self.min_training_rows} "
                 f"feature rows ({self.min_samples_per_param:g} per parameter, i.e. "
@@ -265,7 +269,7 @@ class TrueHMMDetector:
                     with _quiet_hmmlearn():
                         model.fit(X_scaled)
                         score = float(model.score(X_scaled))
-                except Exception as exc:  # one bad restart must not sink the fit
+                except Exception as exc:  # noqa: BLE001 - one bad restart must not sink the fit
                     errors.append(str(exc))
                     logger.debug("HMM restart with seed %s failed: %s", seed, exc)
                     continue
@@ -299,7 +303,7 @@ class TrueHMMDetector:
         """Shrink ``n_states`` to the largest count (>= 2) that ``n_rows`` feature rows support."""
         requested = self.n_states
         n = requested
-        while n > 2 and n_rows < math.ceil(
+        while n > MIN_STATES and n_rows < math.ceil(
             self.min_samples_per_param
             * n_free_parameters(n, len(HMM_FEATURES), self.covariance_type)
         ):
@@ -398,7 +402,7 @@ class TrueHMMDetector:
             or self.scaler is None
             or self.transition_matrix is None
         ):
-            raise ValueError("Model must be fitted before use")
+            raise ModelNotFittedError("Model must be fitted before use")
         return self.model, self.scaler, self.transition_matrix
 
     def _filtered(self, df: pd.DataFrame) -> tuple[pd.Index, np.ndarray]:
@@ -541,7 +545,7 @@ class TrueHMMDetector:
             ValueError: If model not fitted
         """
         if not self.fitted:
-            raise ValueError("Model must be fitted before getting state map")
+            raise ModelNotFittedError("Model must be fitted before getting state map")
         return dict(self.state_regimes)
 
     def forecast_regime_probabilities(self, df: pd.DataFrame, n_steps: int = 1) -> np.ndarray:
@@ -613,7 +617,7 @@ class TrueHMMDetector:
             ValueError: If model not fitted
         """
         if not self.fitted or self.transition_matrix is None:
-            raise ValueError("Model must be fitted before computing stability")
+            raise ModelNotFittedError("Model must be fitted before computing stability")
 
         T = self.transition_matrix
         self_trans = {i: float(T[i, i]) for i in range(self.n_states)}

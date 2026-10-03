@@ -305,5 +305,5 @@ class PolygonProvider(MarketDataProvider):
                 )
             )
             return len(test_data) > 0
-        except Exception:
+        except Exception:  # noqa: BLE001 - a bool probe: any client failure means "not valid"
             return False

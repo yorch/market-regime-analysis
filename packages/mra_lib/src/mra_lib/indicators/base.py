@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from mra_lib.config.enums import MarketRegime
+from mra_lib.errors import ModelNotFittedError
 
 #: Fewer observations than this carry no information about persistence.
 _MIN_PERSISTENCE_OBS = 2
@@ -85,7 +86,7 @@ def transition_probability(
             out of range
     """
     if transition_matrix is None:
-        raise ValueError("Model must be fitted first")
+        raise ModelNotFittedError("Model must be fitted first")
     n_states = int(transition_matrix.shape[0])
     if not 0 <= from_state < n_states:
         raise ValueError(f"Invalid from_state: {from_state}")

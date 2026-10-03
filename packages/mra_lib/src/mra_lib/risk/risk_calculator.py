@@ -1,8 +1,7 @@
 """
-Simons Risk Calculator for professional risk management.
+Kelly-based position sizing and risk management.
 
-This module implements Renaissance Technologies' approach to position sizing
-and risk management, including Kelly Criterion optimization and regime-adjusted
+This module implements position sizing and risk management, including Kelly Criterion optimization and regime-adjusted
 position sizing.
 """
 
@@ -295,11 +294,11 @@ class PortfolioPositionLimits:
 
 class SimonsRiskCalculator:
     """
-    Professional risk management following Renaissance approach.
+    Kelly-based position sizing with regime and correlation adjustments.
 
     This class implements sophisticated risk management techniques including
     Kelly Criterion optimization, regime-adjusted position sizing, and
-    correlation-based adjustments following Jim Simons' methodology.
+    correlation-based adjustments.
     """
 
     @staticmethod
@@ -381,8 +380,7 @@ class SimonsRiskCalculator:
         """
         Calculate multi-factor position sizing with regime adjustments.
 
-        This method implements Renaissance Technologies' approach to position
-        sizing by incorporating market regime, confidence in regime detection,
+        Scales position size by incorporating market regime, confidence in regime detection,
         and regime persistence.
 
         Args:

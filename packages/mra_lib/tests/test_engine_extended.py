@@ -231,7 +231,7 @@ class TestCalculateCurrentEquity:
 
 
 class TestPrintResults:
-    def test_prints_without_error(self, capsys):
+    def test_prints_without_error(self):
         engine = BacktestEngine(initial_capital=100_000)
         results = {
             "final_capital": 110_000,
@@ -239,11 +239,10 @@ class TestPrintResults:
             "trades": [{"pnl": 5000}, {"pnl": -2000}],
             "equity_curve": pd.Series([100_000, 110_000]),
         }
-        engine.print_results(results)
-        captured = capsys.readouterr()
-        assert "BACKTEST RESULTS" in captured.out
+        text = engine.format_results(results)
+        assert "BACKTEST RESULTS" in text
 
-    def test_no_trades(self, capsys):
+    def test_no_trades(self):
         engine = BacktestEngine()
         results = {
             "final_capital": 100_000,
@@ -251,9 +250,8 @@ class TestPrintResults:
             "trades": [],
             "equity_curve": pd.Series([100_000]),
         }
-        engine.print_results(results)
-        captured = capsys.readouterr()
-        assert "Total Trades" in captured.out
+        text = engine.format_results(results)
+        assert "Total Trades" in text
 
 
 class TestShortPositionMechanics:

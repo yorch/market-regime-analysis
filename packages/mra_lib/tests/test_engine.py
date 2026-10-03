@@ -292,14 +292,14 @@ class TestOptimizerScoring:
 
 
 # ---------------------------------------------------------------------------
-# Optimizer - print_top_results robustness
+# Optimizer - format_top_results robustness
 # ---------------------------------------------------------------------------
 
 
 class TestPrintTopResults:
-    """Ensure print_top_results handles missing keys gracefully."""
+    """Ensure format_top_results handles missing keys gracefully."""
 
-    def test_missing_keys_no_crash(self, capsys):
+    def test_missing_keys_no_crash(self):
         """Custom search space that omits standard keys should not raise."""
         prices = [100.0] * 400
         df = _make_ohlcv(prices)
@@ -321,6 +321,5 @@ class TestPrintTopResults:
         ]
 
         # Should not raise TypeError
-        optimizer.print_top_results(n=1)
-        captured = capsys.readouterr()
-        assert "?" in captured.out  # Missing keys shown as '?'
+        text = optimizer.format_top_results(n=1)
+        assert "?" in text  # Missing keys shown as '?'

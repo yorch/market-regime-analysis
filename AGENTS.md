@@ -131,8 +131,7 @@ market-regime-analysis/
 │   │   │   │   ├── data_classes.py # RegimeAnalysis dataclass
 │   │   │   │   ├── regime_tables.py # Shared regime multipliers / strategy table
 │   │   │   │   └── timeframes.py   # TIMEFRAMES, DEFAULT_PERIODS
-│   │   │   ├── types/
-│   │   │   │   └── protocols.py    # Protocol definitions (currently unused; see below)
+│   │   │   ├── errors.py           # MRAError hierarchy (DataLoadError, ProviderError, ...)
 │   │   │   ├── indicators/         # Regime model (one detector everywhere)
 │   │   │   │   ├── base.py               # RegimeDetector protocol, persistence/transition helpers
 │   │   │   │   ├── features.py           # Causal, scale-free feature helpers + build_hmm_features
@@ -202,9 +201,20 @@ market-regime-analysis/
 
 The core library (`mra_lib`) has **no dependency on UI or web frameworks**: the CLI and web packages depend on it, never the other way round.
 
-`mra_lib/types/protocols.py` defines Protocol classes (`DashboardProtocol`, `DataStoreProtocol`, `MarketDataProviderProtocol`), but nothing in the workspace currently implements or consumes them. Whether they are wired in or removed is under review; don't build on them without checking the current state.
-
-The library still prints progress and reports to stdout in places (moving to `logging` is open work).
+- **No `print()`** (ruff `T201` is enforced for `mra_lib`): progress and diagnostics go to
+  `logging.getLogger(__name__)` with %-style args (`G` rules); the `mra_lib` package logger has a
+  `NullHandler`. Frontends configure logging (`mra` shows `mra_lib` INFO records on stderr as
+  plain progress lines; `mra-optimize` writes them to stdout).
+- **Reports are strings**: `format_analysis_report`, `format_portfolio_summary`,
+  `format_results`, `format_summary`, `format_top_results`, `CalibrationResult.format_report`;
+  frontends echo them. The old `print_*` methods are deprecated shims (`DeprecationWarning`).
+- **Typed errors** (`mra_lib/errors.py`): everything derives from `MRAError` and keeps its
+  historical builtin base (`DataLoadError`/`InsufficientDataError`/`ModelNotFittedError` are
+  `ValueError`s). Provider errors (`InvalidSymbolError`, `AuthError`, `RateLimitError`) propagate
+  unchanged out of `MarketRegimeAnalyzer`, so CLI/web map them by type, not by cause-chain walking.
+  Don't swallow-and-print; raise, or log (`logger.exception`/`warning`) and return an explicit
+  result (e.g. `PortfolioHMMAnalyzer.failed_symbols`). Blind `except Exception` needs a
+  `# noqa: BLE001 - reason`.
 
 ### Import Conventions
 
@@ -283,7 +293,7 @@ from .strategy import RegimeStrategy  # inside backtesting/
 ### Adding New Packages
 1. Create `packages/mra_<name>/` with `pyproject.toml` and `src/mra_<name>/`
 2. Workspace membership is automatic (`members = ["packages/*"]`); add it to `[tool.uv.sources]` if other packages depend on it
-3. Depend on `mra_lib`'s public API; keep `mra_lib` free of the new package's framework
+3. Depend on `mra_lib`'s public API (configure `logging` and render its `format_*` reports yourself); keep `mra_lib` free of the new package's framework
 
 ### Adding New Data Providers
 1. Subclass `MarketDataProvider` in `mra_lib/data_providers/` (see `examples/custom_provider.py`)

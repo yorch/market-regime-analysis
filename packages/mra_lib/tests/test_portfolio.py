@@ -263,7 +263,7 @@ class TestIdentifyArbitragePairs:
 
 
 class TestPrintPortfolioSummary:
-    def test_prints_without_error(self, capsys):
+    def test_prints_without_error(self):
         idx = pd.date_range("2023-01-01", periods=100, freq="D")
         df = pd.DataFrame(
             {"SPY": np.ones(100) * 100, "QQQ": np.ones(100) * 200},
@@ -272,14 +272,13 @@ class TestPrintPortfolioSummary:
         analyses = {"SPY": _mock_analysis(), "QQQ": _mock_analysis()}
         p = _build_portfolio(["SPY", "QQQ"], analyses, portfolio_data={"1D": df})
 
-        # Add data attribute to mock analyzers for print_portfolio_summary
+        # Add data attribute to mock analyzers for format_portfolio_summary
         for _sym, analyzer in p.analyzers.items():
             mock_data = {"1D": pd.DataFrame({"Close": [100.0]}, index=[pd.Timestamp("2023-01-01")])}
             analyzer.data = mock_data
 
-        p.print_portfolio_summary("1D")
-        captured = capsys.readouterr()
-        assert "PORTFOLIO HMM REGIME ANALYSIS" in captured.out
+        text = p.format_portfolio_summary("1D")
+        assert "PORTFOLIO HMM REGIME ANALYSIS" in text
 
 
 class TestPreparePortfolioData:
@@ -413,24 +412,22 @@ class TestPortfolioRegressionFixes:
         )
         assert p.identify_arbitrage_pairs("1D", max_pvalue=0.01) == []
 
-    def test_print_summary_analyzes_each_symbol_once(self, capsys):
+    def test_print_summary_analyzes_each_symbol_once(self):
         df = self._independent_walks()
         analyses = {"AAA": _mock_analysis(), "BBB": _mock_analysis()}
         p = _build_portfolio(["AAA", "BBB"], analyses, portfolio_data={"1D": df})
         for analyzer in p.analyzers.values():
             analyzer.data = {"1D": pd.DataFrame({"Close": [100.0]})}
-        p.print_portfolio_summary("1D")
+        out = p.format_portfolio_summary("1D")
         for analyzer in p.analyzers.values():
             assert analyzer.analyze_current_regime.call_count == 1
-        out = capsys.readouterr().out
         assert "Highest return correlation" in out
 
-    def test_distribution_percentage_uses_successful_analyses(self, capsys):
+    def test_distribution_percentage_uses_successful_analyses(self):
         analyses = {"AAA": _mock_analysis(), "BBB": _mock_analysis()}
         p = _build_portfolio(["AAA", "BBB"], analyses)
         p.analyzers["BBB"].analyze_current_regime.side_effect = RuntimeError("boom")
         for analyzer in p.analyzers.values():
             analyzer.data = {"1D": pd.DataFrame({"Close": [100.0]})}
-        p.print_portfolio_summary("1D")
-        out = capsys.readouterr().out
+        out = p.format_portfolio_summary("1D")
         assert "Bull Trending: 1 assets (100.0%)" in out
