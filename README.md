@@ -10,12 +10,12 @@ A Python system for detecting market regimes using Hidden Markov Models. It clas
 
 ```text
 packages/
-├── mra_lib/    — Core library (zero UI deps)
+├── mra_lib/    — Core library (no CLI/web framework deps)
 ├── mra_cli/    — CLI interface (Click)
 └── mra_web/    — REST API (FastAPI)
 ```
 
-The project uses a **uv workspace** so the core analysis library carries no UI or web dependencies. The `just` task runner provides shortcuts for common tasks.
+The project uses a **uv workspace** so the core analysis library carries no CLI or web framework dependencies (it still prints reports and uses matplotlib for charts). The `just` task runner provides shortcuts for common tasks.
 
 ## Quick Start
 

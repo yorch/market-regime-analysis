@@ -121,7 +121,7 @@ just docker-down     # Stop
 ```bash
 market-regime-analysis/
 ├── packages/
-│   ├── mra_lib/                    # Core library (no UI deps)
+│   ├── mra_lib/                    # Core library (no CLI/web framework deps)
 │   │   ├── pyproject.toml
 │   │   ├── src/mra_lib/
 │   │   │   ├── __init__.py         # Re-exports the public API
