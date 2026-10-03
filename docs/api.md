@@ -48,7 +48,7 @@ cannot be combined with `--workers` > 1.
 | GET | `/health`, `/api/v1/health` | public | `{"status": "healthy", "timestamp", "version"}` |
 | GET | `/ready` | public | readiness checks |
 | GET | `/metrics` | required | API metrics + WebSocket connection stats |
-| GET | `/api/v1/metrics` | required | API metrics |
+| GET | `/api/v1/metrics` | required | same as `/metrics` |
 | POST | `/api/v1/analysis/detailed` | required | `AnalysisResponse` (one timeframe) |
 | POST | `/api/v1/analysis/current` | required | `MultiAnalysisResponse` (1D, 1H, 15m) |
 | POST | `/api/v1/analysis/multi-symbol` | required | `PortfolioAnalysisResponse` |
@@ -284,7 +284,7 @@ then one `level_<name>` column per key level.
 
 ### Metrics
 
-`GET /api/v1/metrics` returns:
+`GET /metrics` and `GET /api/v1/metrics` are the same handler and return:
 
 ```json
 {
@@ -293,12 +293,13 @@ then one `level_<name>` column per key level.
   "error_counts": {"/analysis/detailed": 1},
   "average_response_times": {"/analysis/detailed": 0.91, "/export/csv": 3.59},
   "total_requests": 3,
-  "total_errors": 1
+  "total_errors": 1,
+  "websocket_connections": {"total_connections": 0, "active_symbols": [], "connections_by_symbol": {}}
 }
 ```
 
-`GET /metrics` returns the same plus `websocket_connections` (`total_connections`,
-`active_symbols`, `connections_by_symbol`). Counters are per worker process and reset on
+`websocket_connections` reports `total_connections`, `active_symbols` and
+`connections_by_symbol`. Counters are per worker process and reset on
 restart.
 
 ## Errors

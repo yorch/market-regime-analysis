@@ -9,12 +9,11 @@ import logging
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from mra_web.auth import User, authenticate_request
 from mra_web.config import APIConfig, config
-from mra_web.endpoints import router as api_router
+from mra_web.endpoints import get_metrics, health_check, router as api_router
 from mra_web.errors import install_error_handlers
 from mra_web.ratelimit import RateLimitMiddleware
 from mra_web.security import install_log_scrubber
@@ -52,10 +51,6 @@ All API routes are limited per client IP (`RATE_LIMIT_PER_MINUTE`, default 60/mi
 
 # Health probes are never rate limited.
 HEALTH_PATHS = ("/health", "/ready", "/api/v1/health")
-
-
-def _health_payload() -> dict:
-    return {"status": "healthy", "timestamp": time.time(), "version": "1.0.0"}
 
 
 def create_app(cfg: APIConfig | None = None) -> FastAPI:
@@ -134,10 +129,7 @@ def create_app(cfg: APIConfig | None = None) -> FastAPI:
             "websocket_monitoring": "/ws/monitoring/{symbol}",
         }
 
-    @app.get("/health", tags=["health"])
-    async def health_check():
-        """Basic health check endpoint."""
-        return _health_payload()
+    app.add_api_route("/health", health_check, methods=["GET"], tags=["health"])
 
     @app.get("/ready", tags=["health"])
     async def readiness_check():
@@ -154,22 +146,7 @@ def create_app(cfg: APIConfig | None = None) -> FastAPI:
             "timestamp": time.time(),
         }
 
-    @app.get("/metrics", tags=["monitoring"])
-    async def get_api_metrics(
-        request: Request,
-        current_user: User = Depends(authenticate_request),  # noqa: B008
-    ):
-        """Get API metrics and usage statistics (authenticated)."""
-        metrics = api_metrics.get_metrics()
-        metrics["websocket_connections"] = {
-            "total_connections": manager.get_connection_count(),
-            "active_symbols": manager.get_active_symbols(),
-            "connections_by_symbol": {
-                symbol: manager.get_connection_count(symbol)
-                for symbol in manager.get_active_symbols()
-            },
-        }
-        return metrics
+    app.add_api_route("/metrics", get_metrics, methods=["GET"], tags=["monitoring"])
 
     # Debug endpoint (development only)
     if cfg.is_development:
