@@ -13,6 +13,8 @@ uv sync
 # Set up environment variables (optional)
 export ALPHA_VANTAGE_API_KEY=your_key_here
 export POLYGON_API_KEY=your_key_here
+export APCA_API_KEY_ID=your_key_id APCA_API_SECRET_KEY=your_secret
+export TIINGO_API_KEY=your_key_here
 ```
 
 ### Start the Server
@@ -264,6 +266,10 @@ export CORS_ORIGINS="http://localhost:3000,https://yourdomain.com"
 # Data providers
 export ALPHA_VANTAGE_API_KEY=your_key_here
 export POLYGON_API_KEY=your_key_here
+export APCA_API_KEY_ID=your_key_id
+export APCA_API_SECRET_KEY=your_secret
+export ALPACA_DATA_FEED=iex   # or sip
+export TIINGO_API_KEY=your_key_here
 ```
 
 ### Data Providers
@@ -273,6 +279,10 @@ export POLYGON_API_KEY=your_key_here
 | **Yahoo Finance** | No | 60 req/min | Community |
 | **Alpha Vantage** | Yes | 5 req/min | Professional |
 | **Polygon.io** | Yes | 60+ req/min | Institutional |
+| **Alpaca** | Yes (key ID + secret) | 200 req/min (free) | IEX (free) / SIP |
+| **Tiingo** | Yes | 50 req/hour (free) | Adjusted EOD + IEX intraday |
+
+For `provider: "alpaca"`, set `api_key` in the request to `"KEY_ID:SECRET_KEY"`, or set both `APCA_*` variables on the server.
 
 ## 📊 Response Format
 

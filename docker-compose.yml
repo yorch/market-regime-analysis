@@ -20,6 +20,10 @@ services:
       DEFAULT_PROVIDER: "${DEFAULT_PROVIDER:-yfinance}"
       ALPHA_VANTAGE_API_KEY: "${ALPHA_VANTAGE_API_KEY:-}"
       POLYGON_API_KEY: "${POLYGON_API_KEY:-}"
+      APCA_API_KEY_ID: "${APCA_API_KEY_ID:-}"
+      APCA_API_SECRET_KEY: "${APCA_API_SECRET_KEY:-}"
+      ALPACA_DATA_FEED: "${ALPACA_DATA_FEED:-}"
+      TIINGO_API_KEY: "${TIINGO_API_KEY:-}"
 
       # ── Alerts — Telegram ──────────────────────────────────────────────
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"

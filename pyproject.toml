@@ -76,6 +76,8 @@ module = [
     "alpha_vantage.*",
     "yfinance.*",
     "polygon.*",
+    "requests",
+    "requests.*",
     "sklearn.*",
     "statsmodels.*",
     "pandas",

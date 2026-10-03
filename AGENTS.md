@@ -132,7 +132,11 @@ market-regime-analysis/
 │   │   │   │   ├── hmm_detector.py       # GMM-based HMM
 │   │   │   │   └── true_hmm_detector.py  # hmmlearn-based HMM
 │   │   │   ├── data_providers/     # Plug-and-play provider architecture
-│   │   │   │   ├── base.py         # MarketDataProvider ABC + registry
+│   │   │   │   ├── base.py         # MarketDataProvider ABC + registry + period_to_start
+│   │   │   │   ├── credentials.py  # Provider env-var lookup (shared by CLI + web)
+│   │   │   │   ├── _http.py        # Retrying JSON GET for REST providers
+│   │   │   │   ├── alpaca_provider.py
+│   │   │   │   ├── tiingo_provider.py
 │   │   │   │   ├── alphavantage_provider.py
 │   │   │   │   ├── polygon_provider.py
 │   │   │   │   ├── yfinance_provider.py
@@ -214,7 +218,7 @@ from .strategy import RegimeStrategy  # inside backtesting/
 1. **MarketRegimeAnalyzer** (`analyzer.py`): Central analysis engine that coordinates data fetching, regime detection, and reporting
 2. **HiddenMarkovRegimeDetector** (`indicators/hmm_detector.py`): Core HMM implementation using Gaussian Mixture Models with 6-state regime classification
 3. **TrueHMMDetector** (`indicators/true_hmm_detector.py`): Full HMM implementation using hmmlearn with Viterbi decoding, regime forecasting, and stability analysis
-4. **Data Providers** (`data_providers/`): Plug-and-play architecture supporting Alpha Vantage, Polygon.io, and Yahoo Finance
+4. **Data Providers** (`data_providers/`): Plug-and-play architecture supporting Alpha Vantage, Polygon.io, Alpaca, Tiingo, and Yahoo Finance
 5. **Portfolio Analysis** (`portfolio/portfolio.py`): Multi-symbol correlation and regime analysis
 6. **Risk Management** (`risk/risk_calculator.py`): Kelly Criterion-based position sizing with regime adjustments
 7. **Backtester** (`backtesting/`): Walk-forward validation and strategy optimization framework
@@ -268,8 +272,10 @@ from .strategy import RegimeStrategy  # inside backtesting/
 3. Implement protocols from `mra_lib.types.protocols`
 
 ### Adding New Data Providers
-1. Implement the `MarketDataProvider` base class in `mra_lib/data_providers/`
+1. Implement the `MarketDataProvider` base class in `mra_lib/data_providers/`. REST providers should use `_http.get_json` (retries/backoff, header auth) and `base.period_to_start`
 2. Register in the package `__init__.py`
+3. If it needs credentials, add its env vars to `credentials.py` (`PROVIDER_ENV_VARS`, or `PROVIDER_ENV_PAIRS` for key ID + secret)
+4. Add the name to the CLI `--provider` choice (`mra_cli/main.py`) and `allowed_providers` (`mra_web/models.py`)
 
 ### Modifying the Backtester
 1. **Adding strategy parameters**: Add to `RegimeStrategy.__init__()`, expose in `from_param_vector()`
@@ -277,7 +283,7 @@ from .strategy import RegimeStrategy  # inside backtesting/
 3. **Modifying walk-forward**: Adjust parameters in `WalkForwardValidator`
 
 ### Security & Configuration
-- Use environment variables for secrets: `ALPHA_VANTAGE_API_KEY`, `POLYGON_API_KEY`, `JWT_SECRET`
+- Use environment variables for secrets: `ALPHA_VANTAGE_API_KEY`, `POLYGON_API_KEY`, `APCA_API_KEY_ID` + `APCA_API_SECRET_KEY` (Alpaca), `TIINGO_API_KEY`, `JWT_SECRET`
 - Avoid `--api-key` in shell history; use `export VAR=...` or `.env`
 - CORS/rate limits/JWT configured via `config.py`/env; review before exposing the API
 

@@ -10,7 +10,7 @@
 A market regime analysis system that uses Hidden Markov Models to classify market states (Bull/Bear Trending, Mean Reverting, High/Low Volatility, Breakout) and generate trading signals. Built with professional infrastructure:
 
 - **CLI** (Click, 8 commands) + **REST API** (FastAPI with JWT auth + WebSocket)
-- **3 data providers** (Alpha Vantage, Polygon.io, Yahoo Finance) via plug-and-play architecture
+- **5 data providers** (Alpha Vantage, Polygon.io, Alpaca, Tiingo, Yahoo Finance) via plug-and-play architecture
 - **Multi-timeframe analysis** (daily, hourly, 15-min)
 - **Backtesting engine** with walk-forward validation and transaction cost modeling
 - **Strategy optimizer** with grid search, random search, and composite scoring

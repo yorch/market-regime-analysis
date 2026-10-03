@@ -75,6 +75,8 @@ def main():
     print("\n🔑 API Key Configuration:")
     print("   Alpha Vantage: Set ALPHA_VANTAGE_API_KEY environment variable")
     print("   Polygon.io: Set POLYGON_API_KEY environment variable")
+    print("   Alpaca: Set APCA_API_KEY_ID and APCA_API_SECRET_KEY environment variables")
+    print("   Tiingo: Set TIINGO_API_KEY environment variable")
     print("   Yahoo Finance: No API key required (free tier)")
 
     try:

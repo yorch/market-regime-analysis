@@ -23,7 +23,7 @@ class BaseRequest(BaseModel):
     @classmethod
     def validate_provider(cls, v: str) -> str:
         """Validate provider choice."""
-        allowed_providers = ["yfinance", "alphavantage", "polygon"]
+        allowed_providers = ["yfinance", "alphavantage", "polygon", "alpaca", "tiingo"]
         if v not in allowed_providers:
             raise ValueError(f"Provider must be one of: {', '.join(allowed_providers)}")
         return v
