@@ -1,5 +1,7 @@
 """Tests for backtesting/metrics.py — PerformanceMetrics."""
 
+import math
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -87,7 +89,7 @@ class TestTradeStats:
         eq = _make_equity([100_000, 100_000])
         pm = PerformanceMetrics([], eq)
         assert pm.metrics["win_rate"] == 0.0
-        assert pm.metrics["profit_factor"] == 0.0
+        assert math.isnan(pm.metrics["profit_factor"])  # undefined: 0 / 0
         assert pm.metrics["avg_win"] == 0.0
         assert pm.metrics["avg_loss"] == 0.0
 
@@ -96,7 +98,7 @@ class TestTradeStats:
         trades = _make_trades([1000, 2000, 3000])
         pm = PerformanceMetrics(trades, eq)
         assert pm.metrics["win_rate"] == 1.0
-        assert pm.metrics["profit_factor"] == 999.0  # No losing trades
+        assert pm.metrics["profit_factor"] == math.inf  # No losing trades
         assert pm.metrics["winning_trades"] == 3
         assert pm.metrics["losing_trades"] == 0
 
@@ -256,3 +258,73 @@ class TestPrintSummary:
         captured = capsys.readouterr()
         assert "BACKTEST PERFORMANCE SUMMARY" in captured.out
         assert "Total Return" in captured.out
+
+
+class TestFormulasAgainstHandComputed:
+    """Metric formulas checked against hand-computed values."""
+
+    def test_calmar_negative_for_losing_strategy(self):
+        eq = _make_equity([100.0, 110.0, 90.0, 80.0])
+        pm = PerformanceMetrics([], eq)
+        assert pm.metrics["annualized_return"] < 0
+        assert pm.metrics["calmar_ratio"] < 0
+        expected = pm.metrics["annualized_return"] / abs(pm.metrics["max_drawdown"])
+        assert pm.metrics["calmar_ratio"] == pytest.approx(expected)
+
+    def test_sharpe_matches_standard_formula(self):
+        values = [100.0, 101.0, 100.5, 102.0, 101.0, 103.0]
+        eq = _make_equity(values)
+        pm = PerformanceMetrics([], eq, risk_free_rate=0.0)
+        r = np.diff(values) / np.array(values[:-1])
+        expected = r.mean() / r.std(ddof=1) * np.sqrt(252)
+        assert pm.metrics["sharpe_ratio"] == pytest.approx(expected)
+
+    def test_sharpe_subtracts_per_period_risk_free(self):
+        values = [100.0, 101.0, 100.5, 102.0, 101.0, 103.0]
+        eq = _make_equity(values)
+        pm = PerformanceMetrics([], eq, risk_free_rate=0.05)
+        r = np.diff(values) / np.array(values[:-1])
+        expected = (r - 0.05 / 252).mean() / r.std(ddof=1) * np.sqrt(252)
+        assert pm.metrics["sharpe_ratio"] == pytest.approx(expected)
+
+    def test_sortino_downside_deviation_over_all_observations(self):
+        values = [100.0, 102.0, 101.0, 104.0, 103.0, 106.0]
+        eq = _make_equity(values)
+        pm = PerformanceMetrics([], eq, risk_free_rate=0.0)
+        r = np.diff(values) / np.array(values[:-1])
+        dd = np.sqrt(np.mean(np.minimum(r, 0.0) ** 2))
+        assert pm.metrics["downside_deviation"] == pytest.approx(dd)
+        assert pm.metrics["sortino_ratio"] == pytest.approx(r.mean() / dd * np.sqrt(252))
+
+    def test_sortino_zero_without_downside(self):
+        eq = _make_equity([100.0, 101.0, 102.0, 103.0])
+        pm = PerformanceMetrics([], eq, risk_free_rate=0.0)
+        assert pm.metrics["sortino_ratio"] == 0.0
+
+    def test_trailing_drawdown_counted_in_duration(self):
+        eq = _make_equity([100.0, 110.0, 105.0, 104.0, 103.0])
+        pm = PerformanceMetrics([], eq)
+        assert pm.metrics["max_drawdown_duration"] == 3
+        assert pm.metrics["drawdown_periods"] == 1
+
+    def test_negative_final_equity_cagr_is_minus_one(self):
+        eq = _make_equity([100.0, 50.0, -10.0])
+        pm = PerformanceMetrics([], eq)
+        assert pm.metrics["annualized_return"] == -1.0
+        assert math.isfinite(pm.metrics["sharpe_ratio"])
+
+    def test_periods_per_year_parameter(self):
+        values = np.linspace(100.0, 110.0, 53)  # 52 weekly periods
+        eq = _make_equity(values)
+        pm = PerformanceMetrics([], eq, periods_per_year=52)
+        assert pm.metrics["years"] == pytest.approx(1.0)
+        assert pm.metrics["annualized_return"] == pytest.approx(0.10)
+
+    def test_initial_capital_used_as_base(self):
+        eq = _make_equity([99.0, 110.0])
+        pm = PerformanceMetrics([], eq, initial_capital=100.0)
+        assert pm.metrics["total_return"] == pytest.approx(0.10)
+
+    def test_invalid_periods_per_year(self):
+        with pytest.raises(ValueError):
+            PerformanceMetrics([], _make_equity([1.0, 2.0]), periods_per_year=0)

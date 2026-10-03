@@ -3,23 +3,28 @@ Empirical regime multiplier calibration.
 
 Analyzes per-regime trade performance from historical walk-forward
 backtest results and derives optimal position size multipliers.
+
+By default the multipliers are fit and reported on the same data
+(``CalibrationResult.in_sample`` is True). Pass ``holdout_frac > 0`` to fit on
+the earlier part of the data and evaluate the calibrated strategy once on the
+untouched remainder (``CalibrationResult.holdout_metrics``).
+
+Trades are attributed to the regime at entry.
 """
 
-import warnings
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
-from sklearn.exceptions import ConvergenceWarning
 
 from mra_lib.config.enums import MarketRegime
 
+from .metrics import PERIODS_PER_YEAR
 from .strategy import RegimeStrategy
+from .trade_stats import PROFIT_FACTOR_CAP, compute_trade_stats, finite_profit_factor
 from .transaction_costs import EquityCostModel, TransactionCostModel
 from .walk_forward import WalkForwardValidator
-
-warnings.filterwarnings("ignore", category=ConvergenceWarning)
-warnings.filterwarnings("ignore", category=FutureWarning)
 
 # Calibration methods
 CALIBRATION_METHODS = ("sharpe_weighted", "win_rate", "profit_factor", "kelly")
@@ -54,6 +59,10 @@ class CalibrationResult:
     trades_per_regime: dict[MarketRegime, int]
     baseline_sharpe: float
     raw_scores: dict[MarketRegime, float] = field(default_factory=dict)
+    #: True when the multipliers were fit and reported on the same data
+    in_sample: bool = True
+    #: Walk-forward summary of the calibrated strategy on the holdout segment
+    holdout_metrics: dict | None = None
 
 
 class RegimeMultiplierCalibrator:
@@ -77,6 +86,8 @@ class RegimeMultiplierCalibrator:
         anchored: bool = True,
         initial_capital: float = 100000.0,
         min_trades_per_regime: int = 5,
+        periods_per_year: int = PERIODS_PER_YEAR,
+        holdout_frac: float = 0.0,
     ) -> None:
         """
         Initialize calibrator.
@@ -92,7 +103,12 @@ class RegimeMultiplierCalibrator:
             anchored: Anchored walk-forward
             initial_capital: Starting capital
             min_trades_per_regime: Minimum trades needed for reliable stats
+            periods_per_year: Bars per year used for annualization
+            holdout_frac: Fraction of bars at the end of ``df`` withheld from
+                calibration and used once to evaluate the calibrated strategy
         """
+        if not 0.0 <= holdout_frac < 1.0:
+            raise ValueError("holdout_frac must be in [0, 1)")
         self.df = df
         self.cost_model = cost_model or EquityCostModel()
         self.n_hmm_states = n_hmm_states
@@ -103,6 +119,9 @@ class RegimeMultiplierCalibrator:
         self.anchored = anchored
         self.initial_capital = initial_capital
         self.min_trades_per_regime = min_trades_per_regime
+        self.periods_per_year = periods_per_year
+        self.holdout_frac = holdout_frac
+        self.split_index = len(df) - round(len(df) * holdout_frac)
 
     def _collect_trades(
         self,
@@ -110,24 +129,13 @@ class RegimeMultiplierCalibrator:
         verbose: bool = False,
     ) -> tuple[list[dict], float]:
         """
-        Run walk-forward and collect all trades.
+        Run walk-forward on the calibration (non-holdout) period and collect trades.
 
         Returns:
             Tuple of (trades_list, baseline_sharpe)
         """
-        validator = WalkForwardValidator(
-            strategy=strategy,
-            cost_model=self.cost_model,
-            n_hmm_states=self.n_hmm_states,
-            hmm_n_iter=self.hmm_n_iter,
-            retrain_frequency=self.retrain_frequency,
-            min_train_days=self.min_train_days,
-            test_days=self.test_days,
-            anchored=self.anchored,
-            initial_capital=self.initial_capital,
-        )
-
-        wf_results = validator.run(self.df, verbose=verbose)
+        validator = self._make_validator(strategy)
+        wf_results = validator.run(self.df.iloc[: self.split_index], verbose=verbose)
 
         if "error" in wf_results:
             return [], 0.0
@@ -139,6 +147,45 @@ class RegimeMultiplierCalibrator:
 
         sharpe = wf_results.get("sharpe_approx", 0.0)
         return all_trades, sharpe
+
+    def _make_validator(self, strategy: RegimeStrategy) -> WalkForwardValidator:
+        return WalkForwardValidator(
+            strategy=strategy,
+            cost_model=self.cost_model,
+            n_hmm_states=self.n_hmm_states,
+            hmm_n_iter=self.hmm_n_iter,
+            retrain_frequency=self.retrain_frequency,
+            min_train_days=self.min_train_days,
+            test_days=self.test_days,
+            anchored=self.anchored,
+            initial_capital=self.initial_capital,
+            periods_per_year=self.periods_per_year,
+        )
+
+    def evaluate_holdout(self, strategy: RegimeStrategy, verbose: bool = False) -> dict | None:
+        """Run ``strategy`` once on the holdout segment (None if no holdout)."""
+        if self.split_index >= len(self.df):
+            return None
+        wf = self._make_validator(strategy).run(
+            self.df, verbose=verbose, start_index=self.split_index
+        )
+        if "error" in wf:
+            return None
+        return {
+            k: wf[k]
+            for k in (
+                "n_windows",
+                "total_test_days",
+                "compounded_strategy_return",
+                "compounded_bh_return",
+                "excess_return",
+                "sharpe_ratio",
+                "max_drawdown",
+                "total_trades",
+                "trade_win_rate",
+                "profit_factor",
+            )
+        }
 
     def _compute_regime_stats(
         self,
@@ -167,24 +214,20 @@ class RegimeMultiplierCalibrator:
             pnls = [t["pnl"] for t in rtrades]
             rs.total_pnl = sum(pnls)
             rs.avg_pnl = float(np.mean(pnls))
-            rs.std_pnl = float(np.std(pnls)) if len(pnls) > 1 else 0.0
+            rs.std_pnl = float(np.std(pnls, ddof=1)) if len(pnls) > 1 else 0.0
 
-            winners = [p for p in pnls if p > 0]
-            losers = [p for p in pnls if p < 0]
+            ts = compute_trade_stats(rtrades)
+            rs.win_rate = float(ts["win_rate"])
+            rs.avg_win = float(ts["avg_win"])
+            rs.avg_loss = float(ts["avg_loss"])
+            rs.profit_factor = float(ts["profit_factor"])
 
-            rs.win_rate = len(winners) / len(pnls) if pnls else 0.0
-            rs.avg_win = float(np.mean(winners)) if winners else 0.0
-            rs.avg_loss = float(np.mean([abs(x) for x in losers])) if losers else 0.0
-
-            total_wins = sum(winners) if winners else 0.0
-            total_losses = sum(abs(x) for x in losers) if losers else 0.0
-            rs.profit_factor = total_wins / total_losses if total_losses > 0 else 0.0
-
-            # Per-regime Sharpe (annualized approximation)
+            # Per-regime Sharpe (annualized approximation; holding_days are
+            # calendar days, so this is approximate for intraday bars)
             holding_days = [max(t.get("holding_days", 1), 1) for t in rtrades]
             rs.avg_holding_days = float(np.mean(holding_days))
             if rs.std_pnl > 0 and rs.avg_holding_days > 0:
-                trades_per_year = 252.0 / rs.avg_holding_days
+                trades_per_year = self.periods_per_year / rs.avg_holding_days
                 rs.sharpe = (rs.avg_pnl / rs.std_pnl) * np.sqrt(trades_per_year)
             else:
                 rs.sharpe = 0.0
@@ -234,8 +277,10 @@ class RegimeMultiplierCalibrator:
                 # Only reward win rates above 50% (edge over random)
                 scores[regime] = max(0.0, rs.win_rate - 0.5) * 2.0
             elif method == "profit_factor":
-                # Excess over breakeven
-                scores[regime] = max(0.0, rs.profit_factor - 1.0)
+                # Excess over breakeven (inf -> capped, nan -> 0)
+                scores[regime] = max(
+                    0.0, finite_profit_factor(rs.profit_factor, PROFIT_FACTOR_CAP) - 1.0
+                )
             elif method == "kelly":
                 scores[regime] = max(0.0, rs.kelly_fraction)
             else:
@@ -367,8 +412,14 @@ class RegimeMultiplierCalibrator:
 
         trades_per_regime = {r: rs.n_trades for r, rs in regime_stats.items()}
 
+        holdout_metrics = None
+        if self.split_index < len(self.df):
+            calibrated = self._strategy_from_multipliers(multipliers, base_strategy)
+            holdout_metrics = self.evaluate_holdout(calibrated)
+
         if verbose:
             self._print_calibration_report(regime_stats, raw_scores, multipliers, method)
+            self._print_evaluation_label(holdout_metrics)
 
         return CalibrationResult(
             multipliers=multipliers,
@@ -378,7 +429,40 @@ class RegimeMultiplierCalibrator:
             trades_per_regime=trades_per_regime,
             baseline_sharpe=baseline_sharpe,
             raw_scores=raw_scores,
+            in_sample=holdout_metrics is None,
+            holdout_metrics=holdout_metrics,
         )
+
+    @staticmethod
+    def _strategy_from_multipliers(
+        multipliers: dict[MarketRegime, float], base: RegimeStrategy
+    ) -> RegimeStrategy:
+        return RegimeStrategy(
+            regime_multipliers=multipliers,
+            regime_directions=base.regime_directions,
+            base_position_fraction=base.base_position_fraction,
+            max_position_size=base.max_position_size,
+            stop_loss_pct=base.stop_loss_pct,
+            take_profit_pct=base.take_profit_pct,
+            min_confidence=base.min_confidence,
+            confidence_scaling=base.confidence_scaling,
+        )
+
+    def _print_evaluation_label(self, holdout_metrics: dict | None) -> None:
+        if holdout_metrics is None:
+            print(
+                "\nNOTE: IN-SAMPLE calibration - multipliers were fit and scored on the "
+                "same data; expect weaker results out of sample."
+            )
+            return
+        pf = holdout_metrics["profit_factor"]
+        print("\nHOLDOUT (out-of-sample) evaluation of calibrated multipliers:")
+        print(f"  Return:        {holdout_metrics['compounded_strategy_return']:+.2%}")
+        print(f"  Buy & Hold:    {holdout_metrics['compounded_bh_return']:+.2%}")
+        print(f"  Sharpe:        {holdout_metrics['sharpe_ratio']:.2f}")
+        print(f"  Max Drawdown:  {holdout_metrics['max_drawdown']:.2%}")
+        print(f"  Trades:        {holdout_metrics['total_trades']}")
+        print(f"  Profit Factor: {pf:.2f}" if not math.isnan(pf) else "  Profit Factor: n/a")
 
     def create_calibrated_strategy(
         self,
@@ -419,7 +503,7 @@ class RegimeMultiplierCalibrator:
     ) -> None:
         """Print formatted calibration results."""
         print("\n" + "=" * 100)
-        print("REGIME MULTIPLIER CALIBRATION RESULTS")
+        print("REGIME MULTIPLIER CALIBRATION RESULTS (calibration period, in-sample)")
         print(f"Method: {method}")
         print("=" * 100)
 

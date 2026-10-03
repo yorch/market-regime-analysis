@@ -19,6 +19,16 @@ class TransactionCostModel:
     - Configurable by asset class
 
     All costs reduce returns - critical for realistic performance estimation.
+
+    Cost conventions (all charged per side, i.e. once on entry and once on exit):
+
+    - ``spread_bps`` is the full quoted bid-ask spread. Crossing from mid to
+      bid or ask costs *half* the spread per side, so a round trip pays the full
+      spread once.
+    - ``slippage_bps`` is charged per side on notional.
+    - Market impact is ``coeff * sqrt(shares / avg_volume)`` of notional per side
+      and only applies when ``avg_volume`` is provided (the backtest engine
+      passes a rolling average of the ``Volume`` column).
     """
 
     def __init__(
@@ -33,7 +43,8 @@ class TransactionCostModel:
         Initialize transaction cost model.
 
         Args:
-            spread_bps: Bid-ask spread in basis points (default: 5 bps = 0.05%)
+            spread_bps: Full bid-ask spread in basis points (default: 5 bps); half is
+                charged per side
             commission_per_share: Commission per share (default: $0.005)
             commission_min: Minimum commission per trade (default: $1)
             slippage_bps: Slippage in basis points (default: 2 bps)
@@ -63,7 +74,7 @@ class TransactionCostModel:
 
         Returns:
             Dictionary with cost breakdown:
-            - spread_cost: Bid-ask spread cost
+            - spread_cost: Half-spread cost for this side
             - commission: Commission cost
             - slippage: Slippage cost
             - market_impact: Market impact cost (if volume provided)
@@ -73,8 +84,8 @@ class TransactionCostModel:
         shares = abs(shares)  # Ensure positive
         notional_value = price * shares
 
-        # 1. Bid-ask spread cost
-        spread_cost = notional_value * (self.spread_bps / 10000)
+        # 1. Bid-ask spread cost: half the quoted spread per side
+        spread_cost = notional_value * (self.spread_bps / 2 / 10000)
 
         # 2. Commission cost
         commission = max(self.commission_min, shares * self.commission_per_share)

@@ -5,9 +5,30 @@ Separates strategy logic from the backtest engine so parameters
 can be optimized independently.
 """
 
+from collections.abc import Iterable
+
 import pandas as pd
 
 from mra_lib.config.enums import MarketRegime, TradingStrategy
+
+#: Keys accepted by :meth:`RegimeStrategy.from_param_vector`.
+PARAM_KEYS = frozenset(
+    {
+        "bull_mult",
+        "bear_mult",
+        "mr_mult",
+        "hv_mult",
+        "lv_mult",
+        "bo_mult",
+        "base_fraction",
+        "max_position",
+        "stop_loss",
+        "take_profit",
+        "min_confidence",
+        "confidence_scaling",
+        "bear_short",
+    }
+)
 
 
 class RegimeStrategy:
@@ -153,6 +174,39 @@ class RegimeStrategy:
         }
 
     @staticmethod
+    def validate_param_keys(keys: Iterable[str]) -> None:
+        """
+        Raise ``ValueError`` if any key is not a recognised strategy parameter.
+
+        Catches typos (e.g. ``stoploss``) that would otherwise be silently
+        ignored and leave the default in place.
+        """
+        unknown = sorted(set(keys) - PARAM_KEYS)
+        if unknown:
+            raise ValueError(
+                f"Unknown strategy parameter(s): {', '.join(unknown)}. "
+                f"Valid keys: {', '.join(sorted(PARAM_KEYS))}"
+            )
+
+    @staticmethod
+    def canonical_params(params: dict) -> dict:
+        """
+        Return an equivalent parameter dict with irrelevant settings normalised.
+
+        A bear position is only taken when ``bear_short`` is truthy *and*
+        ``bear_mult > 0``; otherwise both settings are equivalent to
+        ``bear_mult=0, bear_short=0``. Used by the optimizer to skip combinations
+        that would produce identical backtests.
+        """
+        canon = dict(params)
+        bear_mult = canon.get("bear_mult", 0.7)
+        bear_short = canon.get("bear_short", 1)
+        if not bear_short or bear_mult <= 0:
+            canon["bear_mult"] = 0.0
+            canon["bear_short"] = 0
+        return canon
+
+    @staticmethod
     def from_param_vector(params: dict) -> "RegimeStrategy":
         """
         Create strategy from a flat parameter dictionary.
@@ -160,8 +214,12 @@ class RegimeStrategy:
         Expected keys:
             bull_mult, bear_mult, mr_mult, hv_mult, lv_mult, bo_mult,
             base_fraction, max_position, stop_loss, take_profit,
-            min_confidence, bear_short (1=SHORT, 0=None)
+            min_confidence, confidence_scaling, bear_short (1=SHORT, 0=None)
+
+        Raises:
+            ValueError: If ``params`` contains an unknown key
         """
+        RegimeStrategy.validate_param_keys(params)
         regime_multipliers = {
             MarketRegime.BULL_TRENDING: params.get("bull_mult", 1.3),
             MarketRegime.BEAR_TRENDING: params.get("bear_mult", 0.7),

@@ -7,12 +7,13 @@ with realistic execution, transaction costs, and performance measurement.
 
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
 
 from mra_lib.config.enums import MarketRegime, TradingStrategy
 from mra_lib.risk.risk_calculator import PortfolioPositionLimits, PositionRecord
 
-from .metrics import PerformanceMetrics
+from .metrics import PERIODS_PER_YEAR, PerformanceMetrics
 from .transaction_costs import EquityCostModel, TransactionCostModel
 
 
@@ -38,6 +39,8 @@ class BacktestEngine:
         position_limits: PortfolioPositionLimits | None = None,
         symbol: str = "",
         sector: str = "",
+        periods_per_year: int = PERIODS_PER_YEAR,
+        volume_lookback: int = 20,
     ) -> None:
         """
         Initialize backtest engine.
@@ -51,6 +54,9 @@ class BacktestEngine:
             position_limits: Optional cross-asset position limits enforcer
             symbol: Symbol being traded (used with position_limits)
             sector: Sector/group tag for sector limit enforcement
+            periods_per_year: Bars per year used to annualize metrics
+            volume_lookback: Bars in the rolling average volume passed to the
+                cost model for market impact (requires a ``Volume`` column)
         """
         self.initial_capital = initial_capital
         self.cost_model = cost_model or EquityCostModel()
@@ -60,12 +66,15 @@ class BacktestEngine:
         self.position_limits = position_limits
         self.symbol = symbol
         self.sector = sector
+        self.periods_per_year = periods_per_year
+        self.volume_lookback = volume_lookback
+        self._avg_volume: float | None = None
 
         # Backtest state
         self.capital = initial_capital
         self.position: dict | None = None  # Current open position
         self.trades: list[dict] = []
-        self.equity_curve: list[float] = [initial_capital]
+        self.equity_curve: list[float] = []
         self.dates: list[datetime] = []
 
     def run_regime_strategy(
@@ -78,6 +87,12 @@ class BacktestEngine:
     ) -> dict:
         """
         Run backtest for regime-based strategy.
+
+        Signals for bar ``i`` are acted on at bar ``i``'s close. Stops and
+        take-profits are checked intrabar from the next bar on, with gap-aware
+        fills at the bar's open. The equity curve has exactly one point per bar
+        (marked at the close); the final point reflects the forced close of any
+        open position, including exit costs.
 
         Args:
             df: OHLC price data
@@ -93,8 +108,11 @@ class BacktestEngine:
         self.capital = self.initial_capital
         self.position = None
         self.trades = []
-        self.equity_curve = [self.initial_capital]
-        self.dates = [df.index[0]]
+        self.equity_curve = []
+        self.dates = []
+
+        opens = df["Open"] if "Open" in df.columns else None
+        avg_volumes = self._rolling_avg_volume(df)
 
         # Iterate through each day
         for i in range(len(df)):
@@ -103,29 +121,22 @@ class BacktestEngine:
             regime = regimes.iloc[i] if i < len(regimes) else MarketRegime.UNKNOWN
             strategy = strategies.iloc[i] if i < len(strategies) else TradingStrategy.AVOID
             position_mult = position_sizes.iloc[i] if i < len(position_sizes) else 0.0
+            self._avg_volume = avg_volumes[i]
 
             # Update existing position
             if self.position is not None:
                 # Check stop-loss/take-profit
-                self._check_exit_conditions(date, price, df["High"].iloc[i], df["Low"].iloc[i])
-
-                # Check regime change exit
-                if self.position is not None and self._should_exit_regime(regime, strategy):
-                    self._close_position(
-                        date,
-                        price,
-                        regime.value if isinstance(regime, MarketRegime) else str(regime),
-                    )
-
-                # Check direction reversal (e.g. was LONG, now signal SHORT)
-                if self.position is not None and directions is not None and i < len(directions):
-                    new_dir = directions.iloc[i]
-                    if new_dir is not None and new_dir != self.position["direction"]:
-                        self._close_position(
-                            date,
-                            price,
-                            regime.value if isinstance(regime, MarketRegime) else str(regime),
-                        )
+                self._check_exit_conditions(
+                    date,
+                    price,
+                    df["High"].iloc[i],
+                    df["Low"].iloc[i],
+                    opens.iloc[i] if opens is not None else None,
+                )
+                new_dir = (
+                    directions.iloc[i] if directions is not None and i < len(directions) else None
+                )
+                self._check_signal_exits(date, price, regime, strategy, new_dir)
 
             # Enter new position if no current position
             if self.position is None:
@@ -163,10 +174,18 @@ class BacktestEngine:
             final_price = df["Close"].iloc[-1]
             final_date = df.index[-1]
             self._close_position(final_date, final_price, "END")
+            # Reflect the forced close (and its exit costs) in the last equity point
+            if self.equity_curve:
+                self.equity_curve[-1] = self.capital
 
         # Calculate performance metrics
-        equity_series = pd.Series(self.equity_curve, index=self.dates)
-        performance = PerformanceMetrics(self.trades, equity_series)
+        equity_series = pd.Series(self.equity_curve, index=pd.Index(self.dates))
+        performance = PerformanceMetrics(
+            self.trades,
+            equity_series,
+            periods_per_year=self.periods_per_year,
+            initial_capital=self.initial_capital,
+        )
 
         return {
             "trades": self.trades,
@@ -175,6 +194,35 @@ class BacktestEngine:
             "final_capital": self.capital,
             "total_return": (self.capital / self.initial_capital - 1),
         }
+
+    def _rolling_avg_volume(self, df: pd.DataFrame) -> list[float | None]:
+        """Per-bar rolling average volume (None where unavailable) for market impact."""
+        if "Volume" not in df.columns:
+            return [None] * len(df)
+        avg = df["Volume"].astype(float).rolling(self.volume_lookback, min_periods=1).mean()
+        return [float(v) if np.isfinite(v) and v > 0 else None for v in avg.to_numpy()]
+
+    def _check_signal_exits(
+        self,
+        date: datetime,
+        price: float,
+        regime: MarketRegime,
+        strategy: TradingStrategy,
+        new_dir: str | None,
+    ) -> None:
+        """Close the open position on a defensive regime or a direction reversal."""
+        if self.position is None:
+            return
+        label = regime.value if isinstance(regime, MarketRegime) else str(regime)
+
+        # Regime change exit
+        if self._should_exit_regime(regime, strategy):
+            self._close_position(date, price, label)
+            return
+
+        # Direction reversal (e.g. was LONG, now signal SHORT)
+        if new_dir is not None and new_dir != self.position["direction"]:
+            self._close_position(date, price, label)
 
     def _should_enter_position(self, strategy: TradingStrategy) -> bool:
         """Determine if we should enter a position based on strategy."""
@@ -252,19 +300,20 @@ class BacktestEngine:
 
         # Calculate entry costs
         costs = self.cost_model.calculate_total_cost(
-            price, shares, "BUY" if direction == "LONG" else "SELL"
+            price, shares, "BUY" if direction == "LONG" else "SELL", self._avg_volume
         )
 
         # Calculate notional value
         notional = price * shares
 
-        # Deduct position cost AND transaction costs from capital
-        # For LONG: we pay price * shares + costs
-        # For SHORT: we receive price * shares - costs (but margin required)
+        # Cash accounting (equity = cash + long value - short liability):
+        # LONG:  pay notional + costs
+        # SHORT: receive sale proceeds, pay costs; the buy-back liability is
+        #        carried at market in _calculate_current_equity
         if direction == "LONG":
             self.capital -= notional + costs["total_cost"]
-        else:  # SHORT - receive proceeds but need margin (simplified: deduct costs only)
-            self.capital -= costs["total_cost"]
+        else:
+            self.capital += notional - costs["total_cost"]
 
         # Create position
         self.position = {
@@ -297,7 +346,7 @@ class BacktestEngine:
 
         # Calculate exit costs
         costs = self.cost_model.calculate_total_cost(
-            price, shares, "SELL" if direction == "LONG" else "BUY"
+            price, shares, "SELL" if direction == "LONG" else "BUY", self._avg_volume
         )
 
         # Calculate P&L
@@ -312,14 +361,12 @@ class BacktestEngine:
         # Calculate notional (entry value for return calculation)
         notional = self.position["entry_price"] * shares
 
-        # Update capital
-        # For LONG: we receive sell proceeds = price * shares - exit_costs
-        # We already paid (entry_price * shares + entry_costs) when opening
-        # So net change is: sell proceeds - what we paid = gross_pnl - costs
-        # Which equals net_pnl that we already calculated
+        # Update cash. Over the round trip the change in cash equals net_pnl:
+        # LONG:  receive sale proceeds (paid entry notional + costs at open)
+        # SHORT: pay to cover (received entry proceeds - costs at open)
         if direction == "LONG":
             self.capital += price * shares - costs["total_cost"]
-        else:  # SHORT - we pay to cover = price * shares + costs
+        else:
             self.capital -= price * shares + costs["total_cost"]
 
         # Calculate return percentage
@@ -352,38 +399,55 @@ class BacktestEngine:
         if self.position_limits is not None:
             self.position_limits.remove_position(self.symbol)
 
-    def _check_exit_conditions(self, date: datetime, close: float, high: float, low: float) -> None:
-        """Check if stop-loss or take-profit hit using intraday high/low."""
+    def _check_exit_conditions(
+        self,
+        date: datetime,
+        close: float,
+        high: float,
+        low: float,
+        open_: float | None = None,
+    ) -> None:
+        """
+        Check if stop-loss or take-profit hit using intraday high/low.
+
+        Fills are gap-aware: if the bar opens beyond the trigger level the order
+        fills at the open (a long stop fills at ``min(open, stop)``, a short stop
+        at ``max(open, stop)``; take-profits likewise fill at the better open).
+        If both levels are touched in one bar the stop is assumed to fill first.
+        """
         if self.position is None:
             return
 
         entry_price = self.position["entry_price"]
         direction = self.position["direction"]
+        bar_open = float(open_) if open_ is not None and np.isfinite(open_) else None
 
-        # Check stop-loss (use worst case - LOW for LONG, HIGH for SHORT)
         if self.stop_loss_pct:
             if direction == "LONG":
                 stop_price = entry_price * (1 - self.stop_loss_pct)
                 if low <= stop_price:
-                    self._close_position(date, stop_price, "STOP_LOSS")
+                    fill = min(bar_open, stop_price) if bar_open is not None else stop_price
+                    self._close_position(date, fill, "STOP_LOSS")
                     return
             else:  # SHORT
                 stop_price = entry_price * (1 + self.stop_loss_pct)
                 if high >= stop_price:
-                    self._close_position(date, stop_price, "STOP_LOSS")
+                    fill = max(bar_open, stop_price) if bar_open is not None else stop_price
+                    self._close_position(date, fill, "STOP_LOSS")
                     return
 
-        # Check take-profit (use best case - HIGH for LONG, LOW for SHORT)
         if self.take_profit_pct:
             if direction == "LONG":
                 profit_price = entry_price * (1 + self.take_profit_pct)
                 if high >= profit_price:
-                    self._close_position(date, profit_price, "TAKE_PROFIT")
+                    fill = max(bar_open, profit_price) if bar_open is not None else profit_price
+                    self._close_position(date, fill, "TAKE_PROFIT")
                     return
             else:  # SHORT
                 profit_price = entry_price * (1 - self.take_profit_pct)
                 if low <= profit_price:
-                    self._close_position(date, profit_price, "TAKE_PROFIT")
+                    fill = min(bar_open, profit_price) if bar_open is not None else profit_price
+                    self._close_position(date, fill, "TAKE_PROFIT")
                     return
 
     def _calculate_current_equity(self, current_price: float) -> float:
