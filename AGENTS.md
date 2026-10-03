@@ -306,7 +306,7 @@ See `examples/custom_provider.py` for a runnable template.
 1. Implement the `MarketDataProvider` base class in `mra_lib/data_providers/`. REST providers should use `_http.get_json` (retries/backoff, timeouts, header auth, `throttle=self.throttle`) and `base.period_to_start`; client-library providers call `self.throttle()` before each request and pass `config.timeout`/`config.retries` to the client
 2. Return `self.standardize_dataframe(df, interval)` — it enforces the contract documented in `base.py`: float64 OHLCV, sorted/de-duplicated tz-naive index, intraday bars in UTC, daily bars labeled by session date, optional `drop_incomplete_bar`
 3. Raise `InvalidSymbolError` (a `ValueError`) for unknown symbols / empty results, `AuthError` / `RateLimitError` (both `ConnectionError`) for credential and quota problems, plain `ConnectionError` for network failures. Don't wrap `ValueError`s as `ConnectionError`
-4. Set `rate_limit_per_minute` (and optionally `rate_limit_burst`) to drive the client-side token bucket
+4. Set `rate_limit_per_minute` (and optionally `rate_limit_burst`) to drive the client-side token bucket (shared per provider + API key across instances; tests reset it via `MarketDataProvider.reset_rate_limiters()` in `packages/mra_lib/tests/conftest.py`)
 5. Register in the package `__init__.py` — the CLI `--provider` choices are derived from the registry
 6. If it needs credentials, add its env vars to `credentials.py` (`PROVIDER_ENV_VARS`, or `PROVIDER_ENV_PAIRS` for key ID + secret)
 7. Add the name to `allowed_providers` (`mra_web/models.py`)

@@ -22,6 +22,7 @@ from mra_lib.config.regime_tables import (
     get_regime_strategy,
     periods_per_year,
 )
+from mra_lib.config.timeframes import DEFAULT_PERIODS
 from mra_lib.data_providers import MarketDataProvider, ProviderConfig
 from mra_lib.indicators.hmm_detector import HiddenMarkovRegimeDetector
 
@@ -62,8 +63,6 @@ class MarketRegimeAnalyzer:
         """
         self.symbol = symbol
         # Defaults (1D: 2y, 1H: 6mo, 15m: 1mo) are supported by every provider
-        from mra_lib.config.timeframes import DEFAULT_PERIODS
-
         self.periods = periods or dict(DEFAULT_PERIODS)
 
         # Data storage
@@ -685,7 +684,9 @@ class MarketRegimeAnalyzer:
         import threading
 
         log = logging.getLogger(__name__)
-        stop = threading.Event()
+        # A plain flag: setting a threading.Event from a signal handler can deadlock if the
+        # signal lands while the main thread holds the Event's internal lock
+        stop = {"requested": False}
         previous_handler: Any = None
         install_handler = threading.current_thread() is threading.main_thread()
         if install_handler:
@@ -693,7 +694,7 @@ class MarketRegimeAnalyzer:
             def _on_sigterm(signum: int, frame: Any) -> None:
                 _ = signum, frame
                 log.info("SIGTERM received, stopping monitoring")
-                stop.set()
+                stop["requested"] = True
 
             previous_handler = signal.signal(signal.SIGTERM, _on_sigterm)
 
@@ -704,7 +705,7 @@ class MarketRegimeAnalyzer:
         next_tick = time.monotonic()
 
         try:
-            while not stop.is_set():
+            while not stop["requested"]:
                 iteration += 1
                 log.info(
                     "Refresh #%d at %s", iteration, datetime.now().isoformat(timespec="seconds")
@@ -751,14 +752,24 @@ class MarketRegimeAnalyzer:
                 gc.collect()
                 if max_iterations is not None and iteration >= max_iterations:
                     break
-                stop.wait(delay)
+                self._monitor_sleep(delay, stop)
         except KeyboardInterrupt:
             log.info("Monitoring stopped by user")
         finally:
-            if install_handler:
+            if install_handler and previous_handler is not None:
                 signal.signal(signal.SIGTERM, previous_handler)
 
         return successes
+
+    @staticmethod
+    def _monitor_sleep(delay: float, stop: dict[str, bool]) -> None:
+        """Sleep ``delay`` seconds in short slices so a stop request is honored promptly."""
+        deadline = time.monotonic() + delay
+        while not stop["requested"]:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(1.0, remaining))
 
     def export_analysis_to_csv(self, filename: str | None = None) -> None:
         """

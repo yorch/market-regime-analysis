@@ -44,19 +44,11 @@ def test_monitoring_returns_zero_when_every_iteration_fails(analyzer):
 def test_monitoring_backoff_grows_and_caps(analyzer):
     waits: list[float] = []
 
-    class FakeEvent:
-        def is_set(self):
-            return False
-
-        def wait(self, timeout):
-            waits.append(timeout)
-
-        def set(self):
-            pass
-
     with (
         patch.object(analyzer, "_load_data", side_effect=ConnectionError("down")),
-        patch("threading.Event", FakeEvent),
+        patch.object(
+            MarketRegimeAnalyzer, "_monitor_sleep", side_effect=lambda d, stop: waits.append(d)
+        ),
     ):
         analyzer.run_continuous_monitoring(10, max_iterations=4, max_backoff=25)
 

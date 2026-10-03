@@ -318,11 +318,13 @@ class TestAlphaVantage:
         assert df["Close"].iloc[-1] == 50
         assert df["High"].iloc[-1] == 55
 
-    def test_av_full_history_premium_falls_back_to_compact(self, av):
+    def test_av_full_history_premium_falls_back_to_compact(self):
+        # e.g. a key whose plan lacks full history; free keys request compact directly
+        av = AlphaVantageProvider(ProviderConfig(api_key="KEY", retries=0, premium=True))
         today = datetime.now(UTC).date().isoformat()
         responses = [
             _response(body={"Information": "outputsize=full is a premium feature"}),
-            _response(body=_av_daily([today])),
+            _response(body=_av_daily([today], adjusted=True)),
         ]
         with patch("requests.get", side_effect=responses) as get:
             df = av.fetch("SPY", "2y", "1d")
@@ -449,3 +451,48 @@ class TestPolygon:
 
     def test_polygon_rate_limit_metadata(self):
         assert PolygonProvider.rate_limit_per_minute == 5
+
+
+class TestReviewFixes:
+    def test_av_key_never_in_error_messages(self):
+        provider = AlphaVantageProvider(ProviderConfig(api_key="SECRETKEY9", retries=0))
+        body = {
+            "Information": "We have detected your API key as SECRETKEY9 and our standard API "
+            "rate limit is 25 requests per day."
+        }
+        with (
+            patch("requests.get", return_value=_response(body=body)),
+            pytest.raises(RateLimitError) as info,
+        ):
+            provider.fetch("SPY", "1mo", "1d")
+        assert "SECRETKEY9" not in str(info.value)
+
+    def test_av_free_daily_requests_compact_once(self):
+        provider = AlphaVantageProvider(ProviderConfig(api_key="K", premium=False))
+        today = datetime.now(UTC).date().isoformat()
+        with patch("requests.get", return_value=_response(body=_av_daily([today]))) as get:
+            provider.fetch("SPY", "2y", "1d")
+        assert get.call_count == 1
+        assert get.call_args.kwargs["params"]["outputsize"] == "compact"
+
+    def test_polygon_max_retries_is_connection_error(self, polygon):
+        polygon.client.list_aggs.side_effect = Exception(
+            "HTTPSConnectionPool: Max retries exceeded with url (NameResolutionError)"
+        )
+        with pytest.raises(ConnectionError) as info:
+            polygon.fetch("SPY", "1mo", "1d")
+        assert not isinstance(info.value, RateLimitError)
+
+    def test_yfinance_requests_raised_errors(self):
+        ticker = MagicMock()
+        ticker.history.return_value = _ohlcv(pd.to_datetime(["2024-01-02"]))
+        with patch("yfinance.Ticker", return_value=ticker):
+            YFinanceProvider().fetch("SPY", "1mo", "1d")
+        assert ticker.history.call_args.kwargs["raise_errors"] is True
+
+    def test_rate_limiter_shared_across_instances(self):
+        a = PolygonProvider(ProviderConfig(api_key="K"))
+        b = PolygonProvider(ProviderConfig(api_key="K"))
+        c = PolygonProvider(ProviderConfig(api_key="OTHER"))
+        assert a._limiter is b._limiter
+        assert a._limiter is not c._limiter

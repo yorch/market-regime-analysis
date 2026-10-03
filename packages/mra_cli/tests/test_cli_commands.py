@@ -251,3 +251,122 @@ class TestMonitoringAndServer:
             result = runner.invoke(cli, ["start-api"])
         assert result.exit_code == 0, result.output
         assert run.call_args.kwargs["host"] == "127.0.0.1"
+
+
+class TestReviewFixes:
+    def test_cli_labels_wrapped_provider_errors_by_cause(self, runner):
+        from mra_lib.data_providers import AuthError
+
+        def wrapped(*_args):
+            try:
+                raise AuthError("bad key")
+            except AuthError as e:
+                raise ValueError("Data loading failed for 1D: bad key") from e
+
+        with patch("mra_cli.main._analyze_single_timeframe", side_effect=wrapped):
+            result = runner.invoke(cli, ["detailed-analysis", "--provider", "mock"])
+        assert result.exit_code == 1
+        assert "Authentication error" in result.output
+
+    def test_cli_group_key_not_reused_for_other_provider(self, runner):
+        result = runner.invoke(
+            cli,
+            [
+                "--provider",
+                "tiingo",
+                "--api-key",
+                "T",
+                "detailed-analysis",
+                "--provider",
+                "polygon",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "POLYGON_API_KEY" in result.output
+
+    def test_cli_generate_charts_swallowed_error_exits_nonzero(self, runner, tmp_path: Path):
+        import matplotlib.pyplot as plt
+
+        from mra_lib import MarketRegimeAnalyzer
+
+        def half_drawn(self, timeframe, days):
+            plt.subplots(2, 1)
+            print("Error generating chart: boom")
+
+        out = tmp_path / "c.png"
+        with patch.object(MarketRegimeAnalyzer, "plot_regime_analysis", half_drawn):
+            result = runner.invoke(cli, ["generate-charts", "--provider", "mock", "-o", str(out)])
+        assert result.exit_code == 1
+        assert not out.exists()
+
+    def test_cli_monitoring_retries_failed_startup(self, runner):
+        from mra_lib import MarketRegimeAnalyzer
+
+        real_init = MarketRegimeAnalyzer.__init__
+        calls = {"n": 0}
+
+        def flaky_init(self, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ConnectionError("network down")
+            real_init(self, *args, **kwargs)
+
+        with (
+            patch.object(MarketRegimeAnalyzer, "__init__", flaky_init),
+            patch("mra_cli.main.time.sleep") as sleep,
+        ):
+            result = runner.invoke(
+                cli,
+                ["continuous-monitoring", "--provider", "mock", "--max-iterations", "2"],
+            )
+        assert result.exit_code == 0, result.output
+        assert "Startup failed" in result.output
+        sleep.assert_called_once_with(300)
+
+
+def test_json_safe_replaces_non_finite_floats():
+    import json
+
+    import numpy as np
+
+    from mra_cli.main import _json_safe
+
+    data = {"pf": float("inf"), "nan": np.float64("nan"), "ok": [1.5, np.int64(2)], "s": "x"}
+    safe = _json_safe(data)
+    assert safe == {"pf": None, "nan": None, "ok": [1.5, 2], "s": "x"}
+    json.dumps(safe, allow_nan=False)
+
+
+def test_cli_calibrate_multipliers_writes_valid_json(runner, tmp_path: Path):
+    import json
+    from types import SimpleNamespace
+
+    from mra_lib.config.enums import MarketRegime
+
+    stats = SimpleNamespace(
+        n_trades=3,
+        win_rate=1.0,
+        avg_pnl=0.01,
+        sharpe=float("nan"),
+        profit_factor=float("inf"),
+        kelly_fraction=0.1,
+    )
+    regime = MarketRegime.BULL_TRENDING
+    fake = SimpleNamespace(
+        baseline_sharpe=0.5,
+        total_trades=3,
+        multipliers={regime: 1.2},
+        trades_per_regime={regime: 3},
+        raw_scores={regime: float("inf")},
+        regime_stats={regime: stats},
+    )
+    out = tmp_path / "cal.json"
+    with patch("mra_cli.main.RegimeMultiplierCalibrator") as calibrator:
+        calibrator.return_value.calibrate_with_details.return_value = fake
+        result = runner.invoke(
+            cli, ["calibrate-multipliers", "--provider", "mock", "--output", str(out)]
+        )
+    assert result.exit_code == 0, result.output
+    data = json.loads(out.read_text())
+    assert data["regime_stats"]["Bull Trending"]["profit_factor"] is None
+    assert data["raw_scores"]["Bull Trending"] is None

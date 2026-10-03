@@ -148,11 +148,11 @@ never need one. Commands exit non-zero when the analysis, chart, or export fails
 | Alpaca | `APCA_API_KEY_ID` + `APCA_API_SECRET_KEY` | `--provider alpaca` |
 | Tiingo | `TIINGO_API_KEY` | `--provider tiingo` |
 
-All providers return float OHLCV columns on a tz-naive index: intraday bars are labeled in UTC, daily bars by session date. Requests use `ProviderConfig.timeout`/`retries`, a client-side rate limiter, and raise `InvalidSymbolError` (a `ValueError`), `AuthError` or `RateLimitError` (both `ConnectionError`s) so callers can tell a bad symbol from a network problem.
+All providers return float OHLCV columns on a tz-naive index: intraday bars are labeled in UTC, daily bars by session date. Requests use `ProviderConfig.timeout`/`retries` and a client-side rate limiter shared by every instance with the same provider and key. They raise `InvalidSymbolError` (a `ValueError`), `AuthError` or `RateLimitError` (both `ConnectionError`s) so callers can tell a bad symbol from a network problem.
 
 The mock provider generates a deterministic series per symbol, for demos, tests, and offline work.
 
-Alpha Vantage's free tier returns **unadjusted** daily prices (splits show up as large one-day moves) and only about the last 30 days of intraday bars. With a premium key, set `ALPHA_VANTAGE_PREMIUM=1` to get split/dividend-adjusted daily prices. Weekly, monthly, and intraday bars are always adjusted. The free tier also allows only 25 requests per day.
+Alpha Vantage's free tier returns **unadjusted** daily prices (splits show up as large one-day moves) and only about the last 30 days of intraday bars. Full daily history is also premium-only, so free keys get only the latest 100 daily bars. With a premium key, set `ALPHA_VANTAGE_PREMIUM=1` to get full, split/dividend-adjusted daily history. Weekly, monthly, and intraday bars are always adjusted. The free tier also allows only 25 requests per day.
 
 Yahoo Finance serves sub-hourly bars for the last 60 days only, and hourly bars for the last 730 days. Requests outside these windows fail up front.
 

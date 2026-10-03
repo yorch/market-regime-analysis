@@ -168,7 +168,12 @@ class PolygonProvider(MarketDataProvider):
         lowered = message.lower()
         if name == "AuthError" or "not_authorized" in lowered or "api key" in lowered:
             return AuthError(f"Polygon.io rejected the API key: {message[:200]}")
-        if "exceeded" in lowered or "too many" in lowered or "429" in lowered:
+        # Note: urllib3's "Max retries exceeded" also appears for DNS/connection errors
+        if (
+            "exceeded the maximum requests" in lowered
+            or "too many 429" in lowered
+            or "429" in lowered
+        ):
             return RateLimitError(f"Polygon.io rate limit reached: {message[:200]}")
         if isinstance(error, ValueError):
             return error

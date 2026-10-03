@@ -15,8 +15,9 @@ Price adjustment
   **unadjusted** daily prices (``TIME_SERIES_DAILY``), so splits appear as large
   one-day moves; a warning is logged. Premium users should pass
   ``ProviderConfig(premium=True)`` or set ``ALPHA_VANTAGE_PREMIUM=1`` to get
-  adjusted daily prices. If the full daily history is refused on the free tier,
-  the provider falls back to the latest ~100 bars.
+  adjusted daily prices. Full daily history is also premium-only, so free keys
+  get the latest 100 daily bars (other requests refused as premium fall back to
+  the 100-bar compact output).
 
 Results are trimmed to the requested ``period``.
 """
@@ -28,7 +29,7 @@ from typing import Any, ClassVar
 
 import pandas as pd
 
-from ._http import get_json
+from ._http import get_json, redact
 from .base import (
     PERIOD_DAYS,
     AuthError,
@@ -49,6 +50,7 @@ _COMPACT_POINTS = 100
 
 # The unadjusted-prices warning is logged once per process
 _warned_unadjusted = False
+_warned_compact = False
 
 
 class AlphaVantageProvider(MarketDataProvider):
@@ -151,6 +153,18 @@ class AlphaVantageProvider(MarketDataProvider):
                         "adjusted data.",
                         PREMIUM_ENV,
                     )
+            if not self.premium and outputsize == "full":
+                # Full daily history is premium-only: don't spend a request finding out
+                outputsize = "compact"
+                global _warned_compact  # noqa: PLW0603
+                if not _warned_compact:
+                    _warned_compact = True
+                    logger.warning(
+                        "Alpha Vantage free tier serves only the latest %d daily bars; "
+                        "set %s=1 with a premium key for full history.",
+                        _COMPACT_POINTS,
+                        PREMIUM_ENV,
+                    )
             params["outputsize"] = outputsize
         elif av_interval == "weekly":
             params["function"] = "TIME_SERIES_WEEKLY_ADJUSTED"
@@ -181,7 +195,7 @@ class AlphaVantageProvider(MarketDataProvider):
     def _request(self, params: dict[str, Any], symbol: str) -> dict[str, Any]:
         """Run a query, falling back to compact output if the full history is premium-only."""
         payload = self._get(params)
-        message = self._message(payload)
+        message = self._redacted_message(payload)
         if (
             message
             and "premium" in message.lower()
@@ -193,7 +207,7 @@ class AlphaVantageProvider(MarketDataProvider):
                 _COMPACT_POINTS,
             )
             payload = self._get({**params, "outputsize": "compact"})
-            message = self._message(payload)
+            message = self._redacted_message(payload)
         if message:
             raise self._classify(message, symbol)
         return payload
@@ -209,6 +223,11 @@ class AlphaVantageProvider(MarketDataProvider):
         if not isinstance(payload, dict):
             raise ConnectionError("Alpha Vantage returned an unexpected response")
         return payload
+
+    def _redacted_message(self, payload: dict[str, Any]) -> str | None:
+        """Error/notice text with the API key masked (AV echoes the key in quota notices)."""
+        message = self._message(payload)
+        return redact(message, self.config.api_key) if message else None
 
     @staticmethod
     def _message(payload: dict[str, Any]) -> str | None:

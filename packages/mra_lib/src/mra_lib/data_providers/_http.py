@@ -25,8 +25,15 @@ _MAX_RETRY_AFTER_SECONDS = 60.0
 _SECRET_PARAM = re.compile(r"((?:api_?key|token|secret)=)[^&\s'\"]+", re.IGNORECASE)
 
 
-def redact(text: str) -> str:
-    """Mask credential query parameters (``apikey=...``, ``token=...``) in ``text``."""
+# Free-text echoes of the key, e.g. Alpha Vantage's "We have detected your API key as XYZ"
+_SECRET_PHRASE = re.compile(r"(api[ _]?key (?:as|is|:)\s*)\S+", re.IGNORECASE)
+
+
+def redact(text: str, secret: str | None = None) -> str:
+    """Mask credentials in ``text``: query parameters, "API key as ..." phrases, and ``secret``."""
+    if secret:
+        text = text.replace(secret, "***")
+    text = _SECRET_PHRASE.sub(r"\1***", text)
     return _SECRET_PARAM.sub(r"\1***", text)
 
 

@@ -187,11 +187,30 @@ class MarketDataProvider(ABC):
         self.config = config or ProviderConfig()
         self._validate_config()
 
-        # The limiter is per instance: one analyzer / request shares one bucket
         rate = self.config.rate_limit or self.rate_limit_per_minute
         self._limiter: TokenBucket | None = (
-            TokenBucket(rate, self.rate_limit_burst) if rate and rate > 0 else None
+            self._shared_limiter(rate) if rate and rate > 0 else None
         )
+
+    # Buckets shared by every instance using the same provider, key, and rate, so separate
+    # analyzers (threads, portfolio symbols, web requests) draw from one quota
+    _limiters: ClassVar[dict[tuple[str, str, float, int | None], TokenBucket]] = {}
+    _limiters_lock: ClassVar[threading.Lock] = threading.Lock()
+
+    def _shared_limiter(self, rate: float) -> TokenBucket:
+        key = (self.provider_name, self.config.api_key or "", float(rate), self.rate_limit_burst)
+        with MarketDataProvider._limiters_lock:
+            bucket = MarketDataProvider._limiters.get(key)
+            if bucket is None:
+                bucket = TokenBucket(rate, self.rate_limit_burst)
+                MarketDataProvider._limiters[key] = bucket
+            return bucket
+
+    @classmethod
+    def reset_rate_limiters(cls) -> None:
+        """Forget all shared rate-limiter state (mainly for tests)."""
+        with MarketDataProvider._limiters_lock:
+            MarketDataProvider._limiters.clear()
 
     @abstractmethod
     def fetch(self, symbol: str, period: str, interval: str) -> pd.DataFrame:

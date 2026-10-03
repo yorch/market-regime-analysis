@@ -8,6 +8,7 @@ and hourly bars for the last 730 days. Requests beyond those windows are rejecte
 up front with a ``ValueError`` instead of returning an empty frame.
 """
 
+import warnings
 from typing import ClassVar
 
 import pandas as pd
@@ -98,7 +99,16 @@ class YFinanceProvider(MarketDataProvider):
         self.throttle()
         try:
             ticker = yf.Ticker(symbol)
-            df = ticker.history(period=period, interval=interval, timeout=self.config.timeout)
+            # raise_errors: otherwise yfinance logs failures and returns an empty frame, which
+            # would make network/rate-limit errors look like an unknown symbol
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                df = ticker.history(
+                    period=period,
+                    interval=interval,
+                    timeout=self.config.timeout,
+                    raise_errors=True,
+                )
         except Exception as e:
             raise self._classify(symbol, e) from e
 

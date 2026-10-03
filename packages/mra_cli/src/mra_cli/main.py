@@ -8,9 +8,12 @@ default is Yahoo Finance (no key needed) and ``--provider mock`` works offline.
 """
 
 import concurrent.futures
+import contextlib
 import functools
+import io
 import logging
 import os
+import sys
 import time
 from collections.abc import Callable
 from datetime import datetime
@@ -37,6 +40,7 @@ from mra_lib.data_providers import (
     AuthError,
     InvalidSymbolError,
     MarketDataProvider,
+    ProviderError,
     RateLimitError,
     required_env_vars,
     resolve_api_key,
@@ -52,6 +56,9 @@ FALLBACK_PROVIDER = "yfinance"
 # Provider names come from the registry, so newly registered providers show up here
 PROVIDER_CHOICES = sorted(MarketDataProvider.get_available_providers())
 TIMEFRAME_CHOICE = click.Choice(list(TIMEFRAMES))
+
+# Upper bound for the retry delay after repeated monitoring failures
+_MAX_BACKOFF_SECONDS = 3600.0
 
 
 def validate_api_key(provider: str, api_key: str | None) -> str:
@@ -113,6 +120,18 @@ def _debug_enabled() -> bool:
     return bool(obj.get("debug")) if isinstance(obj, dict) else False
 
 
+def _provider_cause(error: BaseException) -> BaseException:
+    """Return the first ``ProviderError`` in the cause/context chain, else ``error`` itself."""
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        if isinstance(current, ProviderError):
+            return current
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return error
+
+
 def handle_exceptions(func: F) -> F:
     """Report errors consistently and exit non-zero; ``--debug`` re-raises with traceback."""
 
@@ -125,11 +144,13 @@ def handle_exceptions(func: F) -> F:
         except Exception as e:
             if _debug_enabled():
                 raise
-            if isinstance(e, AuthError):
+            # The analyzer re-wraps provider errors as ValueError; label by the root cause
+            cause = _provider_cause(e)
+            if isinstance(cause, AuthError):
                 label = "🔑 Authentication error"
-            elif isinstance(e, RateLimitError):
+            elif isinstance(cause, RateLimitError):
                 label = "⏳ Rate limited"
-            elif isinstance(e, InvalidSymbolError):
+            elif isinstance(cause, InvalidSymbolError):
                 label = "❓ Unknown symbol / no data"
             elif isinstance(e, ValueError):
                 label = "❌ Invalid input"
@@ -186,7 +207,9 @@ def resolve_provider(
             f"Unknown provider '{name}' (from ${DEFAULT_PROVIDER_ENV}?). "
             f"Available: {', '.join(PROVIDER_CHOICES)}"
         )
-    key = validate_api_key(name, api_key or obj.get("api_key"))
+    # A group-level key only applies to the group-level provider choice
+    group_key = obj.get("api_key") if not provider or provider == obj.get("provider") else None
+    key = validate_api_key(name, api_key or group_key)
     return name, key or None
 
 
@@ -229,6 +252,21 @@ def print_regime_report(
             click.echo(f"   {level_name.upper()}: ${level_value:.2f}")
 
     click.echo("=" * 80)
+
+
+def _json_safe(value: Any) -> Any:
+    """Recursively replace non-finite floats (inf/nan, e.g. profit factor) with ``None``."""
+    import math  # noqa: PLC0415
+
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if hasattr(value, "item") and not isinstance(value, str):  # numpy scalars
+        return _json_safe(value.item())
+    return value
 
 
 def _last_close(analyzer: MarketRegimeAnalyzer, timeframe: str) -> float | None:
@@ -385,6 +423,30 @@ def current_analysis(
         raise click.ClickException(f"Analysis failed for every timeframe of {symbol}")
 
 
+# Messages the library prints (instead of raising) when plotting fails
+_CHART_FAILURE_MARKERS = ("Error generating chart", "Insufficient data for plotting")
+_NON_INTERACTIVE_BACKENDS = {"agg", "pdf", "ps", "svg", "pgf", "cairo", "template"}
+
+
+class _Tee(io.TextIOBase):
+    """Text stream that forwards writes to ``target`` and keeps a copy."""
+
+    def __init__(self, target: Any) -> None:
+        self._target = target
+        self._parts: list[str] = []
+
+    def write(self, text: str) -> int:
+        self._parts.append(text)
+        return int(self._target.write(text))
+
+    def flush(self) -> None:
+        self._target.flush()
+
+    @property
+    def captured(self) -> str:
+        return "".join(self._parts)
+
+
 def _new_figure(before: set[int]) -> Any:
     import matplotlib.pyplot as plt  # noqa: PLC0415
 
@@ -440,14 +502,26 @@ def generate_charts(  # noqa: PLR0913, PLR0917
     bars = days * BARS_PER_DAY[timeframe]
     click.echo(f"Generating charts for {timeframe} ({days} days, {bars} bars)...")
 
-    # Defer any plt.show() inside the library so we can verify a chart was produced
+    # Defer any plt.show() inside the library so we can verify a chart was produced, and
+    # watch its output: the current library prints errors instead of raising them
     before = set(plt.get_fignums())
     real_show = plt.show
     plt.show = lambda *a, **k: None  # type: ignore[assignment]
+    tee = _Tee(sys.stdout)
     try:
-        result = analyzer.plot_regime_analysis(timeframe, bars)  # type: ignore[func-returns-value]
+        with contextlib.redirect_stdout(tee):
+            result = analyzer.plot_regime_analysis(timeframe, bars)  # type: ignore[func-returns-value]
     finally:
         plt.show = real_show  # type: ignore[assignment]
+
+    if any(marker in tee.captured for marker in _CHART_FAILURE_MARKERS):
+        for num in set(plt.get_fignums()) - before:
+            plt.close(num)
+        raise click.ClickException(f"Chart generation failed for {symbol} ({timeframe})")
+
+    # Nobody would see a figure on a non-interactive backend: save it instead
+    if output is None and matplotlib.get_backend().lower() in _NON_INTERACTIVE_BACKENDS:
+        output = Path(f"{symbol}_{timeframe}_regimes.png")
 
     if isinstance(result, bytes | bytearray):
         target = output or Path(f"{symbol}_{timeframe}_regimes.png")
@@ -499,8 +573,8 @@ def export_csv(
     if isinstance(result, pd.DataFrame):
         if result.empty:
             raise click.ClickException("No analysis data to export")
-        if not target.exists() or target.stat().st_mtime < started:
-            result.to_csv(target, index=False)
+        if not target.exists() or target.stat().st_mtime < started - 1:
+            result.to_csv(target, index=not isinstance(result.index, pd.RangeIndex))
     elif isinstance(result, str | Path):
         target = Path(result)
 
@@ -666,13 +740,31 @@ def continuous_monitoring(  # noqa: PLR0913, PLR0917
     provider_name, key = resolve_provider(ctx, provider, api_key)
     click.echo(f"Starting continuous monitoring for {symbol} (Ctrl+C to stop)...")
 
-    analyzer = MarketRegimeAnalyzer(symbol, provider_flag=provider_name, api_key=key)
+    limit = 1 if once else max_iterations
+
+    # The constructor loads data, so retry it with the same backoff as the monitoring loop;
+    # each failed start counts as an iteration
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            analyzer = MarketRegimeAnalyzer(symbol, provider_flag=provider_name, api_key=key)
+            break
+        except Exception as e:
+            if _debug_enabled() or (limit is not None and attempts >= limit):
+                raise
+            delay = min(max(_MAX_BACKOFF_SECONDS, interval), interval * 2 ** (attempts - 1))
+            click.echo(f"⚠️  Startup failed ({e}); retrying in {delay:.0f}s", err=True)
+            time.sleep(delay)
 
     def report(timeframe: str, analysis: RegimeAnalysis) -> None:
         print_regime_report(symbol, timeframe, analysis, _last_close(analyzer, timeframe))
 
     successes = analyzer.run_continuous_monitoring(
-        interval, max_iterations=1 if once else max_iterations, on_update=report
+        interval,
+        max_iterations=None if limit is None else limit - attempts + 1,
+        max_backoff=_MAX_BACKOFF_SECONDS,
+        on_update=report,
     )
     if successes == 0:
         raise click.ClickException("Monitoring finished without a successful iteration")
@@ -886,7 +978,7 @@ def calibrate_multipliers(  # noqa: PLR0913, PLR0917
             },
         }
         with open(output, "w") as f:
-            json.dump(output_data, f, indent=2)
+            json.dump(_json_safe(output_data), f, indent=2, allow_nan=False)
         click.echo(f"\nResults saved to {output}")
 
 

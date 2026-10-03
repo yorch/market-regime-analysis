@@ -51,3 +51,13 @@ def make_synthetic_ohlcv(n: int = 300, seed: int = 42) -> pd.DataFrame:
 def synthetic_ohlcv() -> Callable[..., pd.DataFrame]:
     """Return the :func:`make_synthetic_ohlcv` factory."""
     return make_synthetic_ohlcv
+
+
+@pytest.fixture(autouse=True)
+def _reset_provider_rate_limiters():
+    """Provider rate-limit buckets are shared per process; isolate tests from each other."""
+    from mra_lib.data_providers import MarketDataProvider
+
+    MarketDataProvider.reset_rate_limiters()
+    yield
+    MarketDataProvider.reset_rate_limiters()
