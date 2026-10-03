@@ -334,6 +334,10 @@ runs are cancelled (main/tag runs are not). Four jobs run in parallel; docker de
    main/tags (or PRs labelled `publish-docker`, applied on the next push); only job with `packages: write`
 6. **integration-test** — `workflow_dispatch` only; `just test-integration`; the only job given provider secrets
 
+Dependabot (`.github/dependabot.yml`) opens weekly PRs for uv packages (minor/patch grouped, each
+major separate) and GitHub Actions (SHA pins). uv itself and the Python base image are bumped by hand:
+keep the Dockerfile's `ghcr.io/astral-sh/uv` tag and ci.yml's `setup-uv` `version:` in step.
+
 ## Dependencies
 
 Python 3.13+ required. All deps managed via `uv` with workspace support — see `pyproject.toml` files.

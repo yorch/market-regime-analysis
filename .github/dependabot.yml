@@ -1,0 +1,32 @@
+# Weekly dependency update PRs.
+#
+# Not covered on purpose (bump by hand):
+# - uv itself: pinned in the Dockerfile (ghcr.io/astral-sh/uv:<ver>) and in ci.yml
+#   (setup-uv `version:`). Dependabot can't edit the latter, so the two would drift.
+# - Python base image: `python:3.13-slim` already floats to the latest 3.13 patch; moving
+#   to a new minor must go together with `requires-python` and CI's PYTHON_VERSION.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      # One PR for routine updates; each major gets its own PR so breaking changes
+      # are reviewed one at a time.
+      python-minor-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: chore(deps)
+
+  # Actions are pinned to commit SHAs; Dependabot updates the SHA and the `# vX` comment.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci(deps)
