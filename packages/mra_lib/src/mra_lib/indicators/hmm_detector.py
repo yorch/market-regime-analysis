@@ -9,12 +9,17 @@ import warnings
 
 import numpy as np
 import pandas as pd
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.mixture import GaussianMixture
 from sklearn.preprocessing import StandardScaler
 
 from mra_lib.config.enums import MarketRegime
 
-warnings.filterwarnings("ignore", category=UserWarning)
+# Regime-classification thresholds. Features are standardized (z-units) before
+# clustering, so these are expressed in standard deviations of each feature.
+_TREND_Z = 0.2  # |mean z| of trend_strength needed to call a trend
+_BREAKOUT_Z = 0.5  # |mean z| of returns needed to call a breakout
+_RECENT_WINDOW = 20  # bars used to characterise the current state
 
 
 class HiddenMarkovRegimeDetector:
@@ -179,14 +184,23 @@ class HiddenMarkovRegimeDetector:
             )
 
             # Fit and predict states
-            states = self.gmm.fit_predict(X_scaled)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=ConvergenceWarning)
+                states = self.gmm.fit_predict(X_scaled)
 
             # Estimate transition matrix
             self.transition_matrix = self._estimate_transition_matrix(states)
 
-            # Store state characteristics for regime mapping
+            # Store state characteristics for regime mapping. A component that
+            # received no hard assignments falls back to its fitted GMM mean
+            # instead of producing a NaN row.
             self.state_means = np.array(
-                [X_scaled[states == i].mean(axis=0) for i in range(self.n_states)]
+                [
+                    X_scaled[states == i].mean(axis=0)
+                    if np.any(states == i)
+                    else self.gmm.means_[i]
+                    for i in range(self.n_states)
+                ]
             )
 
             self.fitted = True
@@ -194,85 +208,145 @@ class HiddenMarkovRegimeDetector:
             return self
 
         except Exception as e:
-            raise ValueError(f"HMM fitting failed: {e!s}")
+            raise ValueError(f"HMM fitting failed: {e!s}") from e
 
     def _estimate_transition_matrix(self, states: np.ndarray) -> np.ndarray:
         """
-        Calculate state transition probabilities.
+        Calculate state transition probabilities with Laplace smoothing.
+
+        One pseudo-count is added to every cell, so every row is a proper
+        probability distribution: a state that is never left (or never visited)
+        gets a uniform row instead of an all-zero one.
 
         Args:
             states: Array of state sequences
 
         Returns:
-            Transition probability matrix
+            Row-stochastic transition probability matrix
         """
-        transition_counts = np.zeros((self.n_states, self.n_states))
+        transition_counts = np.ones((self.n_states, self.n_states))
 
         for i in range(len(states) - 1):
-            current_state = states[i]
-            next_state = states[i + 1]
-            transition_counts[current_state, next_state] += 1
+            transition_counts[int(states[i]), int(states[i + 1])] += 1
 
-        # Normalize to get probabilities (add small epsilon for stability)
-        row_sums = transition_counts.sum(axis=1) + 1e-8
-        transition_matrix = transition_counts / row_sums[:, np.newaxis]
+        row_sums = transition_counts.sum(axis=1, keepdims=True)
+        return np.asarray(transition_counts / row_sums)
 
-        return transition_matrix
+    def _feature_index(self, name: str) -> int | None:
+        """Return the column index of feature ``name`` or None if absent."""
+        try:
+            return self.feature_names.index(name)
+        except ValueError:
+            return None
+
+    def _raw_feature_mean(self, recent: np.ndarray, name: str) -> float | None:
+        """
+        Mean of feature ``name`` over ``recent`` rows in original (unscaled) units.
+
+        Returns None if the feature is unknown. Falls back to the z-value when
+        the scaler is unavailable.
+        """
+        idx = self._feature_index(name)
+        if idx is None or idx >= recent.shape[1]:
+            return None
+        z = float(recent[:, idx].mean())
+        if self.scaler is None or not hasattr(self.scaler, "scale_"):
+            return z
+        return z * float(self.scaler.scale_[idx]) + float(self.scaler.mean_[idx])
 
     def _map_states_to_regimes(self, X: np.ndarray, states: np.ndarray) -> MarketRegime:
         """
         Map mathematical states to interpretable market regimes.
 
-        This method uses the statistical characteristics of each state
-        to assign meaningful regime labels.
+        The current state is characterised by the mean of the standardized
+        features over the last ``_RECENT_WINDOW`` bars spent in that state.
+        Features are looked up by name (``self.feature_names``), and all
+        thresholds are in z-units because ``X`` is standardized:
+
+        - volatility above / below the 75th / 25th percentile -> HIGH / LOW_VOLATILITY
+        - trend_strength > +0.2 sd with above-average returns -> BULL_TRENDING
+        - trend_strength < -0.2 sd with below-average returns -> BEAR_TRENDING
+        - |trend_strength| < 0.2 sd and negative raw lag-1 autocorrelation
+          -> MEAN_REVERTING
+        - |returns| > 0.5 sd -> BREAKOUT
+        - otherwise UNKNOWN
 
         Args:
-            X: Feature matrix
-            states: State predictions
+            X: Standardized feature matrix (columns ordered as ``feature_names``)
+            states: State predictions, one per row of ``X``
 
         Returns:
             MarketRegime classification
         """
-        if len(states) == 0:
+        if len(states) == 0 or len(X) == 0:
             return MarketRegime.UNKNOWN
 
-        # Get the most recent state
+        ret_idx = self._feature_index("returns")
+        vol_idx = self._feature_index("volatility")
+        trend_idx = self._feature_index("trend_strength")
+        if ret_idx is None or vol_idx is None or trend_idx is None:
+            return MarketRegime.UNKNOWN
+
         current_state = states[-1]
-
-        # Get recent data for the current state
-        current_state_mask = states[-20:] == current_state
-        if not any(current_state_mask):
-            return MarketRegime.UNKNOWN
-
-        # Analyze characteristics of current state
-        recent_data = X[-20:][current_state_mask]
-
+        current_state_mask = states[-_RECENT_WINDOW:] == current_state
+        recent_data = X[-_RECENT_WINDOW:][current_state_mask]
         if len(recent_data) == 0:
             return MarketRegime.UNKNOWN
 
-        # Extract key features for regime classification
-        avg_returns = recent_data[:, 0].mean()  # returns
-        avg_volatility = recent_data[:, 4].mean()  # volatility
-        avg_trend = recent_data[:, 9].mean() if recent_data.shape[1] > 9 else 0  # trend_strength
+        avg_returns = float(recent_data[:, ret_idx].mean())
+        avg_volatility = float(recent_data[:, vol_idx].mean())
+        avg_trend = float(recent_data[:, trend_idx].mean())
+        raw_autocorr = self._raw_feature_mean(recent_data, "autocorr_1")
 
-        # Regime classification logic
-        vol_threshold_high = np.percentile(X[:, 4], 75)
-        vol_threshold_low = np.percentile(X[:, 4], 25)
+        vol_threshold_high = float(np.percentile(X[:, vol_idx], 75))
+        vol_threshold_low = float(np.percentile(X[:, vol_idx], 25))
 
         if avg_volatility > vol_threshold_high:
             return MarketRegime.HIGH_VOLATILITY
-        elif avg_volatility < vol_threshold_low:
+        if avg_volatility < vol_threshold_low:
             return MarketRegime.LOW_VOLATILITY
-        elif avg_returns > 0.001 and avg_trend > 0:
+        if avg_trend > _TREND_Z and avg_returns > 0:
             return MarketRegime.BULL_TRENDING
-        elif avg_returns < -0.001 and avg_trend < 0:
+        if avg_trend < -_TREND_Z and avg_returns < 0:
             return MarketRegime.BEAR_TRENDING
-        elif abs(avg_trend) < 0.001:
+        if abs(avg_trend) < _TREND_Z and raw_autocorr is not None and raw_autocorr < 0:
             return MarketRegime.MEAN_REVERTING
-        elif abs(avg_returns) > 0.002:
+        if abs(avg_returns) > _BREAKOUT_Z:
             return MarketRegime.BREAKOUT
-        else:
-            return MarketRegime.UNKNOWN
+        return MarketRegime.UNKNOWN
+
+    def predict_with_states(self, df: pd.DataFrame) -> tuple[MarketRegime, np.ndarray, float]:
+        """
+        Predict the current regime and the full state sequence in one pass.
+
+        Args:
+            df: DataFrame with OHLCV data
+
+        Returns:
+            Tuple of (regime, states, confidence) where ``states`` holds one
+            int state per feature row (the last element is the current state)
+            and ``confidence`` is the GMM posterior of the current state.
+
+        Raises:
+            ValueError: If model is not fitted or prediction fails
+        """
+        if not self.fitted or self.scaler is None or self.gmm is None:
+            raise ValueError("Model must be fitted before prediction")
+
+        try:
+            X = self._prepare_features(df)
+            X_scaled = self.scaler.transform(X)
+
+            states = self.gmm.predict(X_scaled).astype(int)
+            probabilities = self.gmm.predict_proba(X_scaled)
+
+            regime = self._map_states_to_regimes(X_scaled, states)
+            confidence = float(probabilities[-1].max())
+
+            return regime, states, confidence
+
+        except Exception as e:
+            raise ValueError(f"Regime prediction failed: {e!s}") from e
 
     def predict_regime(self, df: pd.DataFrame) -> tuple[MarketRegime, int, float]:
         """
@@ -282,55 +356,38 @@ class HiddenMarkovRegimeDetector:
             df: DataFrame with OHLCV data
 
         Returns:
-            Tuple of (regime, state, confidence)
+            Tuple of (regime, state, confidence) as plain Python types
 
         Raises:
             ValueError: If model is not fitted or prediction fails
         """
-        if not self.fitted or self.scaler is None or self.gmm is None:
-            raise ValueError("Model must be fitted before prediction")
-
-        try:
-            # Prepare features
-            X = self._prepare_features(df)
-            X_scaled = self.scaler.transform(X)
-
-            # Predict states
-            states = self.gmm.predict(X_scaled)
-            probabilities = self.gmm.predict_proba(X_scaled)
-
-            # Map to regime
-            regime = self._map_states_to_regimes(X_scaled, states)
-
-            # Calculate confidence as max probability
-            confidence = probabilities[-1].max()
-
-            return regime, states[-1], confidence
-
-        except Exception as e:
-            raise ValueError(f"Regime prediction failed: {e!s}")
+        regime, states, confidence = self.predict_with_states(df)
+        return regime, int(states[-1]), confidence
 
     def get_transition_probability(self, current_state: int, target_state: int) -> float:
         """
         Get the probability of transitioning from current to target state.
+
+        Edge cases match :meth:`TrueHMMDetector.get_transition_probability`.
 
         Args:
             current_state: Current HMM state
             target_state: Target HMM state
 
         Returns:
-            Transition probability
+            Transition probability (0-1)
+
+        Raises:
+            ValueError: If the model is not fitted or a state index is out of range
         """
         if not self.fitted or self.transition_matrix is None:
-            return 0.0
+            raise ValueError("Model must be fitted first")
 
-        if (
-            current_state < 0
-            or current_state >= self.n_states
-            or target_state < 0
-            or target_state >= self.n_states
-        ):
-            return 0.0
+        if current_state < 0 or current_state >= self.n_states:
+            raise ValueError(f"Invalid from_state: {current_state}")
+
+        if target_state < 0 or target_state >= self.n_states:
+            raise ValueError(f"Invalid to_state: {target_state}")
 
         return float(self.transition_matrix[current_state, target_state])
 
@@ -338,8 +395,10 @@ class HiddenMarkovRegimeDetector:
         """
         Calculate regime stability metric.
 
-        This measures how stable the current regime is by looking
-        at the consistency of recent state predictions.
+        Fraction of the last ``lookback`` states equal to the current (last)
+        state. Fewer than two observations carry no information about
+        persistence and return 0.0. Same behavior as
+        :meth:`TrueHMMDetector.calculate_regime_persistence`.
 
         Args:
             states: Array of recent state predictions
@@ -350,13 +409,8 @@ class HiddenMarkovRegimeDetector:
         """
         lookback = min(lookback, len(states))
 
-        if lookback <= 1:
+        if lookback < 2:
             return 0.0
 
-        recent_states = states[-lookback:]
-        current_state = recent_states[-1]
-
-        # Calculate percentage of recent periods in current state
-        persistence = np.sum(recent_states == current_state) / len(recent_states)
-
-        return float(persistence)
+        recent_states = np.asarray(states)[-lookback:]
+        return float(np.mean(recent_states == recent_states[-1]))

@@ -253,3 +253,68 @@ class TestGetRegimeStability:
         hmm = TrueHMMDetector()
         with pytest.raises(ValueError, match="fitted"):
             hmm.get_regime_stability()
+
+
+# ---------------------------------------------------------------------------
+# Regression tests (2026-10-03 analytics review)
+# ---------------------------------------------------------------------------
+
+
+class TestTrueHMMRegressionFixes:
+    def test_forecast_unfitted_raises_value_error(self):
+        df = _make_synthetic_ohlcv(120)
+        hmm = TrueHMMDetector(n_states=3)
+        with pytest.raises(ValueError, match="fitted"):
+            hmm.forecast_regime_probabilities(df, n_steps=1)
+        with pytest.raises(ValueError, match="fitted"):
+            hmm.forecast_regime_sequence(df, n_steps=2)
+        with pytest.raises(ValueError, match="fitted"):
+            hmm.predict_regime(df)
+
+    def test_map_state_to_regime_delegates_to_index_mapping(self):
+        hmm, _ = _fitted_hmm()
+        for i in range(hmm.n_states):
+            assert hmm._map_state_to_regime(np.empty((0, 0)), np.array([]), i) == (
+                hmm._map_state_index_to_regime(i)
+            )
+
+    def test_predict_regime_uses_index_mapping(self):
+        hmm, df = _fitted_hmm()
+        regime, state, conf = hmm.predict_regime(df)
+        assert regime == hmm._map_state_index_to_regime(state)
+        assert type(state) is int and type(conf) is float
+
+    def test_persistence_edge_cases_match_gmm(self):
+        from mra_lib.indicators.hmm_detector import HiddenMarkovRegimeDetector
+
+        true_hmm = TrueHMMDetector()
+        gmm = HiddenMarkovRegimeDetector()
+        for states in ([], [3], [1, 1], [0, 1, 0, 1]):
+            arr = np.array(states, dtype=int)
+            assert true_hmm.calculate_regime_persistence(arr) == (
+                gmm.calculate_regime_persistence(arr)
+            )
+        assert true_hmm.calculate_regime_persistence(np.array([3])) == 0.0
+
+    def test_mean_reverting_requires_negative_autocorrelation(self):
+        hmm, _ = _fitted_hmm()
+        ac = hmm.feature_names.index("autocorr_1")
+        vol = hmm.feature_names.index("volatility")
+        ret = hmm.feature_names.index("returns")
+        trend = hmm.feature_names.index("trend_9_21")
+        means = np.zeros_like(hmm.state_means)
+        # Spread volatility so state 1 is in the middle quartiles.
+        means[:, vol] = np.linspace(-1.0, 1.0, hmm.n_states)
+        means[1, vol] = 0.0
+        means[1, ret] = 0.0
+        means[1, trend] = 0.0
+        scale = float(hmm.scaler.scale_[ac])
+        mean = float(hmm.scaler.mean_[ac])
+        hmm.state_means = means
+
+        # Raw autocorr = -0.2 -> mean-reverting
+        hmm.state_means[1, ac] = (-0.2 - mean) / scale
+        assert hmm._map_state_index_to_regime(1) == MarketRegime.MEAN_REVERTING
+        # Raw autocorr = +0.2 (momentum) -> not mean-reverting
+        hmm.state_means[1, ac] = (0.2 - mean) / scale
+        assert hmm._map_state_index_to_regime(1) != MarketRegime.MEAN_REVERTING

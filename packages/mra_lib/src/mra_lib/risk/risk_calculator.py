@@ -9,6 +9,29 @@ position sizing.
 from dataclasses import dataclass
 
 from mra_lib.config.enums import MarketRegime
+from mra_lib.config.regime_tables import get_regime_multiplier
+
+MIN_POSITION_SIZE = 0.01
+"""Smallest non-zero position (fraction of capital). Applied only when size > 0."""
+
+MAX_POSITION_SIZE = 0.50
+"""Largest position any single sizing step may return (fraction of capital)."""
+
+MAX_KELLY_FRACTION = 0.25
+"""Safety cap on the Kelly fraction for a single position."""
+
+
+def _bound_position(size: float, upper: float = MAX_POSITION_SIZE) -> float:
+    """
+    Clamp a position size to ``[MIN_POSITION_SIZE, upper]``, keeping zero at zero.
+
+    A size of zero (or below) means "no edge / do not trade" and is returned as
+    ``0.0``; the 1% floor only lifts *positive* sizes that are too small to be
+    practical.
+    """
+    if size <= 0:
+        return 0.0
+    return max(MIN_POSITION_SIZE, min(upper, size))
 
 
 @dataclass
@@ -200,8 +223,12 @@ class PortfolioPositionLimits:
         # Gross exposure headroom
         gross_headroom = cap * self.max_total_exposure - current_gross
         max_allowed = min(max_allowed, max(0.0, gross_headroom))
-        # Net exposure headroom
-        net_headroom = cap * self.max_net_exposure - abs(current_net)
+        # Net exposure headroom (direction-aware: a trade that moves net exposure
+        # toward zero, i.e. a hedge, has more room than one that extends it)
+        if direction == "LONG":
+            net_headroom = cap * self.max_net_exposure - current_net
+        else:
+            net_headroom = cap * self.max_net_exposure + current_net
         max_allowed = min(max_allowed, max(0.0, net_headroom))
         # Sector exposure headroom
         if sector:
@@ -237,7 +264,7 @@ class PortfolioPositionLimits:
             Clamped notional value (may be 0 if no room)
         """
         result = self.check_limits(symbol, direction, desired_notional, sector)
-        return min(abs(desired_notional), result["max_allowed_notional"])
+        return min(abs(desired_notional), float(result["max_allowed_notional"]))
 
     def get_portfolio_summary(self) -> dict:
         """Get summary of current portfolio exposure."""
@@ -313,13 +340,7 @@ class SimonsRiskCalculator:
         if not (0 <= confidence <= 1):
             raise ValueError("Confidence must be between 0 and 1")
 
-        # Handle edge cases
-        if win_rate == 0:
-            return 0.0  # Never bet if win rate is 0
-        if win_rate == 1:
-            return confidence  # Bet everything if win rate is 100%
-
-        # Calculate Kelly fraction
+        # Calculate Kelly fraction (win_rate == 1 gives f* = 1, still capped below)
         b = avg_win / avg_loss  # Odds
         p = win_rate  # Probability of winning
         q = 1 - p  # Probability of losing
@@ -331,11 +352,8 @@ class SimonsRiskCalculator:
         if kelly_fraction <= 0:
             return 0.0
 
-        # Apply confidence scaling and safety cap
-        adjusted_fraction = kelly_fraction * confidence
-
-        # Safety cap at 25% for any single position
-        return min(adjusted_fraction, 0.25)
+        # Apply confidence scaling and the per-position safety cap
+        return min(kelly_fraction * confidence, MAX_KELLY_FRACTION)
 
     @staticmethod
     def calculate_regime_adjusted_size(
@@ -368,19 +386,8 @@ class SimonsRiskCalculator:
         if not (0 <= persistence <= 1):
             raise ValueError("Persistence must be between 0 and 1")
 
-        # Regime multipliers (Renaissance approach)
-        regime_multipliers = {
-            MarketRegime.BULL_TRENDING: 1.3,
-            MarketRegime.BEAR_TRENDING: 0.7,
-            MarketRegime.MEAN_REVERTING: 1.2,
-            MarketRegime.HIGH_VOLATILITY: 0.4,
-            MarketRegime.LOW_VOLATILITY: 1.1,
-            MarketRegime.BREAKOUT: 0.9,
-            MarketRegime.UNKNOWN: 0.2,
-        }
-
-        # Get base regime multiplier
-        base_multiplier = regime_multipliers.get(regime, 0.2)
+        # Canonical regime multiplier (config/regime_tables.py); UNKNOWN -> 0.0
+        base_multiplier = get_regime_multiplier(regime)
 
         # Confidence scaling (scale between 0.3 and 1.0)
         confidence_factor = 0.3 + (confidence * 0.7)
@@ -391,11 +398,8 @@ class SimonsRiskCalculator:
         # Combined adjustment
         total_multiplier = base_multiplier * confidence_factor * persistence_factor
 
-        # Calculate final size
-        adjusted_size = base_size * total_multiplier
-
-        # Safety caps (1% minimum, 50% maximum)
-        return max(0.01, min(0.5, adjusted_size))
+        # Calculate final size; 0 stays 0, positive sizes are bounded to [1%, 50%]
+        return _bound_position(base_size * total_multiplier)
 
     @staticmethod
     def calculate_correlation_adjusted_size(base_size: float, correlation: float) -> float:
@@ -438,29 +442,30 @@ class SimonsRiskCalculator:
         # Ensure factor doesn't go below 0.2
         correlation_factor = max(0.2, correlation_factor)
 
-        # Apply adjustment
-        adjusted_size = base_size * correlation_factor
-
-        return max(0.01, min(0.5, adjusted_size))
+        # Apply adjustment; 0 stays 0, positive sizes are bounded to [1%, 50%]
+        return _bound_position(base_size * correlation_factor)
 
     @staticmethod
     def calculate_volatility_adjusted_size(
         base_size: float,
         current_volatility: float,
         historical_volatility: float,
-        vol_target: float = 0.15,
+        vol_target: float | None = 0.15,
     ) -> float:
         """
         Adjust position size based on volatility conditions.
 
-        This method implements volatility targeting, scaling position sizes
-        to maintain consistent risk exposure across different volatility regimes.
+        Volatility targeting: the position is scaled by a single ratio
+        ``target / current_volatility`` (bounded to [0.1, 3.0]). When
+        ``vol_target`` is None the asset's own ``historical_volatility`` is used
+        as the target, i.e. the scaling is ``historical / current``.
 
         Args:
             base_size: Base position size
             current_volatility: Current asset volatility (annualized)
-            historical_volatility: Historical average volatility (annualized)
-            vol_target: Target volatility level (default 15%)
+            historical_volatility: Historical average volatility (annualized);
+                used as the target when ``vol_target`` is None
+            vol_target: Target volatility level (default 15%), or None
 
         Returns:
             Volatility-adjusted position size
@@ -475,23 +480,14 @@ class SimonsRiskCalculator:
             raise ValueError("Current volatility must be positive")
         if historical_volatility <= 0:
             raise ValueError("Historical volatility must be positive")
-        if vol_target <= 0:
+        target = historical_volatility if vol_target is None else vol_target
+        if target <= 0:
             raise ValueError("Volatility target must be positive")
 
-        # Calculate volatility scaling factor
-        vol_ratio = current_volatility / historical_volatility
-        target_scaling = vol_target / current_volatility
+        # Single volatility-targeting ratio, bounded to prevent extreme adjustments
+        vol_adjustment = max(0.1, min(3.0, target / current_volatility))
 
-        # Combine both adjustments
-        vol_adjustment = target_scaling * (1.0 / vol_ratio)
-
-        # Apply bounds to prevent extreme adjustments
-        vol_adjustment = max(0.1, min(3.0, vol_adjustment))
-
-        # Calculate adjusted size
-        adjusted_size = base_size * vol_adjustment
-
-        return max(0.01, min(0.5, adjusted_size))
+        return _bound_position(base_size * vol_adjustment)
 
     @staticmethod
     def calculate_comprehensive_position_size(
@@ -505,6 +501,7 @@ class SimonsRiskCalculator:
         avg_loss: float | None = None,
         current_vol: float | None = None,
         historical_vol: float | None = None,
+        vol_target: float | None = 0.15,
     ) -> dict[str, float]:
         """
         Calculate comprehensive position size using all available factors.
@@ -522,10 +519,18 @@ class SimonsRiskCalculator:
             avg_win: Average win amount (optional)
             avg_loss: Average loss amount (optional)
             current_vol: Current volatility (optional)
-            historical_vol: Historical volatility (optional)
+            historical_vol: Historical volatility (optional). Only used as the
+                volatility target when ``vol_target`` is None.
+            vol_target: Annualized volatility target for the volatility step
+                (default 15%); None targets ``historical_vol`` instead
 
         Returns:
-            Dictionary with various position size calculations
+            Dictionary with various position size calculations. ``final_size``
+            is 0.0 when any step finds no edge (e.g. UNKNOWN regime or
+            non-positive Kelly).
+
+        Raises:
+            ValueError: If any input is invalid (no fallback size is returned)
         """
         results = {
             "base_size": base_size,
@@ -536,48 +541,35 @@ class SimonsRiskCalculator:
             "final_size": 0.0,
         }
 
-        try:
-            # Regime adjustment (always calculated)
-            regime_size = SimonsRiskCalculator.calculate_regime_adjusted_size(
-                base_size, regime, confidence, persistence
+        # Regime adjustment (always calculated)
+        regime_size = SimonsRiskCalculator.calculate_regime_adjusted_size(
+            base_size, regime, confidence, persistence
+        )
+        results["regime_adjusted"] = regime_size
+
+        # Correlation adjustment
+        corr_adjusted = SimonsRiskCalculator.calculate_correlation_adjusted_size(
+            regime_size, correlation
+        )
+        results["correlation_adjusted"] = corr_adjusted
+
+        # Kelly criterion (if strategy stats available)
+        final_size = corr_adjusted
+        if win_rate is not None and avg_win is not None and avg_loss is not None:
+            kelly_size = SimonsRiskCalculator.calculate_kelly_optimal_size(
+                win_rate, avg_win, avg_loss, confidence
             )
-            results["regime_adjusted"] = regime_size
+            results["kelly_optimal"] = kelly_size
+            # Kelly caps the size; zero Kelly (no edge) means no position.
+            # Re-apply the bounds so a tiny positive Kelly is floored consistently.
+            final_size = _bound_position(min(corr_adjusted, kelly_size))
 
-            # Correlation adjustment
-            corr_adjusted = SimonsRiskCalculator.calculate_correlation_adjusted_size(
-                regime_size, correlation
+        # Volatility adjustment (if volatility data available)
+        if current_vol is not None and historical_vol is not None:
+            final_size = SimonsRiskCalculator.calculate_volatility_adjusted_size(
+                final_size, current_vol, historical_vol, vol_target
             )
-            results["correlation_adjusted"] = corr_adjusted
-
-            # Kelly criterion (if strategy stats available)
-            if all(x is not None for x in [win_rate, avg_win, avg_loss]):
-                assert win_rate is not None
-                assert avg_win is not None
-                assert avg_loss is not None
-                kelly_size = SimonsRiskCalculator.calculate_kelly_optimal_size(
-                    win_rate, avg_win, avg_loss, confidence
-                )
-                results["kelly_optimal"] = kelly_size
-
-                # Use Kelly as final size if available and reasonable
-                final_size = min(corr_adjusted, kelly_size)
-            else:
-                final_size = corr_adjusted
-
-            # Volatility adjustment (if volatility data available)
-            if current_vol is not None and historical_vol is not None:
-                vol_adjusted = SimonsRiskCalculator.calculate_volatility_adjusted_size(
-                    final_size, current_vol, historical_vol
-                )
-                results["volatility_adjusted"] = vol_adjusted
-                final_size = vol_adjusted
-            else:
-                results["volatility_adjusted"] = final_size
-
-            results["final_size"] = final_size
-
-        except Exception as e:
-            print(f"Error in comprehensive position sizing: {e!s}")
-            results["final_size"] = max(0.01, min(0.1, base_size))
+        results["volatility_adjusted"] = final_size
+        results["final_size"] = final_size
 
         return results

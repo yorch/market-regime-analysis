@@ -37,8 +37,8 @@ A market regime analysis system that uses Hidden Markov Models to classify marke
 
 1. **Strategy still underperforms buy-and-hold** — Best optimized result: +9.50% total return vs -57.09% excess return. Sharpe improved from -0.15 to 0.18 but remains weak.
 2. ~~**Arbitrary parameters**~~ **Partially addressed** — Optimizer framework exists (grid/random search), but results show the strategy cannot beat buy-and-hold even with tuned parameters. The problem may be structural, not just parametric.
-3. **Statistical arbitrage is naive** — Simple Z-score > 2 threshold, no cointegration testing. Portfolio module promises "statistical arbitrage pair identification" in docstring but doesn't implement it.
-4. ~~**Portfolio analysis uses price correlation**~~ **Fixed** — Now correctly uses returns-based correlation via `pct_change()`.
+3. ~~**Statistical arbitrage is naive**~~ **Partially addressed** — Pairs now use an Engle-Granger test (`statsmodels` `coint`) on log prices and signal on the z-score of the hedge-ratio residual. No half-life / Johansen yet.
+4. ~~**Portfolio analysis uses price correlation**~~ **Fixed (2026-10)** — The earlier "fixed" claim was wrong: correlations, correlation risk and pair screening all used price levels. They now use returns (`pct_change()`). The web `/portfolio` endpoint still builds its own price-level matrix (follow-up).
 5. **Test coverage improved but gaps remain** — ~1,000 lines across 6 test files (up from ~500), but only `test_engine.py` (22 assertions) and `test_strategy.py` (27 assertions) use proper pytest assertions. `test_backtest.py`, `test_mock.py`, `test_system.py`, and `test_true_hmm.py` still return booleans or print output without assertions.
 6. **Old GMM detector still ships** alongside the proper HMM — `hmm_detector.py` (GaussianMixture) used by main analyzer, `true_hmm_detector.py` (hmmlearn) used by backtester. Confusing dual implementation.
 7. **No model persistence** — Retrains from scratch every time. No save/load/pickle functionality.
@@ -52,7 +52,7 @@ A market regime analysis system that uses Hidden Markov Models to classify marke
 - **New test files**: `test_engine.py` (326 lines, 22 assertions) and `test_strategy.py` (147 lines, 27 assertions) added with proper pytest assertions
 - **Backtester hardened**: Direction propagation fixes, base_position_fraction wired through, robustness improvements
 - **CI formatting fixed**: `test_engine.py` reformatted to pass `ruff format --check`
-- **Portfolio correlation fixed**: Now uses returns-based correlation (was price-based)
+- **Portfolio correlation**: claimed fixed here but was not; actually fixed in the 2026-10 analytics PR
 - **Documentation updated**: CLAUDE.md and README.md updated with backtester documentation
 
 ---
@@ -78,7 +78,7 @@ A market regime analysis system that uses Hidden Markov Models to classify marke
 
 ### Phase 3 — Improve Statistical Rigor
 
-- Cointegration testing (Engle-Granger / Johansen) for pairs trading
+- ~~Cointegration testing (Engle-Granger)~~ Done; Johansen / half-life still open
 - ~~Returns-based correlation in portfolio analysis~~ Done
 - Regime threshold optimization tied to backtest performance
 - Out-of-sample validation across different market environments

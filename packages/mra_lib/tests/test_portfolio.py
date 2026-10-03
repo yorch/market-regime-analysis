@@ -316,3 +316,103 @@ class TestPreparePortfolioData:
             )
             assert "SPY" in p.analyzers
             assert "BAD" not in p.analyzers
+
+
+class TestPortfolioRegressionFixes:
+    """Regression tests for the 2026-10-03 analytics review."""
+
+    @staticmethod
+    def _independent_walks(n=500, seed=0):
+        rng = np.random.default_rng(seed)
+        idx = pd.date_range("2022-01-01", periods=n, freq="D")
+        # Two independent random walks with drift: price levels look correlated,
+        # returns are not.
+        a = 100 * np.exp(np.cumsum(rng.normal(0.002, 0.01, n)))
+        b = 50 * np.exp(np.cumsum(rng.normal(0.002, 0.01, n)))
+        return pd.DataFrame({"AAA": a, "BBB": b}, index=idx)
+
+    def test_correlations_use_returns_not_prices(self):
+        df = self._independent_walks()
+        analyses = {"AAA": _mock_analysis(), "BBB": _mock_analysis()}
+        p = _build_portfolio(["AAA", "BBB"], analyses, portfolio_data={"1D": df})
+
+        price_corr = df["AAA"].corr(df["BBB"])
+        return_corr = df["AAA"].pct_change().corr(df["BBB"].pct_change())
+        assert abs(price_corr) > 0.5  # spurious level correlation
+        assert abs(return_corr) < 0.2
+
+        result = p.calculate_regime_correlations("1D")
+        assert result.loc["AAA", "BBB_price_corr"] == pytest.approx(return_corr)
+
+        summary = p.get_portfolio_regime_summary("1D")
+        assert summary["correlation_risk"] == pytest.approx(abs(return_corr))
+
+    def test_correlation_risk_computed_for_two_symbols(self):
+        """Old column-count check (> 2 columns) skipped two-symbol portfolios."""
+        df = self._independent_walks()
+        analyses = {"AAA": _mock_analysis(), "BBB": _mock_analysis()}
+        p = _build_portfolio(["AAA", "BBB"], analyses, portfolio_data={"1D": df})
+        summary = p.get_portfolio_regime_summary("1D")
+        assert summary["correlation_risk"] > 0.0
+        assert summary["diversification_benefit"] < 1.0
+
+    def test_derived_columns_ignored(self):
+        df = self._independent_walks()
+        df["portfolio_return"] = 0.0
+        df["portfolio_volatility"] = 0.0
+        p = _build_portfolio(["AAA", "BBB"], {"AAA": _mock_analysis(), "BBB": _mock_analysis()})
+        p.portfolio_data = {"1D": df}
+        assert p._symbol_columns("1D") == ["AAA", "BBB"]
+
+    def test_cointegrated_pair_flagged_with_hedge_ratio(self):
+        rng = np.random.default_rng(3)
+        n = 400
+        idx = pd.date_range("2022-01-01", periods=n, freq="D")
+        log_b = np.log(50) + np.cumsum(rng.normal(0, 0.01, n))
+        noise = rng.normal(0, 0.005, n)
+        noise[-1] = 0.05  # A rich vs. B at the last bar (~10 sd)
+        log_a = 1.0 + 1.5 * log_b + noise
+        df = pd.DataFrame({"AAA": np.exp(log_a), "BBB": np.exp(log_b)}, index=idx)
+        p = _build_portfolio(
+            ["AAA", "BBB"],
+            {"AAA": _mock_analysis(), "BBB": _mock_analysis()},
+            portfolio_data={"1D": df},
+        )
+        result = p.identify_arbitrage_pairs("1D")
+        assert len(result) == 1
+        opp = result[0]
+        assert opp["signal"] == "SHORT_1_LONG_2"
+        assert opp["hedge_ratio"] == pytest.approx(1.5, abs=0.05)
+        assert opp["coint_pvalue"] < 0.05
+        assert opp["spread_zscore"] > 2.0
+
+    def test_non_cointegrated_pair_not_flagged(self):
+        df = self._independent_walks(seed=11)
+        p = _build_portfolio(
+            ["AAA", "BBB"],
+            {"AAA": _mock_analysis(), "BBB": _mock_analysis()},
+            portfolio_data={"1D": df},
+        )
+        assert p.identify_arbitrage_pairs("1D", max_pvalue=0.01) == []
+
+    def test_print_summary_analyzes_each_symbol_once(self, capsys):
+        df = self._independent_walks()
+        analyses = {"AAA": _mock_analysis(), "BBB": _mock_analysis()}
+        p = _build_portfolio(["AAA", "BBB"], analyses, portfolio_data={"1D": df})
+        for analyzer in p.analyzers.values():
+            analyzer.data = {"1D": pd.DataFrame({"Close": [100.0]})}
+        p.print_portfolio_summary("1D")
+        for analyzer in p.analyzers.values():
+            assert analyzer.analyze_current_regime.call_count == 1
+        out = capsys.readouterr().out
+        assert "Highest return correlation" in out
+
+    def test_distribution_percentage_uses_successful_analyses(self, capsys):
+        analyses = {"AAA": _mock_analysis(), "BBB": _mock_analysis()}
+        p = _build_portfolio(["AAA", "BBB"], analyses)
+        p.analyzers["BBB"].analyze_current_regime.side_effect = RuntimeError("boom")
+        for analyzer in p.analyzers.values():
+            analyzer.data = {"1D": pd.DataFrame({"Close": [100.0]})}
+        p.print_portfolio_summary("1D")
+        out = capsys.readouterr().out
+        assert "Bull Trending: 1 assets (100.0%)" in out
