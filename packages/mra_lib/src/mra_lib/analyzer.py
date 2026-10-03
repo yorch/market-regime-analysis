@@ -574,6 +574,9 @@ class MarketRegimeAnalyzer:
         """
         import matplotlib.dates as mdates
 
+        if timeframe not in self.data or timeframe not in self.indicators:
+            raise ValueError(f"No data loaded for timeframe {timeframe}")
+
         df = self.data[timeframe].tail(days)
         indicators = self.indicators[timeframe].tail(days)
 

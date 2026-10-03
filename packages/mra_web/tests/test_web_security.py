@@ -5,7 +5,9 @@ import io
 import logging
 import os
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
+import numpy as np
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
@@ -23,6 +25,7 @@ from mra_web.models import (
     MultiSymbolAnalysisRequest,
     normalize_symbol,
 )
+from mra_web.ratelimit import FixedWindowCounter, client_ip
 from mra_web.security import SecretScrubFilter, scrub_secrets
 
 JWT_SECRET = os.environ["JWT_SECRET"]
@@ -573,3 +576,101 @@ class TestWebSocketSecurity:
 
 def test_default_app_is_production():
     assert app.state.config.environment == "production"
+
+
+# ── Review follow-ups ──
+
+
+class TestLogFilterArgs:
+    @pytest.mark.parametrize(
+        ("fmt", "args"),
+        [
+            ("n=%d", (np.int64(5),)),
+            ("x=%.1f", (Decimal("1.25"),)),
+            ("y=%.2f", (np.float32(0.5),)),
+            ("%(n)d items", ({"n": np.int64(3)},)),
+        ],
+    )
+    def test_numeric_args_keep_working(self, fmt, args):
+        record = logging.LogRecord("t", logging.INFO, __file__, 1, fmt, args, None)
+        SecretScrubFilter().filter(record)
+        record.getMessage()  # must not raise
+
+    def test_secret_arg_scrubbed(self):
+        record = logging.LogRecord(
+            "t", logging.INFO, __file__, 1, "url %s", ("q?apikey=ABCDEF123456",), None
+        )
+        SecretScrubFilter().filter(record)
+        assert "ABCDEF123456" not in record.getMessage()
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "{'apikey': 'ABCDEF123456', \"token\": \"x\"}",
+            '{"api_key": "ABCDEF123456"}',
+            "headers={'Authorization': 'Token ABCDEF123456'}",
+        ],
+    )
+    def test_scrub_repr_forms(self, text):
+        assert "ABCDEF123456" not in scrub_secrets(text)
+
+
+class TestRateLimiter:
+    def test_window_resets(self):
+        counter = FixedWindowCounter(limit=2, window_seconds=60)
+        assert counter.hit("a", now=0)[0]
+        assert counter.hit("a", now=1)[0]
+        assert not counter.hit("a", now=2)[0]
+        assert counter.hit("a", now=61)[0]
+
+    def test_expired_entries_dropped_and_capped(self):
+        counter = FixedWindowCounter(limit=1, window_seconds=60, max_clients=100)
+        for i in range(500):
+            counter.hit(f"ip{i}", now=0)
+        assert len(counter) == 100
+        counter.hit("late", now=120)
+        assert len(counter) == 1
+
+    def test_ipv6_keyed_by_prefix(self):
+        a = client_ip({"client": ("2001:db8::1", 1)})
+        b = client_ip({"client": ("2001:db8::ffff", 1)})
+        assert a == b == "2001:db8::/64"
+        assert client_ip({"client": ("10.0.0.1", 1)}) == "10.0.0.1"
+        assert client_ip({}) == "unknown"
+
+
+class TestWebSocketFollowUps:
+    def test_unknown_provider_rejected(self, client, fake_loop):
+        with (
+            pytest.raises(WebSocketDisconnect) as exc,
+            client.websocket_connect(
+                "/ws/monitoring/SPY?provider=mock", headers={"X-API-Key": API_KEY}
+            ),
+        ):
+            pass
+        assert exc.value.code == 1008
+
+    def test_slot_released_after_failed_first_message_auth(self, client, fake_loop):
+        with client.websocket_connect(WS_URL) as ws:
+            ws.send_json({"token": "nope"})
+            with pytest.raises(WebSocketDisconnect):
+                ws.receive_json()
+        assert ws_module.manager.reserved == 0
+
+    def test_slot_released_after_missing_provider_key(self, client, fake_loop, monkeypatch):
+        monkeypatch.delenv("ALPHA_VANTAGE_API_KEY", raising=False)
+        monkeypatch.delenv("ALPHAVANTAGE_API_KEY", raising=False)
+        url = "/ws/monitoring/SPY?provider=alphavantage"
+        with client.websocket_connect(url, headers={"X-API-Key": API_KEY}) as ws:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_json()
+            assert exc.value.code == 1008
+        assert ws_module.manager.reserved == 0
+
+
+def test_chart_for_unloaded_timeframe_is_value_error(mock_provider):
+    from mra_lib import MarketRegimeAnalyzer
+
+    analyzer = MarketRegimeAnalyzer("TEST", periods={"1D": "2y"}, provider_flag="mock")
+    with pytest.raises(ValueError):
+        analyzer.render_regime_chart_png("1H", 30)

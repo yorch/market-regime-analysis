@@ -9,8 +9,10 @@ limits by request path instead and needs no route lookup.
 Limits are kept in process memory: with several workers each enforces its own window.
 """
 
+import ipaddress
 import math
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterable
 
 from starlette.responses import JSONResponse
@@ -18,40 +20,67 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from mra_web.models import ErrorResponse
 
-# Prune expired buckets once the table grows past this many clients.
-_PRUNE_THRESHOLD = 10_000
+# Hard cap on tracked clients; beyond it the oldest windows are evicted.
+MAX_TRACKED_CLIENTS = 50_000
 
 
 class FixedWindowCounter:
     """Fixed-window request counter keyed by client."""
 
-    def __init__(self, limit: int, window_seconds: float = 60.0) -> None:
+    def __init__(
+        self, limit: int, window_seconds: float = 60.0, max_clients: int = MAX_TRACKED_CLIENTS
+    ) -> None:
         self.limit = limit
         self.window = window_seconds
-        self._buckets: dict[str, tuple[float, int]] = {}
+        self.max_clients = max_clients
+        # Ordered by window start (a reset window moves to the end), so the
+        # oldest entries are always first: expiry and eviction pop from the front.
+        self._buckets: OrderedDict[str, tuple[float, int]] = OrderedDict()
 
     def hit(self, key: str, now: float | None = None) -> tuple[bool, float]:
         """Count a request. Returns (allowed, seconds until the window resets)."""
         now = time.monotonic() if now is None else now
+        self._expire(now)
         start, count = self._buckets.get(key, (now, 0))
-        if now - start >= self.window:
-            start, count = now, 0
+        if count == 0:
+            start = now
         count += 1
         self._buckets[key] = (start, count)
-        if len(self._buckets) > _PRUNE_THRESHOLD:
-            self._prune(now)
+        if count == 1:
+            self._buckets.move_to_end(key)
+            while len(self._buckets) > self.max_clients:
+                self._buckets.popitem(last=False)
         return count <= self.limit, max(0.0, start + self.window - now)
 
-    def _prune(self, now: float) -> None:
-        expired = [k for k, (start, _) in self._buckets.items() if now - start >= self.window]
-        for key in expired:
+    def _expire(self, now: float) -> None:
+        """Drop windows that have ended (amortized O(1): oldest entries first)."""
+        while self._buckets:
+            key, (start, _) = next(iter(self._buckets.items()))
+            if now - start < self.window:
+                break
             del self._buckets[key]
+
+    def __len__(self) -> int:
+        return len(self._buckets)
 
 
 def client_ip(scope: Scope) -> str:
-    """Return the direct peer address (configure the proxy to set it correctly)."""
+    """Return the rate-limit key for the direct peer.
+
+    IPv6 clients are keyed by their /64 prefix, since a single host typically
+    controls a whole /64. Behind a proxy, configure uvicorn's proxy headers.
+    """
     client = scope.get("client")
-    return client[0] if client else "unknown"
+    if not client:
+        return "unknown"
+    host = client[0]
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is None:
+        return str(ipaddress.IPv6Network(f"{address}/64", strict=False))
+    return host
 
 
 class RateLimitMiddleware:

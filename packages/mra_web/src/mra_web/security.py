@@ -8,6 +8,7 @@ the server's own logs.
 """
 
 import logging
+import numbers
 import os
 import re
 
@@ -16,12 +17,13 @@ from mra_lib.data_providers.credentials import PROVIDER_ENV_PAIRS, PROVIDER_ENV_
 REDACTED = "***"
 
 # key=value pairs in URLs, query strings, and repr() output.
+# key=value pairs in URLs/query strings, and 'key': 'value' in dict reprs.
 _KV_PATTERN = re.compile(
     r"(?i)\b(api[_-]?key|apikey|access[_-]?token|token|secret|password|apca-api-secret-key"
-    r"|apca-api-key-id)(\s*[=:]\s*['\"]?)([^&\s'\",;)}\]]+)"
+    r"|apca-api-key-id)(['\"]?\s*[=:]\s*['\"]?)([^&\s'\",;)}\]]+)"
 )
-# Authorization headers.
-_BEARER_PATTERN = re.compile(r"(?i)\b(bearer\s+)([A-Za-z0-9._~+/=-]+)")
+# Authorization headers ("Bearer <jwt>", Tiingo's "Token <key>").
+_BEARER_PATTERN = re.compile(r"(?i)\b((?:bearer|token)\s+)([A-Za-z0-9._~+/=-]{8,})")
 
 # Ignore very short env values; they would redact unrelated text.
 _MIN_LITERAL_LENGTH = 8
@@ -57,10 +59,14 @@ def scrub_secrets(text: str) -> str:
 
 
 def _scrub_arg(arg: object) -> object:
-    # Keep numbers (formatters such as uvicorn's access log unpack typed args).
-    if arg is None or isinstance(arg, int | float):
+    # Keep the original object unless its text contains a secret, so numeric
+    # format specifiers (%d, %.2f with numpy/Decimal values) and formatters that
+    # unpack typed args (uvicorn's access log) keep working.
+    if arg is None or isinstance(arg, numbers.Number):
         return arg
-    return scrub_secrets(str(arg))
+    text = str(arg)
+    scrubbed = scrub_secrets(text)
+    return arg if scrubbed == text else scrubbed
 
 
 class SecretScrubFilter(logging.Filter):

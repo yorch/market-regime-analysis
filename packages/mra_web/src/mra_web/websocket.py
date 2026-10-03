@@ -6,7 +6,7 @@ accepted, from (in order) the ``X-API-Key`` header, an ``Authorization: Bearer``
 header, or a ``token`` query parameter (JWT or API key). Browsers that cannot set
 headers and do not want the token in the URL may instead send
 ``{"token": "<JWT or API key>"}`` as the first message within
-``AUTH_MESSAGE_TIMEOUT`` seconds. Browser ``Origin`` headers must be in
+``AUTH_MESSAGE_TIMEOUT`` (5) seconds. Browser ``Origin`` headers must be in
 ``CORS_ORIGINS``, and concurrent connections are capped in total and per client IP.
 """
 
@@ -28,7 +28,7 @@ from .auth import (
     get_app_config,
 )
 from .config import APIConfig
-from .models import MonitoringMessage, MonitoringUpdate, normalize_symbol
+from .models import MonitoringMessage, MonitoringUpdate, normalize_symbol, validate_provider_name
 from .utils import validate_api_key
 
 # Setup logging
@@ -42,7 +42,7 @@ WS_POLICY_VIOLATION = status.WS_1008_POLICY_VIOLATION
 WS_TRY_AGAIN_LATER = status.WS_1013_TRY_AGAIN_LATER
 WS_INTERNAL_ERROR = status.WS_1011_INTERNAL_ERROR
 
-AUTH_MESSAGE_TIMEOUT = 10.0
+AUTH_MESSAGE_TIMEOUT = 5.0
 
 
 def _client_ip(websocket: WebSocket) -> str:
@@ -248,7 +248,10 @@ def _check_handshake(
     if interval < 60 or interval > 3600:
         raise _Rejected()
 
-    provider = websocket.query_params.get("provider", "alphavantage")
+    try:
+        provider = validate_provider_name(websocket.query_params.get("provider", "alphavantage"))
+    except ValueError as e:
+        raise _Rejected() from e
     provider_api_key = websocket.query_params.get("api_key")
     return user, symbol, provider, provider_api_key, interval
 

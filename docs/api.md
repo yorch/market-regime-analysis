@@ -155,7 +155,7 @@ Real-time regime monitoring via WebSocket connections.
 WebSocket connections must authenticate (except in development). The server checks, in
 order, an `X-API-Key` header, an `Authorization: Bearer` header, or a `token` query
 parameter (a JWT or API key) before accepting the handshake. Clients that cannot set headers
-can instead send `{"token": "<JWT or API key>"}` as the first message within 10 seconds.
+can instead send `{"token": "<JWT or API key>"}` as the first message within 5 seconds.
 Invalid or missing credentials close the socket with code `1008`. Browser `Origin` headers
 must be listed in `CORS_ORIGINS`. Connections are capped (`WS_MAX_CONNECTIONS`, default 100;
 `WS_MAX_CONNECTIONS_PER_IP`, default 5); over the cap the handshake is refused (code `1013`).

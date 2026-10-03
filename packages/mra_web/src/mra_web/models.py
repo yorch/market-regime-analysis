@@ -21,6 +21,20 @@ MAX_SYMBOLS = 20
 EXPORT_FILENAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 
 
+ALLOWED_PROVIDERS = ("yfinance", "alphavantage", "polygon", "alpaca", "tiingo")
+
+
+def validate_provider_name(value: str) -> str:
+    """Return ``value`` if it is an allowed data provider.
+
+    Raises:
+        ValueError: If the provider is not allowed.
+    """
+    if value not in ALLOWED_PROVIDERS:
+        raise ValueError(f"Provider must be one of: {', '.join(ALLOWED_PROVIDERS)}")
+    return value
+
+
 def normalize_symbol(value: str) -> str:
     """Strip, upper-case and validate a ticker symbol.
 
@@ -48,10 +62,7 @@ class BaseRequest(BaseModel):
     @classmethod
     def validate_provider(cls, v: str) -> str:
         """Validate provider choice."""
-        allowed_providers = ["yfinance", "alphavantage", "polygon", "alpaca", "tiingo"]
-        if v not in allowed_providers:
-            raise ValueError(f"Provider must be one of: {', '.join(allowed_providers)}")
-        return v
+        return validate_provider_name(v)
 
 
 class ErrorResponse(BaseModel):
