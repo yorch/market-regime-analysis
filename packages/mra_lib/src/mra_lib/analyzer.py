@@ -9,10 +9,13 @@ import time
 import warnings
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
+
+if TYPE_CHECKING:
+    from matplotlib.figure import Figure
 
 from mra_lib.config.data_classes import RegimeAnalysis
 from mra_lib.config.enums import MarketRegime, TradingStrategy
@@ -653,12 +656,40 @@ class MarketRegimeAnalyzer:
         fig.tight_layout()
         return True
 
+    def render_regime_chart(
+        self, timeframe: str, days: int = 60, figure: "Figure | None" = None
+    ) -> "Figure":
+        """
+        Draw the 5-panel regime chart and return the figure.
+
+        By default this builds a standalone Agg figure (no pyplot global state), so it
+        is safe in servers and worker threads and nothing leaks between calls. Pass a
+        pyplot-managed ``figure`` (e.g. ``plt.figure()``) to display it interactively.
+
+        Args:
+            timeframe: Timeframe to plot
+            days: Number of bars to show
+            figure: Figure to draw on; a new standalone Agg figure if omitted
+
+        Returns:
+            The drawn figure
+
+        Raises:
+            ValueError: If there is not enough data to plot
+        """
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from matplotlib.figure import Figure
+
+        if figure is None:
+            figure = Figure(figsize=(15, 20))
+            FigureCanvasAgg(figure)
+        if not self._draw_regime_chart(figure, timeframe, days):
+            raise ValueError("Insufficient data for plotting")
+        return figure
+
     def render_regime_chart_png(self, timeframe: str, days: int = 60, dpi: int = 80) -> bytes:
         """
         Render the 5-panel regime chart to PNG bytes without a GUI backend.
-
-        Builds a standalone Agg figure (no pyplot global state), so it is safe in
-        servers and worker threads and nothing leaks between calls.
 
         Args:
             timeframe: Timeframe to plot
@@ -673,15 +704,8 @@ class MarketRegimeAnalyzer:
         """
         import io
 
-        from matplotlib.backends.backend_agg import FigureCanvasAgg
-        from matplotlib.figure import Figure
-
-        fig = Figure(figsize=(15, 20))
-        FigureCanvasAgg(fig)
-        if not self._draw_regime_chart(fig, timeframe, days):
-            raise ValueError("Insufficient data for plotting")
         buffer = io.BytesIO()
-        fig.savefig(buffer, format="png", dpi=dpi)
+        self.render_regime_chart(timeframe, days).savefig(buffer, format="png", dpi=dpi)
         return buffer.getvalue()
 
     def plot_regime_analysis(self, timeframe: str, days: int = 60) -> None:

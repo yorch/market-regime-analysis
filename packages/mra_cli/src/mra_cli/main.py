@@ -8,12 +8,9 @@ default is Yahoo Finance (no key needed) and ``--provider mock`` works offline.
 """
 
 import concurrent.futures
-import contextlib
 import functools
-import io
 import logging
 import os
-import sys
 import time
 from collections.abc import Callable
 from datetime import datetime
@@ -423,35 +420,7 @@ def current_analysis(
         raise click.ClickException(f"Analysis failed for every timeframe of {symbol}")
 
 
-# Messages the library prints (instead of raising) when plotting fails
-_CHART_FAILURE_MARKERS = ("Error generating chart", "Insufficient data for plotting")
 _NON_INTERACTIVE_BACKENDS = {"agg", "pdf", "ps", "svg", "pgf", "cairo", "template"}
-
-
-class _Tee(io.TextIOBase):
-    """Text stream that forwards writes to ``target`` and keeps a copy."""
-
-    def __init__(self, target: Any) -> None:
-        self._target = target
-        self._parts: list[str] = []
-
-    def write(self, text: str) -> int:
-        self._parts.append(text)
-        return int(self._target.write(text))
-
-    def flush(self) -> None:
-        self._target.flush()
-
-    @property
-    def captured(self) -> str:
-        return "".join(self._parts)
-
-
-def _new_figure(before: set[int]) -> Any:
-    import matplotlib.pyplot as plt  # noqa: PLC0415
-
-    new = [n for n in plt.get_fignums() if n not in before]
-    return plt.figure(new[-1]) if new else None
 
 
 @cli.command()
@@ -485,13 +454,9 @@ def generate_charts(  # noqa: PLR0913, PLR0917
     """Generate HMM charts for a given symbol and timeframe."""
     import matplotlib  # noqa: PLC0415
 
-    if output is not None:
-        matplotlib.use("Agg", force=True)  # Headless rendering
-    import matplotlib.pyplot as plt  # noqa: PLC0415
-    from matplotlib.figure import Figure  # noqa: PLC0415
-
     provider_name, key = resolve_provider(ctx, provider, api_key)
     click.echo(f"Initializing analyzer for {symbol}...")
+
     analyzer = MarketRegimeAnalyzer(
         symbol,
         periods={timeframe: DEFAULT_PERIODS[timeframe]},
@@ -502,43 +467,36 @@ def generate_charts(  # noqa: PLR0913, PLR0917
     bars = days * BARS_PER_DAY[timeframe]
     click.echo(f"Generating charts for {timeframe} ({days} days, {bars} bars)...")
 
-    # Defer any plt.show() inside the library so we can verify a chart was produced, and
-    # watch its output: the current library prints errors instead of raising them
-    before = set(plt.get_fignums())
-    real_show = plt.show
-    plt.show = lambda *a, **k: None  # type: ignore[assignment]
-    tee = _Tee(sys.stdout)
-    try:
-        with contextlib.redirect_stdout(tee):
-            result = analyzer.plot_regime_analysis(timeframe, bars)  # type: ignore[func-returns-value]
-    finally:
-        plt.show = real_show  # type: ignore[assignment]
-
-    if any(marker in tee.captured for marker in _CHART_FAILURE_MARKERS):
-        for num in set(plt.get_fignums()) - before:
-            plt.close(num)
-        raise click.ClickException(f"Chart generation failed for {symbol} ({timeframe})")
-
     # Nobody would see a figure on a non-interactive backend: save it instead
     if output is None and matplotlib.get_backend().lower() in _NON_INTERACTIVE_BACKENDS:
         output = Path(f"{symbol}_{timeframe}_regimes.png")
 
-    if isinstance(result, bytes | bytearray):
-        target = output or Path(f"{symbol}_{timeframe}_regimes.png")
-        target.write_bytes(bytes(result))
-        click.echo(f"✓ Chart saved to {target}")
+    if output is not None:
+        fig = _render_chart(analyzer, symbol, timeframe, bars)
+        fig.savefig(output, bbox_inches="tight")
+        click.echo(f"✓ Chart saved to {output}")
         return
 
-    fig = result if isinstance(result, Figure) else _new_figure(before)
-    if fig is None:
-        raise click.ClickException(f"Chart generation failed for {symbol} ({timeframe})")
+    import matplotlib.pyplot as plt  # noqa: PLC0415
 
-    if output is not None:
-        fig.savefig(output, bbox_inches="tight")
-        plt.close(fig)
-        click.echo(f"✓ Chart saved to {output}")
-    else:
+    fig = plt.figure(figsize=(15, 20))
+    try:
+        _render_chart(analyzer, symbol, timeframe, bars, figure=fig)
         plt.show()
+    finally:
+        plt.close(fig)
+
+
+def _render_chart(
+    analyzer: MarketRegimeAnalyzer, symbol: str, timeframe: str, bars: int, **kwargs: Any
+) -> Any:
+    """Draw the regime chart, turning library errors into a CLI failure."""
+    try:
+        return analyzer.render_regime_chart(timeframe, bars, **kwargs)
+    except Exception as e:
+        raise click.ClickException(
+            f"Chart generation failed for {symbol} ({timeframe}): {e}"
+        ) from e
 
 
 @cli.command()

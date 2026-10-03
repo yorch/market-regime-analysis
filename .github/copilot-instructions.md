@@ -29,7 +29,7 @@
 - All analysis flows through `MarketRegimeAnalyzer` and `PortfolioHMMAnalyzer` classes.
 - Regime analysis returns a `RegimeAnalysis` dataclass (see `data_classes.py`).
 - Risk management uses regime multipliers, confidence, persistence, and correlation adjustments (see `risk_calculator.py`, `PLAN.md`).
-- Visualization: 5-panel chart system (see `plot_regime_analysis` in `analyzer.py`, `PLAN.md`).
+- Visualization: 5-panel chart system (`render_regime_chart` returns the figure and raises on failure; `render_regime_chart_png` for servers; `plot_regime_analysis` shows it interactively — all in `analyzer.py`).
 - Statistical arbitrage: Z-score, autocorrelation, cross-asset pairs (see `analyzer.py`, `portfolio.py`).
 - Exception handling and input validation are required for all user/data entry points.
 - Type hints and docstrings are mandatory for all public methods/classes.
