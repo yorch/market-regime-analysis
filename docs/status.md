@@ -59,8 +59,7 @@ CLI smoke test in the Docker job, documentation refreshed.
 - **Calibrator attribution.** `calibrate-multipliers` attributes each trade's P&L to its
   entry regime only, not bar by bar.
 - **Web API scale.** Rate limits, metrics and WebSocket caps are in process memory (per
-  worker); fitted models are not cached. Multi-symbol analysis returns a blanket `503` when
-  every symbol fails, instead of the root-cause status.
+  worker); fitted models are not cached.
 - **Library hygiene.** `mra_lib` still prints to stdout in places, re-wraps provider errors
   as `ValueError`, returns many results as dicts, and ships `types/protocols.py`, which nothing
   implements yet.
@@ -83,7 +82,6 @@ Next:
 
 - Deflated Sharpe / multiple-testing correction in the optimizer.
 - Bar-by-bar regime attribution in the calibrator.
-- Root-cause status for multi-symbol requests where every symbol fails.
 
 Feature roadmap (none started; from the review's proposals):
 

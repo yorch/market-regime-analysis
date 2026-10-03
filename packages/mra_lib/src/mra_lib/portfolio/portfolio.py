@@ -55,6 +55,9 @@ class PortfolioHMMAnalyzer:
         self.periods = periods
         self.analyzers: dict[str, MarketRegimeAnalyzer] = {}
         self.portfolio_data: dict[str, pd.DataFrame] = {}
+        # Most recent failure per symbol (initialization or analysis), so callers can
+        # report why symbols are missing instead of only that they are.
+        self.errors: dict[str, Exception] = {}
 
         print(f"Initializing portfolio analysis for {len(symbols)} symbols...")
 
@@ -67,6 +70,7 @@ class PortfolioHMMAnalyzer:
                 self.analyzers[symbol] = analyzer
                 print(f"✓ Initialized {symbol}")
             except Exception as e:
+                self.errors[symbol] = e
                 print(f"✗ Failed to initialize {symbol}: {e!s}")
 
         self._prepare_portfolio_data()
@@ -105,14 +109,17 @@ class PortfolioHMMAnalyzer:
         """
         Run ``analyze_current_regime`` once per symbol.
 
-        Symbols whose analysis fails are logged and omitted. Pass the result to
-        the other report methods to avoid re-running each symbol's analysis.
+        Symbols whose analysis fails are logged, recorded in :attr:`errors`, and
+        omitted. Pass the result to the other report methods to avoid re-running
+        each symbol's analysis.
         """
         analyses: dict[str, RegimeAnalysis] = {}
         for symbol, analyzer in self.analyzers.items():
             try:
                 analyses[symbol] = analyzer.analyze_current_regime(timeframe)
+                self.errors.pop(symbol, None)
             except Exception as e:
+                self.errors[symbol] = e
                 logger.warning("Error analyzing %s: %s", symbol, e)
         return analyses
 

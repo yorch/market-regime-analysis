@@ -269,6 +269,14 @@ async def multi_symbol_analysis(
                 api_key=validated_api_key,
             )
             analyses = portfolio.collect_analyses(timeframe)
+            if not analyses and portfolio.errors:
+                # Every symbol failed: re-raise the most severe recorded cause so
+                # ``_tracked`` classifies it generically. Server-side/retryable causes
+                # (5xx: provider auth, rate limit, outage) outrank per-symbol input errors.
+                raise max(
+                    portfolio.errors.values(),
+                    key=lambda e: classify_exception(e).status_code,
+                )
             summary = portfolio.get_portfolio_regime_summary(timeframe, analyses=analyses)
             symbols = list(analyses)
             corr = (
