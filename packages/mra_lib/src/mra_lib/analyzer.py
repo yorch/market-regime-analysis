@@ -27,7 +27,16 @@ from mra_lib.config.regime_tables import (
 )
 from mra_lib.config.timeframes import DEFAULT_PERIODS
 from mra_lib.data_providers import MarketDataProvider, ProviderConfig
-from mra_lib.indicators.hmm_detector import HiddenMarkovRegimeDetector
+from mra_lib.indicators.base import RegimeDetector
+from mra_lib.indicators.features import (
+    average_true_range,
+    log_returns,
+    rolling_autocorr,
+    rolling_volatility,
+    rolling_zscore,
+    volume_ratio,
+)
+from mra_lib.indicators.true_hmm_detector import TrueHMMDetector
 
 MAX_POSITION_MULTIPLIER = 0.5
 """Position multiplier for the strongest regime at full confidence."""
@@ -54,6 +63,7 @@ class MarketRegimeAnalyzer:
         periods: dict[str, str] | None = None,
         provider_flag: str = "yfinance",
         api_key: str | None = None,
+        detector_factory: Callable[[], RegimeDetector] | None = None,
     ) -> None:
         """
         Initialize the Market Regime Analyzer.
@@ -63,6 +73,10 @@ class MarketRegimeAnalyzer:
             periods: Dictionary mapping timeframes to data periods
             provider_flag: 'yfinance' or 'alphavantage'
             api_key: API key for Alpha Vantage (if needed)
+            detector_factory: Zero-argument callable returning a fresh, unfitted
+                :class:`~mra_lib.indicators.base.RegimeDetector`; called once per
+                timeframe. Defaults to :class:`TrueHMMDetector` (the same model
+                walk-forward validation uses).
         """
         self.symbol = symbol
         # Defaults (1D: 2y, 1H: 6mo, 15m: 1mo) are supported by every provider
@@ -71,7 +85,8 @@ class MarketRegimeAnalyzer:
         # Data storage
         self.data: dict[str, pd.DataFrame] = {}
         self.indicators: dict[str, pd.DataFrame] = {}
-        self.hmm_models: dict[str, HiddenMarkovRegimeDetector] = {}
+        self.detector_factory: Callable[[], RegimeDetector] = detector_factory or TrueHMMDetector
+        self.hmm_models: dict[str, RegimeDetector] = {}
 
         # Regime multipliers: copy of the canonical table (config/regime_tables.py)
         self.regime_multipliers: dict[MarketRegime, float] = dict(REGIME_MULTIPLIERS)
@@ -142,7 +157,7 @@ class MarketRegimeAnalyzer:
 
         # Basic price indicators
         indicators["returns"] = df["Close"].pct_change()
-        indicators["log_returns"] = np.log(df["Close"] / df["Close"].shift(1))
+        indicators["log_returns"] = log_returns(df["Close"])
 
         # Moving averages
         indicators["ema_9"] = df["Close"].ewm(span=9).mean()
@@ -150,14 +165,8 @@ class MarketRegimeAnalyzer:
         indicators["sma_50"] = df["Close"].rolling(50).mean()
         indicators["sma_200"] = df["Close"].rolling(200).mean()
 
-        # ATR calculation
-        high_low = df["High"] - df["Low"]
-        high_close = np.abs(df["High"] - df["Close"].shift(1))
-        low_close = np.abs(df["Low"] - df["Close"].shift(1))
-        true_range = pd.Series(
-            np.maximum(high_low, np.maximum(high_close, low_close)), index=df.index
-        )
-        indicators["atr"] = true_range.rolling(14).mean()
+        # ATR (shared helper; price units)
+        indicators["atr"] = average_true_range(df, 14)
         indicators["atr_percent"] = indicators["atr"] / df["Close"] * 100
 
         # Bollinger Bands
@@ -187,7 +196,9 @@ class MarketRegimeAnalyzer:
         # Volatility measures, annualized for the bar timeframe. vol_rank is the
         # percentile of current vol over the trailing year of bars; it needs at
         # least TRADING_DAYS_PER_YEAR bars of history before it is defined.
-        indicators["volatility"] = indicators["returns"].rolling(20).std() * np.sqrt(bars_per_year)
+        indicators["volatility"] = rolling_volatility(indicators["returns"], 20) * np.sqrt(
+            bars_per_year
+        )
         rank_window = round(bars_per_year)
         indicators["vol_rank"] = (
             indicators["volatility"]
@@ -195,28 +206,20 @@ class MarketRegimeAnalyzer:
             .rank(pct=True)
         )
 
-        # Volume analysis
-        if df["Volume"].sum() > 0:
-            indicators["volume_ma"] = df["Volume"].rolling(20).mean()
-            indicators["volume_ratio"] = df["Volume"] / indicators["volume_ma"]
-            indicators["price_volume"] = indicators["returns"] * np.log(df["Volume"] + 1)
-        else:
-            indicators["volume_ma"] = pd.Series(1, index=df.index)
-            indicators["volume_ratio"] = pd.Series(1, index=df.index)
-            indicators["price_volume"] = indicators["returns"]
+        # Volume analysis: decided per bar (a bar without volume gets a neutral
+        # ratio of 1), so the values never depend on later bars
+        indicators["volume_ma"] = df["Volume"].rolling(20).mean()
+        indicators["volume_ratio"] = volume_ratio(df["Volume"], 20)
+        indicators["price_volume"] = indicators["returns"] * np.log(df["Volume"].clip(lower=0) + 1)
 
         # Statistical Arbitrage Features
-        indicators["price_zscore"] = (df["Close"] - df["Close"].rolling(50).mean()) / (
-            df["Close"].rolling(50).std() + 1e-8
-        )
-        indicators["return_zscore"] = (
-            indicators["returns"] - indicators["returns"].rolling(50).mean()
-        ) / (indicators["returns"].rolling(50).std() + 1e-8)
+        indicators["price_zscore"] = rolling_zscore(df["Close"], 50)
+        indicators["return_zscore"] = rolling_zscore(indicators["returns"], 50)
 
-        # Return autocorrelation (momentum persistence)
+        # Return autocorrelation (momentum persistence), vectorized
         for lag in [1, 2, 5]:
-            indicators[f"autocorr_{lag}"] = (
-                indicators["returns"].rolling(20).apply(lambda x: x.autocorr(lag=lag), raw=False)
+            indicators[f"autocorr_{lag}"] = rolling_autocorr(
+                indicators["returns"], lag=lag, window=20
             )
 
         # Mean reversion signals
@@ -242,7 +245,7 @@ class MarketRegimeAnalyzer:
 
         for timeframe, df in self.data.items():
             try:
-                hmm = HiddenMarkovRegimeDetector(n_states=6)
+                hmm = self.detector_factory()
                 hmm.fit(df)
                 self.hmm_models[timeframe] = hmm
                 print(f"✓ Trained HMM for {timeframe}")

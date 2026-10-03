@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 from pandas.util import hash_pandas_object
-from scipy.special import logsumexp
 from sklearn.exceptions import ConvergenceWarning
 
 from mra_lib.config.enums import MarketRegime
@@ -92,7 +91,7 @@ class WalkForwardValidator:
         strategy: RegimeStrategy,
         cost_model: TransactionCostModel | None = None,
         n_hmm_states: int = 6,
-        hmm_n_iter: int = 100,
+        hmm_n_iter: int = 200,
         retrain_frequency: int = 20,
         min_train_days: int = 252,
         test_days: int = 63,
@@ -100,6 +99,7 @@ class WalkForwardValidator:
         initial_capital: float = 100000.0,
         periods_per_year: float = TRADING_DAYS_PER_YEAR,
         risk_free_rate: float = 0.02,
+        hmm_n_init: int = 3,
     ) -> None:
         """
         Initialize walk-forward validator.
@@ -117,6 +117,10 @@ class WalkForwardValidator:
             initial_capital: Starting capital for each window
             periods_per_year: Bars per year used for annualization
             risk_free_rate: Annual risk-free rate for Sharpe/Sortino
+            hmm_n_init: EM restarts per HMM fit (best log-likelihood wins). Lower
+                than the analyzer's default (10) because walk-forward refits every
+                ``retrain_frequency`` bars; the model class, features, priors and
+                labelling are otherwise identical
         """
         self.strategy = strategy
         self.cost_model = cost_model or EquityCostModel()
@@ -129,6 +133,7 @@ class WalkForwardValidator:
         self.initial_capital = initial_capital
         self.periods_per_year = periods_per_year
         self.risk_free_rate = risk_free_rate
+        self.hmm_n_init = hmm_n_init
 
     # ------------------------------------------------------------------
     # Window layout
@@ -159,6 +164,7 @@ class WalkForwardValidator:
                 (
                     self.n_hmm_states,
                     self.hmm_n_iter,
+                    self.hmm_n_init,
                     self.retrain_frequency,
                     self.min_train_days,
                     self.test_days,
@@ -181,7 +187,11 @@ class WalkForwardValidator:
     # ------------------------------------------------------------------
 
     def _fit_detector(self, train_df: pd.DataFrame) -> TrueHMMDetector:
-        hmm = TrueHMMDetector(n_states=self.n_hmm_states, n_iter=self.hmm_n_iter)
+        # Same model class and defaults as MarketRegimeAnalyzer, so walk-forward
+        # results describe the model users see
+        hmm = TrueHMMDetector(
+            n_states=self.n_hmm_states, n_iter=self.hmm_n_iter, n_init=self.hmm_n_init
+        )
         with _quiet_model_warnings():
             hmm.fit(train_df)
         return hmm
@@ -203,48 +213,19 @@ class WalkForwardValidator:
         """
         Predict bars ``start..end-1`` with one fitted model in O(n).
 
-        ``predict_regime(df[:i], use_viterbi=False)`` returns the argmax of the
-        forward-filtered posterior at the last feature row of ``df[:i]``
-        (smoothing has no future rows to use there). Features are causal, so
-        one forward pass over ``df[:end-1]`` yields the same posterior for every
-        prefix instead of recomputing features and posteriors per bar.
+        ``predict_regime(df[:i])`` returns the argmax of the filtered (forward-only)
+        posterior at the last feature row of ``df[:i]``. Features are causal and
+        filtering never looks ahead, so one forward pass over ``df[:end-1]``
+        yields the same posterior for every prefix instead of recomputing
+        features and posteriors per bar.
         """
-        model = hmm.model
-        scaler = hmm.scaler
-        if model is None or scaler is None:
-            raise ValueError("Detector is not fitted")
-        if "Volume" in df.columns:
-            # The detector switches its volume feature on whether the *prefix*
-            # has any volume, which is not causal; only use the shared pass when
-            # every prefix in this segment takes the same branch.
-            vol_before = float(df["Volume"].iloc[:start].sum())
-            vol_all = float(df["Volume"].iloc[: end - 1].sum())
-            if (vol_before > 0) != (vol_all > 0):
-                raise ValueError("Volume feature is not prefix-stable in this segment")
-
         with _quiet_model_warnings():
-            features = hmm._prepare_features(df.iloc[: end - 1])
-            x = scaler.transform(features)
+            posteriors = hmm.filtered_posteriors(df.iloc[: end - 1])
+        probs = posteriors.to_numpy()
+        states = np.argmax(probs, axis=1)
+        state_regime = hmm.get_state_regime_map()
 
-            n_states = int(model.n_components)
-            # hmmlearn's own emission densities (with its covariance handling),
-            # so the result matches predict_proba exactly
-            log_lik = np.asarray(model._compute_log_likelihood(x))
-
-            with np.errstate(divide="ignore"):
-                log_start = np.log(np.asarray(model.startprob_))
-                log_trans = np.log(np.asarray(model.transmat_))
-
-            log_alpha = np.empty_like(log_lik)
-            log_alpha[0] = log_start + log_lik[0]
-            for t in range(1, len(x)):
-                log_alpha[t] = logsumexp(log_alpha[t - 1][:, None] + log_trans, axis=0) + log_lik[t]
-            filtered = np.exp(log_alpha - logsumexp(log_alpha, axis=1, keepdims=True))
-
-            states = np.argmax(filtered, axis=1)
-            state_regime = {s: hmm._map_state_to_regime(x, states, s) for s in range(n_states)}
-
-        positions = df.index.get_indexer(features.index)
+        positions = df.index.get_indexer(posteriors.index)
         out: list[tuple[MarketRegime, float]] = []
         for i in range(start, end):
             # Last feature row at or before bar i-1
@@ -253,7 +234,7 @@ class WalkForwardValidator:
                 out.append((MarketRegime.UNKNOWN, 0.0))
                 continue
             state = int(states[k])
-            out.append((state_regime[state], float(filtered[k, state])))
+            out.append((state_regime[state], float(probs[k, state])))
         return out
 
     def _predict_segment(

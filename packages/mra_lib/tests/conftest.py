@@ -47,6 +47,46 @@ def make_synthetic_ohlcv(n: int = 300, seed: int = 42) -> pd.DataFrame:
     )
 
 
+def make_switching_ohlcv(n: int = 600, seed: int = 3) -> pd.DataFrame:
+    """
+    Deterministic OHLCV data cycling through calm-bull, volatile-bear and choppy regimes.
+
+    Each regime lasts 60-140 bars; intrabar ranges scale with the regime's volatility.
+    """
+    rng = np.random.default_rng(seed)
+    regimes = [(0.0008, 0.007), (-0.001, 0.022), (0.0, 0.012)]
+    rets: list[float] = []
+    vols: list[float] = []
+    k = 0
+    while len(rets) < n:
+        mu, sd = regimes[k % 3]
+        length = int(rng.integers(60, 140))
+        rets.extend(rng.normal(mu, sd, length))
+        vols.extend([sd] * length)
+        k += 1
+    r = np.array(rets[:n])
+    sd_arr = np.array(vols[:n])
+    close = 100 * np.exp(np.cumsum(r))
+    open_ = close * (1 + rng.normal(0, 0.002, n))
+    spread = np.abs(rng.normal(0, 1, n)) * sd_arr * 0.4
+    return pd.DataFrame(
+        {
+            "Open": open_,
+            "High": np.maximum(open_, close) * (1 + spread),
+            "Low": np.minimum(open_, close) * (1 - spread),
+            "Close": close,
+            "Volume": rng.integers(1_000_000, 5_000_000, n).astype(float),
+        },
+        index=pd.bdate_range("2018-01-01", periods=n),
+    )
+
+
+@pytest.fixture(scope="session")
+def switching_ohlcv() -> Callable[..., pd.DataFrame]:
+    """Return the :func:`make_switching_ohlcv` factory."""
+    return make_switching_ohlcv
+
+
 @pytest.fixture(scope="session")
 def synthetic_ohlcv() -> Callable[..., pd.DataFrame]:
     """Return the :func:`make_synthetic_ohlcv` factory."""

@@ -133,9 +133,12 @@ market-regime-analysis/
 │   │   │   │   └── timeframes.py   # TIMEFRAMES, DEFAULT_PERIODS
 │   │   │   ├── types/
 │   │   │   │   └── protocols.py    # Protocol definitions (currently unused; see below)
-│   │   │   ├── indicators/         # HMM-based detectors
-│   │   │   │   ├── hmm_detector.py       # GMM-based detector (used by the analyzer)
-│   │   │   │   └── true_hmm_detector.py  # hmmlearn HMM (walk-forward, regime-forecast)
+│   │   │   ├── indicators/         # Regime model (one detector everywhere)
+│   │   │   │   ├── base.py               # RegimeDetector protocol, persistence/transition helpers
+│   │   │   │   ├── features.py           # Causal, scale-free feature helpers + build_hmm_features
+│   │   │   │   ├── regime_mapping.py     # State -> regime decision tree (RegimeThresholds)
+│   │   │   │   ├── true_hmm_detector.py  # TrueHMMDetector (hmmlearn), select_n_states (BIC)
+│   │   │   │   └── hmm_detector.py       # Deprecated alias of TrueHMMDetector
 │   │   │   ├── data_providers/     # Plug-and-play provider architecture
 │   │   │   │   ├── base.py         # MarketDataProvider ABC, registry, error types, rate limiter
 │   │   │   │   ├── _http.py        # Shared HTTP client (timeouts, retries, key redaction)
@@ -226,8 +229,8 @@ from .strategy import RegimeStrategy  # inside backtesting/
 ### Key Components
 
 1. **MarketRegimeAnalyzer** (`analyzer.py`): Coordinates data fetching, feature engineering, regime detection, signals, reports and charts
-2. **HiddenMarkovRegimeDetector** (`indicators/hmm_detector.py`): GMM-based 6-state regime classifier with an estimated transition matrix (used by the analyzer)
-3. **TrueHMMDetector** (`indicators/true_hmm_detector.py`): hmmlearn HMM with Viterbi decoding, regime forecasting and stability analysis (used by walk-forward validation and `regime-forecast`)
+2. **TrueHMMDetector** (`indicators/true_hmm_detector.py`): the single regime model, used by the analyzer, `regime-forecast`, walk-forward validation and the optimizer. Gaussian HMM (hmmlearn) on six causal, stationary features from `indicators/features.py`; diagonal covariances, `min_covar`, `n_init` EM restarts, a minimum-sample check scaled to the parameter count, volatility-sorted (canonical) state order, filtered (forward-only) posteriors for per-bar history, and absolute-threshold regime labels (`indicators/regime_mapping.py`). `MarketRegimeAnalyzer(detector_factory=...)` accepts any `RegimeDetector` (`indicators/base.py`). `HiddenMarkovRegimeDetector` is a deprecated alias (the GMM model was removed)
+3. **Feature helpers** (`indicators/features.py`): pure, causal functions (ATR, rolling/log volatility, vectorized autocorrelation, z-scores, trend strength, per-bar volume ratio) shared by the detector and the analyzer's display indicators
 4. **Data Providers** (`data_providers/`): Yahoo Finance, Alpha Vantage, Polygon.io, Alpaca, Tiingo and an offline mock provider
 5. **Portfolio Analysis** (`portfolio/portfolio.py`): Multi-symbol regimes, returns-based correlations, Engle-Granger pairs
 6. **Risk Management** (`risk/risk_calculator.py`): Kelly Criterion-based position sizing with regime and correlation adjustments
@@ -236,8 +239,8 @@ from .strategy import RegimeStrategy  # inside backtesting/
 ### Data Flow
 
 1. Data provider fetches market data (daily/hourly/15min timeframes)
-2. Feature engineering: returns, volatility, skewness, kurtosis, autocorrelation
-3. Regime classification with the GMM-based detector
+2. Feature engineering (`indicators/features.py`): log return, log volatility, volatility expansion, trend strength, autocorrelation, volume ratio
+3. Regime classification with `TrueHMMDetector` (the same model walk-forward validates)
 4. Statistical arbitrage signal generation (mean reversion, momentum breakdown)
 5. Risk-adjusted position sizing
 6. Reporting, CSV export and charts

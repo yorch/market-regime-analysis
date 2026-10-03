@@ -1,166 +1,225 @@
 """
-True Hidden Markov Model implementation using hmmlearn.
+Gaussian hidden Markov model regime detector (hmmlearn).
 
-This module implements a proper HMM with temporal dependencies,
-using the Baum-Welch algorithm for training and Viterbi for decoding.
-This addresses the critical flaw in the original GMM-based approach.
+This is the single regime model used across the library: the analyzer, the
+CLI forecast command, walk-forward validation and the optimizer all fit and
+query :class:`TrueHMMDetector`, so validation numbers describe the model users
+actually see.
+
+Design notes
+------------
+- **Features** come from :func:`mra_lib.indicators.features.build_hmm_features`:
+  six causal, stationary, scale-free features (no raw price levels).
+- **Model size**: diagonal covariances by default, ``min_covar`` regularization,
+  several EM restarts (``n_init``) keeping the best log-likelihood, and a
+  minimum-sample check scaled to the number of free parameters.
+- **Canonical state order**: after fitting, states are sorted by ascending
+  volatility, so state indices (and their labels) are stable across refits
+  and seeds when the fitted solution is the same.
+- **Regime labels** come from absolute thresholds on de-standardized state
+  means (see :mod:`mra_lib.indicators.regime_mapping`).
+- **Posteriors**: every per-bar quantity (state history, confidence) uses
+  the *filtered* (forward-only) posterior ``P(s_t | o_1..o_t)``, which is
+  causal in the observations. The model parameters (scaler, emissions,
+  transitions, labels) are still in-sample for the data they were fitted on;
+  only a model fitted on a prefix (as walk-forward does) is fully out-of-sample.
+- **Short history**: if the data cannot support ``n_states`` and
+  ``adapt_n_states`` is True (default), the largest state count the data can
+  support is used instead (with a warning) rather than failing.
 """
 
+from __future__ import annotations
+
+import logging
+import math
 import warnings
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from typing import Any
 
 import numpy as np
 import pandas as pd
 from hmmlearn import hmm
+from scipy.special import logsumexp
 from sklearn.preprocessing import StandardScaler
 
 from mra_lib.config.enums import MarketRegime
 
-# Regime thresholds for standardized (z-unit) state means.
-_TREND_Z = 0.2
-_BREAKOUT_VOL_Z = 0.4
+from .base import regime_persistence, transition_probability
+from .features import HMM_FEATURES, HMM_WARMUP_BARS, build_hmm_features
+from .regime_mapping import DEFAULT_THRESHOLDS, RegimeThresholds, StateSummary, classify_state
+
+logger = logging.getLogger(__name__)
+
+#: Minimum feature rows required per free model parameter.
+MIN_SAMPLES_PER_PARAMETER = 1.5
+
+_COVARIANCE_TYPES = ("diag", "full", "spherical", "tied")
+
+
+def n_free_parameters(n_states: int, n_features: int, covariance_type: str) -> int:
+    """
+    Number of free parameters of a Gaussian HMM.
+
+    ``(n-1)`` start probabilities + ``n(n-1)`` transition probabilities +
+    ``n*f`` means + the covariance parameters for ``covariance_type``.
+    """
+    cov = {
+        "diag": n_states * n_features,
+        "full": n_states * n_features * (n_features + 1) // 2,
+        "spherical": n_states,
+        "tied": n_features * (n_features + 1) // 2,
+    }
+    if covariance_type not in cov:
+        raise ValueError(
+            f"Unknown covariance_type {covariance_type!r}; expected one of {_COVARIANCE_TYPES}"
+        )
+    return (n_states - 1) + n_states * (n_states - 1) + n_states * n_features + cov[covariance_type]
+
+
+class _HmmlearnProgressFilter(logging.Filter):
+    """Swallow hmmlearn's per-iteration 'not converging' warnings (summarized by us)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not record.getMessage().startswith("Model is not converging")
+
+
+@contextmanager
+def _quiet_hmmlearn() -> Iterator[None]:
+    """Scope-limited silencing of hmmlearn's noisy EM logging and deprecation warnings."""
+    hmm_logger = logging.getLogger("hmmlearn.base")
+    flt = _HmmlearnProgressFilter()
+    hmm_logger.addFilter(flt)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=DeprecationWarning)
+            yield
+    finally:
+        hmm_logger.removeFilter(flt)
+
+
+def forward_filter(model: hmm.GaussianHMM, X_scaled: np.ndarray) -> np.ndarray:
+    """
+    Filtered state posteriors ``P(s_t | o_1..o_t)`` for every row of ``X_scaled``.
+
+    A log-space forward pass using hmmlearn's own emission densities, so the
+    last row equals ``model.predict_proba(X_scaled)[-1]`` but no row uses
+    observations after it (unlike ``predict_proba``, which is smoothed).
+
+    Returns:
+        Array of shape ``(len(X_scaled), n_states)``; rows sum to 1
+    """
+    log_lik = np.asarray(model._compute_log_likelihood(X_scaled))
+    with np.errstate(divide="ignore"):
+        log_start = np.log(np.asarray(model.startprob_))
+        log_trans = np.log(np.asarray(model.transmat_))
+
+    log_alpha = np.empty_like(log_lik)
+    log_alpha[0] = log_start + log_lik[0]
+    for t in range(1, len(log_lik)):
+        log_alpha[t] = logsumexp(log_alpha[t - 1][:, None] + log_trans, axis=0) + log_lik[t]
+    filtered: np.ndarray = np.exp(log_alpha - logsumexp(log_alpha, axis=1, keepdims=True))
+    return filtered
 
 
 class TrueHMMDetector:
     """
-    Proper HMM implementation using hmmlearn library.
+    Gaussian HMM market regime detector (Baum-Welch training, forward filtering).
 
-    This class implements a true Hidden Markov Model with:
-    - Gaussian emission distributions
-    - Baum-Welch algorithm for parameter learning
-    - Viterbi algorithm for optimal state sequence decoding
-    - Proper temporal dependency modeling (unlike GMM)
-
-    Key Differences from GMM Approach:
-    - Models state transitions over time (temporal dependencies)
-    - Uses forward-backward algorithm for probability estimation
-    - Learns transition matrix as part of training (not post-hoc)
-    - Produces coherent state sequences respecting dynamics
+    Args:
+        n_states: Number of hidden states (see :func:`select_n_states` for a
+            BIC-based choice)
+        n_iter: Maximum EM iterations per restart
+        covariance_type: ``'diag'`` (default), ``'full'``, ``'spherical'`` or ``'tied'``
+        random_state: Seed of the first restart; restart ``k`` uses ``random_state + k``
+        n_init: Number of EM restarts; the best log-likelihood wins
+        min_covar: Variance floor added to the covariance diagonal (standardized units)
+        tol: EM convergence threshold on the log-likelihood gain
+        thresholds: State -> regime decision-tree thresholds
+        min_samples_per_param: Feature rows required per free parameter
+        adapt_n_states: If the data is too short for ``n_states``, fit the
+            largest supported state count (>= 2) instead of raising
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         n_states: int = 6,
-        n_iter: int = 100,
-        covariance_type: str = "full",
-        random_state: int = 42,
+        n_iter: int = 200,
+        covariance_type: str = "diag",
+        random_state: int | None = 42,
+        *,
+        n_init: int = 10,
+        min_covar: float = 1e-3,
+        tol: float = 1e-2,
+        thresholds: RegimeThresholds | None = None,
+        min_samples_per_param: float = MIN_SAMPLES_PER_PARAMETER,
+        adapt_n_states: bool = True,
     ) -> None:
-        """
-        Initialize the True HMM detector.
-
-        Args:
-            n_states: Number of hidden states (default 6 for regime detection)
-            n_iter: Maximum iterations for Baum-Welch training
-            covariance_type: Type of covariance ('full', 'diag', 'tied', 'spherical')
-            random_state: Random seed for reproducibility
-        """
+        if n_states < 1:
+            raise ValueError("n_states must be >= 1")
+        if n_init < 1:
+            raise ValueError("n_init must be >= 1")
+        if covariance_type not in _COVARIANCE_TYPES:
+            raise ValueError(
+                f"Unknown covariance_type {covariance_type!r}; expected one of {_COVARIANCE_TYPES}"
+            )
         self.n_states = n_states
         self.n_iter = n_iter
         self.covariance_type = covariance_type
         self.random_state = random_state
+        self.n_init = n_init
+        self.min_covar = min_covar
+        self.tol = tol
+        self.thresholds = thresholds or DEFAULT_THRESHOLDS
+        self.min_samples_per_param = min_samples_per_param
+        self.adapt_n_states = adapt_n_states
 
-        # HMM model
         self.model: hmm.GaussianHMM | None = None
         self.scaler: StandardScaler | None = None
-        self.feature_names: list[str] = []
+        self.feature_names: list[str] = list(HMM_FEATURES)
         self.fitted: bool = False
 
-        # Learned parameters
+        # Learned parameters (canonical state order: ascending volatility)
         self.transition_matrix: np.ndarray | None = None
         self.state_means: np.ndarray | None = None
         self.state_covariances: np.ndarray | None = None
+        self.state_summaries: list[StateSummary] = []
+        self.state_regimes: dict[int, MarketRegime] = {}
         self.training_score: float | None = None
+        self._fit_info: dict[str, Any] = {}
+
+    # ------------------------------------------------------------------
+    # Features and sizing
+    # ------------------------------------------------------------------
 
     def _prepare_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Extract comprehensive features for HMM analysis.
-
-        Every feature is causal: it is computed from trailing rolling windows
-        that only use the current and earlier bars (no look-ahead).
-
-        Args:
-            df: DataFrame with OHLCV data
-
-        Returns:
-            DataFrame with engineered features (no NaN values)
-
-        Raises:
-            ValueError: If insufficient data
-        """
-        if len(df) < 50:
-            raise ValueError("Insufficient data for feature calculation (minimum 50 bars)")
-
-        features = pd.DataFrame(index=df.index)
-
-        # Basic price features
-        features["returns"] = df["Close"].pct_change()
-        features["log_returns"] = np.log(df["Close"] / df["Close"].shift(1))
-
-        # Volatility features (trailing 20-bar window, at least 10 observations)
-        features["volatility"] = features["returns"].rolling(20, min_periods=10).std()
-        features["log_volatility"] = np.log(features["volatility"] + 1e-8)
-
-        # ATR calculation
-        high_low = df["High"] - df["Low"]
-        high_close = np.abs(df["High"] - df["Close"].shift(1))
-        low_close = np.abs(df["Low"] - df["Close"].shift(1))
-        true_range = pd.Series(
-            np.maximum(high_low, np.maximum(high_close, low_close)), index=df.index
-        )
-        features["atr"] = true_range.rolling(14, min_periods=7).mean()
-        features["atr_normalized"] = features["atr"] / df["Close"]
-
-        # Higher-order moments (with minimum sample size)
-        window = 20
-        features["skewness"] = features["returns"].rolling(window, min_periods=window).skew()
-        features["kurtosis"] = features["returns"].rolling(window, min_periods=window).kurt()
-
-        # Trend strength features
-        features["sma_9"] = df["Close"].rolling(9, min_periods=5).mean()
-        features["sma_21"] = df["Close"].rolling(21, min_periods=10).mean()
-        features["sma_50"] = df["Close"].rolling(50, min_periods=25).mean()
-
-        features["trend_9_21"] = (features["sma_9"] - features["sma_21"]) / df["Close"]
-        features["trend_21_50"] = (features["sma_21"] - features["sma_50"]) / df["Close"]
-
-        # Autocorrelation — vectorized for performance
-        returns = features["returns"]
-        for lag in [1, 5]:
-            lagged = returns.shift(lag)
-            roll_cov = returns.rolling(30, min_periods=20).cov(lagged)
-            roll_var = returns.rolling(30, min_periods=20).var()
-            features[f"autocorr_{lag}"] = roll_cov / (roll_var + 1e-12)
-
-        # Volume features (if available)
-        if "Volume" in df.columns and df["Volume"].sum() > 0:
-            features["volume_ratio"] = (
-                df["Volume"] / df["Volume"].rolling(20, min_periods=10).mean()
-            )
-        else:
-            features["volume_ratio"] = 1.0
-
-        # Price Z-score against a trailing 50-bar mean/std (current bar included)
-        rolling_mean = df["Close"].rolling(50, min_periods=25).mean()
-        rolling_std = df["Close"].rolling(50, min_periods=25).std()
-        features["price_zscore"] = (df["Close"] - rolling_mean) / (rolling_std + 1e-8)
-
-        # Cross-feature relationships
-        features["return_vol_ratio"] = features["returns"] / (features["volatility"] + 1e-8)
-        features["trend_vol_interaction"] = features["trend_9_21"] * features["volatility"]
-
-        # Drop NaN values and save feature names
-        features = features.dropna()
+        """Causal, stationary HMM features (see :func:`build_hmm_features`)."""
+        features = build_hmm_features(df)
         self.feature_names = list(features.columns)
-
         return features
 
-    def fit(self, df: pd.DataFrame) -> "TrueHMMDetector":
-        """
-        Train HMM using Baum-Welch algorithm.
+    @property
+    def n_parameters(self) -> int:
+        """Free parameters of this model configuration."""
+        return n_free_parameters(self.n_states, len(HMM_FEATURES), self.covariance_type)
 
-        This is a proper HMM training that:
-        1. Initializes transition and emission parameters
-        2. Uses Baum-Welch (EM algorithm) to optimize parameters
-        3. Learns temporal dependencies in state transitions
+    @property
+    def min_training_rows(self) -> int:
+        """Feature rows needed to fit (``min_samples_per_param`` per free parameter)."""
+        return math.ceil(self.min_samples_per_param * self.n_parameters)
+
+    @property
+    def min_training_bars(self) -> int:
+        """OHLCV bars needed to fit, including the feature warm-up."""
+        return self.min_training_rows + HMM_WARMUP_BARS
+
+    # ------------------------------------------------------------------
+    # Fitting
+    # ------------------------------------------------------------------
+
+    def fit(self, df: pd.DataFrame) -> TrueHMMDetector:
+        """
+        Fit the HMM with Baum-Welch (EM), keeping the best of ``n_init`` restarts.
 
         Args:
             df: DataFrame with OHLCV data
@@ -169,50 +228,162 @@ class TrueHMMDetector:
             Self for method chaining
 
         Raises:
-            ValueError: If fitting fails
+            ValueError: If there is too little data for the model size, or
+                every EM restart fails
         """
-        try:
-            # Prepare features
-            X = self._prepare_features(df)
-
-            if len(X) < self.n_states * 10:
-                raise ValueError(
-                    f"Insufficient data for {self.n_states} states "
-                    f"(need at least {self.n_states * 10}, got {len(X)})"
-                )
-
-            # Standardize features
-            self.scaler = StandardScaler()
-            X_scaled = self.scaler.fit_transform(X)
-
-            # Initialize and train Gaussian HMM
-            self.model = hmm.GaussianHMM(
-                n_components=self.n_states,
-                covariance_type=self.covariance_type,
-                n_iter=self.n_iter,
-                random_state=self.random_state,
-                verbose=False,
+        X = self._prepare_features(df)
+        if len(X) < self.min_training_rows and self.adapt_n_states:
+            self._reduce_n_states(len(X))
+        if len(X) < self.min_training_rows:
+            raise ValueError(
+                f"Insufficient data for a {self.n_states}-state '{self.covariance_type}' HMM: "
+                f"{self.n_parameters} free parameters need at least {self.min_training_rows} "
+                f"feature rows ({self.min_samples_per_param:g} per parameter, i.e. "
+                f"{self.min_training_bars} bars including the {HMM_WARMUP_BARS}-bar warm-up); "
+                f"got {len(X)} rows. Load more history or use fewer states."
             )
 
-            # Fit using Baum-Welch algorithm
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", category=DeprecationWarning)
-                self.model.fit(X_scaled)
+        try:
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X)
 
-            # Store learned parameters
-            self.transition_matrix = self.model.transmat_
-            self.state_means = self.model.means_
-            self.state_covariances = self.model.covars_
+            best: hmm.GaussianHMM | None = None
+            best_score = -np.inf
+            best_seed: int | None = None
+            errors: list[str] = []
+            for k in range(self.n_init):
+                seed = None if self.random_state is None else self.random_state + k
+                model = hmm.GaussianHMM(
+                    n_components=self.n_states,
+                    covariance_type=self.covariance_type,
+                    n_iter=self.n_iter,
+                    tol=self.tol,
+                    min_covar=self.min_covar,
+                    random_state=seed,
+                )
+                try:
+                    with _quiet_hmmlearn():
+                        model.fit(X_scaled)
+                        score = float(model.score(X_scaled))
+                except Exception as exc:  # one bad restart must not sink the fit
+                    errors.append(str(exc))
+                    logger.debug("HMM restart with seed %s failed: %s", seed, exc)
+                    continue
+                if np.isfinite(score) and score > best_score:
+                    best, best_score, best_seed = model, score, seed
 
-            # Calculate training log-likelihood (goodness of fit)
-            self.training_score = self.model.score(X_scaled)
+            if best is None:
+                raise ValueError(f"all {self.n_init} EM restarts failed: {errors[:3]}")
 
-            self.fitted = True
-
-            return self
-
+            self._check_convergence(best, best_seed)
+            self._canonicalize_states(best)
         except Exception as e:
             raise ValueError(f"HMM fitting failed: {e!s}") from e
+
+        self.model = best
+        self.scaler = scaler
+        self.transition_matrix = np.asarray(best.transmat_)
+        self.state_means = np.asarray(best.means_)
+        self.state_covariances = np.asarray(best.covars_)
+        self.training_score = best_score
+        self.state_summaries = [
+            self._summarize_state(i, best, scaler) for i in range(self.n_states)
+        ]
+        self.state_regimes = {
+            i: classify_state(s, self.thresholds) for i, s in enumerate(self.state_summaries)
+        }
+        self.fitted = True
+        return self
+
+    def _reduce_n_states(self, n_rows: int) -> None:
+        """Shrink ``n_states`` to the largest count (>= 2) that ``n_rows`` feature rows support."""
+        requested = self.n_states
+        n = requested
+        while n > 2 and n_rows < math.ceil(
+            self.min_samples_per_param
+            * n_free_parameters(n, len(HMM_FEATURES), self.covariance_type)
+        ):
+            n -= 1
+        if n != requested:
+            logger.warning(
+                "Only %d feature rows: fitting a %d-state HMM instead of %d states "
+                "(%g rows per free parameter required)",
+                n_rows,
+                n,
+                requested,
+                self.min_samples_per_param,
+            )
+            self.n_states = n
+
+    def _check_convergence(self, model: hmm.GaussianHMM, seed: int | None) -> None:
+        """Log (warning) EM log-likelihood decreases and non-convergence of the chosen model."""
+        monitor = model.monitor_
+        history = np.asarray(list(monitor.history), dtype=float)
+        deltas = np.diff(history)
+        worst_drop = float(-deltas.min()) if len(deltas) else 0.0
+        last_gain = float(deltas[-1]) if len(deltas) else 0.0
+        # hmmlearn also stops early on a likelihood *decrease*; that is not convergence
+        converged = last_gain >= 0 and (monitor.iter < self.n_iter or last_gain < self.tol)
+        self._fit_info = {
+            "best_seed": seed,
+            "n_iterations": int(monitor.iter),
+            "converged": converged,
+            "max_loglik_decrease": max(worst_drop, 0.0),
+        }
+        if worst_drop > self.tol:
+            logger.warning(
+                "HMM EM log-likelihood decreased by %.4g during fitting (seed %s); "
+                "the fitted model may be degenerate",
+                worst_drop,
+                seed,
+            )
+        if not converged:
+            logger.warning(
+                "HMM EM did not converge within %d iterations (seed %s, tol %g)",
+                self.n_iter,
+                seed,
+                self.tol,
+            )
+
+    def _canonicalize_states(self, model: hmm.GaussianHMM) -> None:
+        """
+        Reorder states in place by ascending volatility (ties: trend strength).
+
+        HMM state indices are otherwise arbitrary and change with the seed;
+        a canonical order keeps state ints and their labels stable across refits.
+        """
+        vol_idx = self.feature_names.index("log_volatility")
+        trend_idx = self.feature_names.index("trend_strength")
+        means = np.asarray(model.means_)
+        order = np.lexsort((means[:, trend_idx], means[:, vol_idx]))
+        if np.array_equal(order, np.arange(self.n_states)):
+            return
+        model.startprob_ = np.asarray(model.startprob_)[order]
+        model.transmat_ = np.asarray(model.transmat_)[order][:, order]
+        model.means_ = means[order]
+        if self.covariance_type != "tied":
+            # hmmlearn keeps covariances in their compact per-type form in _covars_
+            model._covars_ = np.asarray(model._covars_)[order]
+
+    def _summarize_state(
+        self, state: int, model: hmm.GaussianHMM, scaler: StandardScaler
+    ) -> StateSummary:
+        """De-standardize a state's emission mean into interpretable units."""
+        raw = scaler.inverse_transform(np.asarray(model.means_)[state : state + 1])[0]
+        values = dict(zip(self.feature_names, (float(v) for v in raw), strict=True))
+        vol_idx = self.feature_names.index("log_volatility")
+        typical_log_vol = float(scaler.mean_[vol_idx])
+        state_vol = math.exp(values["log_volatility"])
+        return StateSummary(
+            rel_vol=math.exp(values["log_volatility"] - typical_log_vol),
+            trend_score=values["trend_strength"] / state_vol if state_vol > 0 else math.nan,
+            vol_expansion=values["vol_expansion"],
+            autocorr=values["autocorr_1"],
+        )
+
+    # ------------------------------------------------------------------
+    # Inference
+    # ------------------------------------------------------------------
 
     def _require_fitted(self) -> tuple[hmm.GaussianHMM, StandardScaler, np.ndarray]:
         """
@@ -230,125 +401,119 @@ class TrueHMMDetector:
             raise ValueError("Model must be fitted before use")
         return self.model, self.scaler, self.transition_matrix
 
-    def _current_posterior(self, df: pd.DataFrame) -> np.ndarray:
-        """
-        Posterior state distribution for the most recent bar.
-
-        ``GaussianHMM.predict_proba`` returns forward-backward (smoothed)
-        posteriors P(s_t | o_1..o_T). For the last bar t = T, so the smoothed
-        and filtered posteriors coincide and this is P(s_T | o_1..o_T).
-        """
+    def _filtered(self, df: pd.DataFrame) -> tuple[pd.Index, np.ndarray]:
+        """Feature-row index and filtered posteriors for ``df``."""
         model, scaler, _ = self._require_fitted()
-        X_scaled = scaler.transform(self._prepare_features(df))
-        posterior: np.ndarray = model.predict_proba(X_scaled)[-1]
-        return posterior
+        features = build_hmm_features(df)
+        with _quiet_hmmlearn():
+            posteriors = forward_filter(model, scaler.transform(features))
+        return features.index, posteriors
+
+    def filtered_posteriors(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Filtered state posteriors ``P(s_t | o_1..o_t)`` for every feature row.
+
+        Forward-only: the row for bar ``t`` never depends on bars after ``t``,
+        so this is safe for regime *history* (charts, backtests, persistence).
+
+        Returns:
+            DataFrame indexed like the feature rows, one column per state
+        """
+        index, posteriors = self._filtered(df)
+        return pd.DataFrame(posteriors, index=index, columns=list(range(self.n_states)))
+
+    def regime_history(self, df: pd.DataFrame) -> pd.Series:
+        """Causal per-bar regime (argmax of the filtered posterior), indexed by feature row."""
+        index, posteriors = self._filtered(df)
+        states = np.argmax(posteriors, axis=1)
+        return pd.Series([self.state_regimes[int(s)] for s in states], index=index)
+
+    def _current_posterior(self, df: pd.DataFrame) -> np.ndarray:
+        """Filtered posterior state distribution for the most recent bar."""
+        _, posteriors = self._filtered(df)
+        current: np.ndarray = posteriors[-1]
+        return current
+
+    def predict_with_states(self, df: pd.DataFrame) -> tuple[MarketRegime, np.ndarray, float]:
+        """
+        Predict the current regime and the causal state history in one pass.
+
+        Returns:
+            Tuple of (regime, states, confidence): ``states`` holds the argmax
+            of the filtered posterior for each feature row (the last element
+            is the current state) and ``confidence`` its posterior probability.
+
+        Raises:
+            ValueError: If the model is not fitted or prediction fails
+        """
+        self._require_fitted()
+        try:
+            _, posteriors = self._filtered(df)
+        except Exception as e:
+            raise ValueError(f"Prediction failed: {e!s}") from e
+        states = np.argmax(posteriors, axis=1).astype(int)
+        current = int(states[-1])
+        return self.state_regimes[current], states, float(posteriors[-1, current])
 
     def predict_regime(
-        self, df: pd.DataFrame, use_viterbi: bool = True
+        self, df: pd.DataFrame, use_viterbi: bool = False
     ) -> tuple[MarketRegime, int, float]:
         """
-        Predict market regime using trained HMM.
+        Predict the regime of the last bar of ``df``.
 
         Args:
             df: DataFrame with OHLCV data
-            use_viterbi: If True, decode the most likely state sequence with
-                Viterbi. If False, take the argmax of the per-bar smoothed
-                (forward-backward) posteriors.
+            use_viterbi: If False (default), take the argmax of the filtered
+                posterior at the last bar -- the same state the analyzer and
+                walk-forward validation use. If True, take the last state of
+                the Viterbi path (most likely joint sequence), which can differ.
 
         Returns:
-            Tuple of (regime, state, confidence). ``confidence`` is the
-            posterior probability of the returned state at the last bar
-            (smoothed == filtered at the final time step).
+            Tuple of (regime, state, confidence); ``confidence`` is the
+            filtered posterior probability of the returned state.
 
         Raises:
             ValueError: If model not fitted or prediction fails
         """
         model, scaler, _ = self._require_fitted()
-
         try:
-            X_scaled = scaler.transform(self._prepare_features(df))
-
-            # Smoothed posteriors P(s_t | o_1..o_T) for every bar.
-            state_probs = model.predict_proba(X_scaled)
-
-            # Viterbi path, or per-bar argmax of the smoothed posteriors
-            states = model.predict(X_scaled) if use_viterbi else np.argmax(state_probs, axis=1)
-
-            current_state = int(states[-1])
-            confidence = float(state_probs[-1][current_state])
-            regime = self._map_state_index_to_regime(current_state)
-
-            return regime, current_state, confidence
-
+            X_scaled = scaler.transform(build_hmm_features(df))
+            with _quiet_hmmlearn():
+                posterior = forward_filter(model, X_scaled)[-1]
+                state = int(model.predict(X_scaled)[-1]) if use_viterbi else int(posterior.argmax())
         except Exception as e:
             raise ValueError(f"Prediction failed: {e!s}") from e
+        return self.state_regimes[state], state, float(posterior[state])
 
-    def _map_state_to_regime(
-        self, X: np.ndarray, states: np.ndarray, current_state: int
-    ) -> MarketRegime:
-        """
-        Map the current HMM state to a regime.
-
-        Kept for backward compatibility; the label depends only on the learned
-        emission means, so this delegates to :meth:`_map_state_index_to_regime`
-        (``X`` and ``states`` are unused).
-        """
-        return self._map_state_index_to_regime(current_state)
+    # ------------------------------------------------------------------
+    # Model summaries
+    # ------------------------------------------------------------------
 
     def calculate_regime_persistence(self, states: np.ndarray, lookback: int = 20) -> float:
-        """
-        Calculate regime stability metric.
-
-        Fraction of the last ``lookback`` states equal to the current (last)
-        state. Fewer than two observations carry no information about
-        persistence and return 0.0 (same as the GMM detector).
-
-        Args:
-            states: State sequence
-            lookback: Number of recent periods to examine
-
-        Returns:
-            Persistence score (0-1, higher = more stable)
-        """
-        lookback = min(lookback, len(states))
-
-        if lookback < 2:
-            return 0.0
-
-        recent_states = np.asarray(states)[-lookback:]
-        return float(np.mean(recent_states == recent_states[-1]))
+        """Share of the last ``lookback`` states equal to the current one."""
+        return regime_persistence(states, lookback)
 
     def get_transition_probability(self, from_state: int, to_state: int) -> float:
         """
-        Get learned transition probability between states.
-
-        Args:
-            from_state: Source state index
-            to_state: Target state index
-
-        Returns:
-            Transition probability (0-1)
+        Learned one-bar transition probability between states.
 
         Raises:
-            ValueError: If model not fitted
+            ValueError: If the model is not fitted or a state index is invalid
         """
-        if not self.fitted or self.transition_matrix is None:
-            raise ValueError("Model must be fitted first")
-
-        if from_state < 0 or from_state >= self.n_states:
-            raise ValueError(f"Invalid from_state: {from_state}")
-
-        if to_state < 0 or to_state >= self.n_states:
-            raise ValueError(f"Invalid to_state: {to_state}")
-
-        return float(self.transition_matrix[from_state, to_state])
+        return transition_probability(
+            self.transition_matrix if self.fitted else None, from_state, to_state
+        )
 
     def get_training_convergence(self) -> dict:
         """
-        Get HMM training convergence information.
+        HMM training diagnostics.
 
         Returns:
-            Dictionary with training metrics including log-likelihood
+            Dict with the total training ``log_likelihood``, ``converged``
+            (our own check: EM stopped before ``n_iter`` or the last gain was
+            below ``tol`` -- hmmlearn reports ``converged=True`` whenever it
+            hits ``n_iter``), ``n_iterations``, ``best_seed``,
+            ``max_loglik_decrease`` and model-size fields
         """
         if not self.fitted or self.model is None:
             return {"fitted": False}
@@ -358,112 +523,32 @@ class TrueHMMDetector:
             "log_likelihood": self.training_score,
             "n_states": self.n_states,
             "n_features": len(self.feature_names),
+            "n_parameters": self.n_parameters,
             "covariance_type": self.covariance_type,
-            "converged": self.model.monitor_.converged,
-            "n_iterations": len(self.model.monitor_.history)
-            if hasattr(self.model.monitor_, "history")
-            else "N/A",
+            "n_init": self.n_init,
+            **self._fit_info,
         }
 
     def _map_state_index_to_regime(self, state_index: int) -> MarketRegime:
-        """
-        Map a state index to a MarketRegime using learned emission means only.
-
-        Does not require observed data, so it is also used for forecasting.
-        Features are looked up by name; thresholds are in z-units because the
-        emission means live in standardized feature space:
-
-        - volatility above / below the 75th / 25th percentile of state means
-          -> HIGH / LOW_VOLATILITY
-        - returns and trend_9_21 both > +0.2 sd -> BULL_TRENDING
-        - returns and trend_9_21 both < -0.2 sd -> BEAR_TRENDING
-        - negative lag-1 autocorrelation in original units -> MEAN_REVERTING
-        - volatility > +0.4 sd -> BREAKOUT
-        - otherwise UNKNOWN
-
-        Args:
-            state_index: HMM state index
-
-        Returns:
-            MarketRegime classification
-        """
-        if self.state_means is None or not 0 <= state_index < self.n_states:
-            return MarketRegime.UNKNOWN
-
-        try:
-            state_features = self.state_means[state_index]
-            feature_dict = {
-                name: float(state_features[idx])
-                for idx, name in enumerate(self.feature_names)
-                if idx < len(state_features)
-            }
-
-            avg_returns = feature_dict.get("returns", 0.0)
-            avg_volatility = feature_dict.get("volatility", 0.0)
-            avg_trend = feature_dict.get("trend_9_21", 0.0)
-
-            # Lag-1 autocorrelation back in original units so its sign is meaningful.
-            raw_autocorr: float | None = None
-            if "autocorr_1" in self.feature_names and self.scaler is not None:
-                ac_idx = self.feature_names.index("autocorr_1")
-                raw_autocorr = feature_dict.get("autocorr_1", 0.0) * float(
-                    self.scaler.scale_[ac_idx]
-                ) + float(self.scaler.mean_[ac_idx])
-
-            if "volatility" in self.feature_names:
-                vol_idx = self.feature_names.index("volatility")
-                all_vols = self.state_means[:, vol_idx]
-                vol_high = float(np.percentile(all_vols, 75))
-                vol_low = float(np.percentile(all_vols, 25))
-            else:
-                vol_high, vol_low = 0.5, -0.5
-
-            if avg_volatility > vol_high:
-                return MarketRegime.HIGH_VOLATILITY
-            if avg_volatility < vol_low:
-                return MarketRegime.LOW_VOLATILITY
-            if avg_returns > _TREND_Z and avg_trend > _TREND_Z:
-                return MarketRegime.BULL_TRENDING
-            if avg_returns < -_TREND_Z and avg_trend < -_TREND_Z:
-                return MarketRegime.BEAR_TRENDING
-            if raw_autocorr is not None and raw_autocorr < 0:
-                return MarketRegime.MEAN_REVERTING
-            if avg_volatility > _BREAKOUT_VOL_Z:
-                return MarketRegime.BREAKOUT
-            return MarketRegime.UNKNOWN
-
-        except Exception:
-            return MarketRegime.UNKNOWN
+        """Regime label of ``state_index`` (UNKNOWN if unfitted or out of range)."""
+        return self.state_regimes.get(state_index, MarketRegime.UNKNOWN)
 
     def get_state_regime_map(self) -> dict[int, MarketRegime]:
         """
-        Get the mapping from all state indices to MarketRegime.
-
-        Returns:
-            Dictionary mapping state index to MarketRegime
+        Mapping from every state index to its MarketRegime.
 
         Raises:
             ValueError: If model not fitted
         """
         if not self.fitted:
             raise ValueError("Model must be fitted before getting state map")
-
-        return {i: self._map_state_index_to_regime(i) for i in range(self.n_states)}
+        return dict(self.state_regimes)
 
     def forecast_regime_probabilities(self, df: pd.DataFrame, n_steps: int = 1) -> np.ndarray:
         """
-        Forecast regime state probability distribution n steps ahead.
+        Forecast the state distribution ``n_steps`` ahead: ``pi_{t+n} = pi_t @ T^n``.
 
-        Uses the current posterior state distribution and the learned
-        transition matrix to project future state probabilities:
-            pi_{t+n} = pi_t @ T^n
-
-        Args:
-            df: DataFrame with OHLCV data (used to determine current state)
-            n_steps: Number of steps ahead to forecast (default 1)
-
-        Returns:
-            Array of shape (n_states,) with forecasted state probabilities
+        ``pi_t`` is the filtered posterior at the last bar of ``df``.
 
         Raises:
             ValueError: If model not fitted or n_steps < 1
@@ -473,21 +558,12 @@ class TrueHMMDetector:
             raise ValueError("n_steps must be >= 1")
 
         pi_t = self._current_posterior(df)
-
-        # Project forward: pi_{t+n} = pi_t @ T^n
         forecast: np.ndarray = pi_t @ np.linalg.matrix_power(transmat, n_steps)
         return forecast
 
     def forecast_regime_sequence(self, df: pd.DataFrame, n_steps: int = 5) -> list[dict]:
         """
         Forecast regime probabilities for each step from 1 to n_steps.
-
-        For each forecast horizon, produces the probability distribution
-        over regimes (aggregated from HMM states) and the most likely regime.
-
-        Args:
-            df: DataFrame with OHLCV data
-            n_steps: Number of steps to forecast (default 5)
 
         Returns:
             List of dicts, one per step, each containing:
@@ -499,22 +575,18 @@ class TrueHMMDetector:
         """
         _, _, transmat = self._require_fitted()
         pi_t = self._current_posterior(df)
-
-        # Build state-to-regime mapping once
         state_regime_map = self.get_state_regime_map()
 
         results = []
         for step in range(1, n_steps + 1):
             forecast_probs = pi_t @ np.linalg.matrix_power(transmat, step)
 
-            # Aggregate state probs by regime
             regime_probs: dict[MarketRegime, float] = {}
             for state_idx, prob in enumerate(forecast_probs):
                 regime = state_regime_map[state_idx]
                 regime_probs[regime] = regime_probs.get(regime, 0.0) + float(prob)
 
             most_likely = max(regime_probs, key=lambda r: regime_probs[r])
-
             results.append(
                 {
                     "step": step,
@@ -529,7 +601,7 @@ class TrueHMMDetector:
 
     def get_regime_stability(self) -> dict:
         """
-        Compute regime stability metrics from the learned transition matrix.
+        Regime stability metrics from the learned transition matrix.
 
         Returns a dictionary with:
         - self_transition_probs: diagonal of T (probability of staying in each state)
@@ -544,30 +616,23 @@ class TrueHMMDetector:
             raise ValueError("Model must be fitted before computing stability")
 
         T = self.transition_matrix
-
-        # Self-transition probabilities (diagonal)
         self_trans = {i: float(T[i, i]) for i in range(self.n_states)}
+        expected_dur = {
+            i: 1.0 / (1.0 - T[i, i]) if T[i, i] < 1.0 else float("inf")
+            for i in range(self.n_states)
+        }
 
-        # Expected duration in each state: 1 / (1 - p_ii)
-        expected_dur = {}
-        for i in range(self.n_states):
-            p_ii = T[i, i]
-            expected_dur[i] = 1.0 / (1.0 - p_ii) if p_ii < 1.0 else float("inf")
-
-        # Stationary distribution: left eigenvector of T (pi @ T = pi)
-        # Equivalent to right eigenvector of T^T with eigenvalue 1
+        # Stationary distribution: left eigenvector of T for eigenvalue 1
         eigenvalues, eigenvectors = np.linalg.eig(T.T)
-        # Find eigenvector for eigenvalue closest to 1
         idx = np.argmin(np.abs(eigenvalues - 1.0))
         stationary = np.real(eigenvectors[:, idx])
-        stationary = stationary / stationary.sum()  # Normalize to probability
+        stationary = stationary / stationary.sum()
 
-        # Aggregate by regime
         state_regime_map = self.get_state_regime_map()
         stationary_regimes: dict[MarketRegime, float] = {}
         for state_idx, prob in enumerate(stationary):
             regime = state_regime_map[state_idx]
-            stationary_regimes[regime] = stationary_regimes.get(regime, 0.0) + prob
+            stationary_regimes[regime] = stationary_regimes.get(regime, 0.0) + float(prob)
 
         return {
             "self_transition_probs": self_trans,
@@ -576,21 +641,21 @@ class TrueHMMDetector:
             "stationary_regimes": stationary_regimes,
         }
 
-    def compare_with_gmm(self, df: pd.DataFrame, gmm_detector) -> dict:
+    def compare_with_gmm(self, df: pd.DataFrame, gmm_detector: Any) -> dict:
         """
-        Compare predictions with GMM-based detector.
+        Compare the current prediction with another detector's.
 
-        Args:
-            df: DataFrame with OHLCV data
-            gmm_detector: Instance of HiddenMarkovRegimeDetector (GMM-based)
-
-        Returns:
-            Dictionary with comparison metrics
+        .. deprecated::
+            The GMM detector has been folded into this class, so there is no
+            second model to compare against. Kept for API compatibility.
         """
-        # Get HMM predictions
+        warnings.warn(
+            "TrueHMMDetector.compare_with_gmm is deprecated: the GMM detector was "
+            "removed and HiddenMarkovRegimeDetector is now an alias of TrueHMMDetector.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         hmm_regime, hmm_state, hmm_confidence = self.predict_regime(df)
-
-        # Get GMM predictions
         gmm_regime, gmm_state, gmm_confidence = gmm_detector.predict_regime(df)
 
         return {
@@ -603,3 +668,45 @@ class TrueHMMDetector:
             "regime_agreement": hmm_regime == gmm_regime,
             "state_agreement": hmm_state == gmm_state,
         }
+
+
+def select_n_states(
+    df: pd.DataFrame,
+    candidates: Iterable[int] = range(2, 7),
+    **detector_kwargs: Any,
+) -> tuple[int, dict[int, float]]:
+    """
+    Choose the number of HMM states by the Bayesian information criterion.
+
+    Fits a :class:`TrueHMMDetector` for every candidate the data can support
+    (see ``min_samples_per_param``) and returns the one with the lowest BIC.
+
+    Args:
+        df: OHLCV training data
+        candidates: State counts to try
+        **detector_kwargs: Forwarded to :class:`TrueHMMDetector` (``n_states`` is ignored)
+
+    Returns:
+        Tuple of (best n_states, {n_states: BIC} for every candidate that fit)
+
+    Raises:
+        ValueError: If no candidate could be fitted
+    """
+    detector_kwargs.pop("n_states", None)
+    # each candidate must be fitted at its own size, never silently shrunk
+    detector_kwargs["adapt_n_states"] = False
+    scores: dict[int, float] = {}
+    for n in candidates:
+        detector = TrueHMMDetector(n_states=n, **detector_kwargs)
+        try:
+            detector.fit(df)
+        except ValueError as exc:
+            logger.info("Skipping n_states=%d in BIC selection: %s", n, exc)
+            continue
+        model, scaler, _ = detector._require_fitted()
+        X_scaled = scaler.transform(detector._prepare_features(df))
+        scores[n] = float(model.bic(X_scaled))
+    if not scores:
+        raise ValueError("No candidate state count could be fitted on this data")
+    best = min(scores, key=lambda n: scores[n])
+    return best, scores

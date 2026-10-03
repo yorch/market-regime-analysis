@@ -1240,7 +1240,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "hmmlearn", specifier = ">=0.3.3" },
+    { name = "hmmlearn", specifier = ">=0.3.3,<0.4" },
     { name = "matplotlib", specifier = ">=3.11.2" },
     { name = "numpy", specifier = ">=2.5.3" },
     { name = "pandas", specifier = ">=3.0.6" },
