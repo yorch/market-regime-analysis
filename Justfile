@@ -32,8 +32,12 @@ test *ARGS:
     uv run pytest {{ARGS}}
 
 # Run only unit tests (exclude integration and slow markers)
-test-unit:
-    uv run pytest -m "not integration and not slow"
+test-unit *ARGS:
+    uv run pytest -m "not integration and not slow" {{ARGS}}
+
+# Run integration tests (live provider APIs; needs network and API keys)
+test-integration *ARGS:
+    uv run pytest -m integration {{ARGS}}
 
 # Run tests for a specific package
 test-lib *ARGS:
@@ -49,9 +53,9 @@ test-web *ARGS:
 test-v:
     uv run pytest -v
 
-# Run tests with coverage (fails if below 65%)
-test-cov:
-    uv run pytest --cov=mra_lib --cov=mra_cli --cov=mra_web --cov-report=term-missing --cov-fail-under=65
+# Run unit tests with coverage (threshold: [tool.coverage.report] fail_under in pyproject.toml)
+test-cov *ARGS:
+    uv run pytest -m "not integration and not slow" --cov=mra_lib --cov=mra_cli --cov=mra_web --cov-report=term-missing {{ARGS}}
 
 # ── Quality ──────────────────────────────────────────────────────────────────
 
@@ -67,16 +71,17 @@ fmt-check:
 lint:
     uv run ruff check packages/ examples/
 
-# Fix auto-fixable lint issues
+# Apply auto-fixable lint fixes and format
 fix:
     uv run ruff check --fix packages/ examples/
+    uv run ruff format packages/ examples/
 
 # Run type checking
 types:
     uv run mypy packages/
 
-# Run all quality checks (gate before commit)
-qa: fmt lint types
+# Run all quality checks without modifying files (gate before commit; `just fix` to autofix)
+qa: fmt-check lint types
 
 # ── Install ──────────────────────────────────────────────────────────────────
 
@@ -110,33 +115,18 @@ docker-restart:
 docker-logs:
     docker compose logs -f
 
-# One-shot run (smoke test)
-docker-once:
-    docker compose run --rm scanner --once
+# Show container status and query the API health endpoint
+docker-health:
+    docker compose ps api
+    curl -fsS http://127.0.0.1:${API_PORT:-8000}/health
 
 # Debug shell
 docker-shell:
-    docker compose run --rm --entrypoint /bin/bash scanner
+    docker compose run --rm --entrypoint /bin/bash api
 
 # Full reset (removes containers + volumes)
 docker-clean:
     docker compose down -v --rmi local
-
-# Start with PostgreSQL
-docker-pg-up:
-    docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
-
-# Stop with PostgreSQL
-docker-pg-down:
-    docker compose -f docker-compose.yml -f docker-compose.postgres.yml down
-
-# Tail logs (both services)
-docker-pg-logs:
-    docker compose -f docker-compose.yml -f docker-compose.postgres.yml logs -f
-
-# Full reset with PostgreSQL (removes volumes + images)
-docker-pg-clean:
-    docker compose -f docker-compose.yml -f docker-compose.postgres.yml down -v --rmi local
 
 # ── Utilities ────────────────────────────────────────────────────────────────
 

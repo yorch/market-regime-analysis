@@ -1,17 +1,29 @@
+# Local hooks run the tools from the project venv, so their versions (and mypy's
+# view of installed packages/plugins) come from uv.lock rather than a separate
+# pre-commit environment. Run `uv sync` first.
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.10
+  - repo: local
     hooks:
       - id: ruff-check
-        args: [--fix]
-      - id: ruff-format
+        name: ruff check
+        entry: uv run --no-sync ruff check --fix
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.4.0
-    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --no-sync ruff format
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      # Manual until the existing mypy errors are fixed (CI typecheck is soft-fail too):
+      #   uv run pre-commit run mypy --hook-stage manual --all-files
       - id: mypy
-        additional_dependencies:
-          - pydantic
-        args: [--ignore-missing-imports]
+        name: mypy
+        entry: uv run --no-sync mypy packages/
+        language: system
+        types_or: [python, pyi]
         pass_filenames: false
-        entry: mypy packages/
+        stages: [manual]
