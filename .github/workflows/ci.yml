@@ -198,6 +198,9 @@ jobs:
           done
           echo "API did not become healthy"; docker logs mra-smoke; docker rm -f mra-smoke; exit 1
 
+      - name: Smoke test (CLI entry point)
+        run: docker run --rm --entrypoint mra mra-smoke:ci --help
+
       - name: Extract commit metadata
         id: meta-info
         run: |
