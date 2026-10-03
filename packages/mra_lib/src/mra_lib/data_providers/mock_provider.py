@@ -48,7 +48,7 @@ class MockDataProvider(MarketDataProvider):
         dates = pd.date_range(
             start=datetime.now() - timedelta(days=periods),
             periods=periods,
-            freq="D" if interval == "1d" else "H" if interval == "1h" else "15min",
+            freq="D" if interval == "1d" else "h" if interval == "1h" else "15min",
         )
 
         # Generate realistic-looking price data
