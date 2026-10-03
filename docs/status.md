@@ -1,97 +1,105 @@
-# Project Assessment — Market Regime Analysis
+# Project Status — Market Regime Analysis
 
-**Date**: 2026-03-19
-**Assessed by**: Claude Code
+**Date**: 2026-10-03
 
----
+## Summary
 
-## What This Project Does
+A research tool that classifies market regimes with Hidden Markov Models and derives
+regime-aware signals and position sizes, exposed as a library (`mra_lib`), a CLI (`mra`,
+`mra-optimize`) and a REST/WebSocket API (`mra-api`). After the October 2026 code review
+(issue #12) and fix PRs #13–#20, the code paths users touch work end to end, are tested, and
+type-check cleanly. **The trading strategy is not validated: it has not been shown to
+outperform buy-and-hold.** Treat every output as research, not advice.
 
-A market regime analysis system that uses Hidden Markov Models to classify market states (Bull/Bear Trending, Mean Reverting, High/Low Volatility, Breakout) and generate trading signals. Built with professional infrastructure:
+## Quality Gates
 
-- **CLI** (Click, 8 commands) + **REST API** (FastAPI with JWT auth + WebSocket)
-- **5 data providers** (Alpha Vantage, Polygon.io, Alpaca, Tiingo, Yahoo Finance) via plug-and-play architecture
-- **Multi-timeframe analysis** (daily, hourly, 15-min)
-- **Backtesting engine** with walk-forward validation and transaction cost modeling
-- **Strategy optimizer** with grid search, random search, and composite scoring
-- **Kelly Criterion position sizing** from backtest results
-- **Portfolio analysis** across multiple symbols
+| Gate | At review (`388235a`) | Now |
+|------|-----------------------|-----|
+| `pytest -m "not integration"` | 472 passed, 1 failed | 881 passed |
+| Coverage (`just test-cov`; CI fails under 65%) | ~67% (inflated by an unanchored `pass` exclusion) | 92% |
+| `mypy packages/` | 16 errors, soft-fail in CI | 0 errors, **blocking** in CI |
+| `docker compose up` | crash-looped | boots; CI smoke-tests `/health` and `mra --help` in the image |
 
----
+CI (`.github/workflows/ci.yml`) runs lint, format check, mypy, unit tests with coverage and
+package builds on every PR, then builds and smoke-tests the Docker image. Integration tests
+(live provider APIs) run only on manual dispatch. Dependabot opens weekly PRs for uv packages
+and GitHub Actions (pinned to SHAs).
 
-## What's Done Well
+## What Was Fixed (October 2026)
 
-| Area | Rating | Notes |
-|------|--------|-------|
-| **Code quality** | 8/10 | Clean, typed, well-structured Python 3.13+ |
-| **Architecture** | 8/10 | Excellent provider plugin system, good separation of concerns |
-| **Documentation** | 9/10 | 14 markdown files, 3,500+ lines, including a professional trading review |
-| **Infrastructure** | 9/10 | CLI, API, CI/CD, Docker, backtester, optimizer all complete |
-| **Bug awareness** | High | 7 critical bugs documented and fixed (capital tracking, look-ahead bias, GMM→HMM) |
-| **Optimization framework** | 7/10 | Grid/random search with walk-forward validation and composite scoring (new) |
-| **CI pipeline** | 8/10 | Ruff lint + format checks, pytest, caching, API key secrets |
+| PR | Area | Main fixes |
+|----|------|------------|
+| #15 | deploy, CI | Runnable compose stack and Dockerfile (non-root, `HEALTHCHECK`), honest coverage regex, integration markers, CI least-privilege permissions, secrets scoped to the integration job, `uv sync --locked`, SHA-pinned actions, `.env.example` rewritten to the variables code reads |
+| #16 | analytics | Regime persistence / transition probability windows (were always 0 / 0.5), GMM detector reads features by name (was reading price level), risk sizing (no-edge floor, hedge headroom, vol targeting, Kelly cap), timeframe-aware annualization, returns-based correlations, Engle-Granger pairs, shared regime tables |
+| #17 | web security | No token-minting endpoint (`mra-token` CLI instead), strong `JWT_SECRET` required, `API_KEYS` via `X-API-Key`, CSV returned in the response (no server-side file write), generic error messages + log scrubbing, authenticated WebSocket with Origin check, production by default, CORS, path-based rate limiting, input caps, headless charts |
+| #18 | backtesting | Short-sale accounting, Sharpe/Sortino/Calmar formulas, stitched walk-forward drawdown, gap-aware stops, half-spread + market impact costs, unified trade stats, per-window regime cache (optimizer ~20× faster), holdout split, seeded random search |
+| #19 | CLI, providers | Working defaults (yfinance, valid 15m period), lazy API-key checks, `--provider` before or after the subcommand, offline `mock` provider, non-zero exit codes, resilient `continuous-monitoring`, provider timeouts / retries / typed errors / shared rate limiter, Alpha Vantage adjusted + period trimming, Polygon pagination, timezone contract, runnable examples |
+| #20 | web stability | WebSocket lifecycle (no zombie loops) and event-loop safety, thread-pool timeout and concurrency cap, one error envelope, strict JSON, per-timeframe loading, multi-symbol analysis via the portfolio APIs |
+| #13, #14 | tooling | Dependabot; mypy made blocking; `generate-charts` repaired |
 
----
+Follow-up PR (`chore: post-fix follow-ups and documentation refresh`): `mra start-api --dev` now sets `ENVIRONMENT=development` (it
+shares `mra-api`'s entry point), unused `slowapi` and `alpha-vantage` dependencies removed,
+CLI smoke test in the Docker job, documentation refreshed.
 
-## What's Broken / Incomplete
+## Known Limitations
 
-1. **Strategy still underperforms buy-and-hold** — Best optimized result: +9.50% total return vs -57.09% excess return. Sharpe improved from -0.15 to 0.18 but remains weak.
-2. ~~**Arbitrary parameters**~~ **Partially addressed** — Optimizer framework exists (grid/random search), but results show the strategy cannot beat buy-and-hold even with tuned parameters. The problem may be structural, not just parametric.
-3. ~~**Statistical arbitrage is naive**~~ **Partially addressed** — Pairs now use an Engle-Granger test (`statsmodels` `coint`) on log prices and signal on the z-score of the hedge-ratio residual. No half-life / Johansen yet.
-4. ~~**Portfolio analysis uses price correlation**~~ **Fixed (2026-10)** — The earlier "fixed" claim was wrong: correlations, correlation risk and pair screening all used price levels. They now use returns (`pct_change()`). The web `/portfolio` endpoint still builds its own price-level matrix (follow-up).
-5. **Test coverage improved but gaps remain** — ~1,000 lines across 6 test files (up from ~500), but only `test_engine.py` (22 assertions) and `test_strategy.py` (27 assertions) use proper pytest assertions. `test_backtest.py`, `test_mock.py`, `test_system.py`, and `test_true_hmm.py` still return booleans or print output without assertions.
-6. **Old GMM detector still ships** alongside the proper HMM — `hmm_detector.py` (GaussianMixture) used by main analyzer, `true_hmm_detector.py` (hmmlearn) used by backtester. Confusing dual implementation.
-7. **No model persistence** — Retrains from scratch every time. No save/load/pickle functionality.
-8. **No drawdown circuit breaker** — Per-trade stop-loss exists, but no portfolio-level max drawdown killswitch or position correlation limits.
+- **No demonstrated edge.** Backtests have not beaten buy-and-hold. Optimizer results are
+  in-sample with respect to parameter selection; a holdout split exists
+  (`--holdout-frac`, default 0.2), but there is no multiple-testing correction (e.g.
+  deflated Sharpe) for the number of trials.
+- **Two detectors.** The analyzer (CLI/API) uses the GMM-based detector
+  (`indicators/hmm_detector.py`); walk-forward validation and `regime-forecast` use the
+  hmmlearn detector (`indicators/true_hmm_detector.py`). Validation results therefore say
+  little about the model users see, and the two can disagree.
+- **Model fit quality.** Features include non-stationary series; models are
+  overparameterized, so reported confidence is often ≈ 1.0. The hmmlearn detector's
+  percentile-based state labelling is biased. Treat confidence as uncalibrated.
+- **Strategy maps differ.** The backtest `RegimeStrategy` regime→direction map differs from
+  the shared `REGIME_STRATEGIES` table used for recommendations.
+- **Calibrator attribution.** `calibrate-multipliers` attributes each trade's P&L to its
+  entry regime only, not bar by bar.
+- **Web API scale.** Rate limits, metrics and WebSocket caps are in process memory (per
+  worker); fitted models are not cached. Multi-symbol analysis returns a blanket `503` when
+  every symbol fails, instead of the root-cause status.
+- **Library hygiene.** `mra_lib` still prints to stdout in places, re-wraps provider errors
+  as `ValueError`, returns many results as dicts, and ships `types/protocols.py`, which nothing
+  implements yet.
+- **Data.** Alpha Vantage free tier: unadjusted daily prices, latest 100 bars, 25 requests/day.
+  Yahoo Finance: 15m bars for the last 60 days only. No on-disk cache.
 
----
+## Open Work
 
-## What Changed Since Last Assessment (2026-03-18)
+In progress:
 
-- **Phase 1 partially complete**: Strategy optimization framework built (grid search, random search, walk-forward validation, composite scoring)
-- **New test files**: `test_engine.py` (326 lines, 22 assertions) and `test_strategy.py` (147 lines, 27 assertions) added with proper pytest assertions
-- **Backtester hardened**: Direction propagation fixes, base_position_fraction wired through, robustness improvements
-- **CI formatting fixed**: `test_engine.py` reformatted to pass `ruff format --check`
-- **Portfolio correlation**: claimed fixed here but was not; actually fixed in the 2026-10 analytics PR
-- **Documentation updated**: CLAUDE.md and README.md updated with backtester documentation
+- **Detector unification and library refactor** — one detector everywhere, stationary
+  feature set, logging instead of `print`, typed results, and a decision on the protocols
+  module.
 
----
+Needs a decision:
 
-## What's Next (Priority Order)
+- Which regime→strategy map is canonical (backtest vs. shared table).
 
-### Phase 1 — Make the Strategy Work (IN PROGRESS)
+Next:
 
-- ~~Grid search / optimization of regime thresholds and multipliers~~ Done — framework built
-- ~~Walk-forward validation~~ Done — anchored/rolling walk-forward with HMM retraining
-- **Investigate structural issues**: Current results (-57% excess return) suggest the regime-based approach may need fundamental changes, not just parameter tuning
-- Consider alternative signal generation (momentum, trend-following filters, regime transition signals)
-- Test across multiple market cycles and symbols
-- Target Sharpe > 0.5 before anything else
+- Deflated Sharpe / multiple-testing correction in the optimizer.
+- Bar-by-bar regime attribution in the calibrator.
+- Root-cause status for multi-symbol requests where every symbol fails.
 
-### Phase 2 — Harden the System
+Feature roadmap (none started; from the review's proposals):
 
-- Convert `test_backtest.py`, `test_mock.py`, `test_system.py`, `test_true_hmm.py` to proper pytest assertions
-- Remove or deprecate the old GMM detector (`hmm_detector.py`)
-- Add model serialization (save/load trained HMM via joblib/pickle)
-- Implement portfolio-level drawdown killswitch
-- Add test coverage reporting to CI
+- Model persistence and loading optimized/calibrated parameters (`--params file.json`).
+- Regime history store and `/regimes/{symbol}/history`.
+- Scheduled scanner with regime-change alerts.
+- `mra backtest` command / backtest endpoint with a buy-and-hold benchmark.
+- Multi-timeframe confirmation signal; explainability (per-state feature z-scores).
+- Provider infrastructure: on-disk cache, `start`/`end` ranges; more providers (crypto, FRED).
+- Regime-conditioned allocation and a paper-trading loop with a drawdown kill switch.
 
-### Phase 3 — Improve Statistical Rigor
+## Historical Notes
 
-- ~~Cointegration testing (Engle-Granger)~~ Done; Johansen / half-life still open
-- ~~Returns-based correlation in portfolio analysis~~ Done
-- Regime threshold optimization tied to backtest performance
-- Out-of-sample validation across different market environments
-
-### Phase 4 — Production Readiness
-
-- Paper trading for 3-6 months
-- Persistent trade logging / audit trail
-- Alerting system for regime changes
-- Performance monitoring dashboard
-
----
-
-## Bottom Line
-
-The **infrastructure is professional-grade** and now includes a complete **optimization and walk-forward validation framework**. However, the **trading strategy still cannot beat buy-and-hold** — even after parameter optimization, excess return is deeply negative (-57%). This suggests the issue may be structural rather than parametric: the regime detection → position sizing pipeline may need fundamental rethinking, not just better parameters. The immediate priority shifts from "tune parameters" to "investigate why regime-based signals don't generate alpha" before investing further in infrastructure.
+Earlier assessments (March 2026) reported backtest figures such as "+9.50% total return,
+−57.09% excess return vs buy-and-hold, Sharpe 0.18". Those numbers were produced before the
+October 2026 fixes to short accounting, metric formulas and walk-forward evaluation, and are
+not reproducible with the current code. They are kept here only as history; rerun
+`uv run mra-optimize` for current figures. Older planning documents are in
+[archive/](archive/).

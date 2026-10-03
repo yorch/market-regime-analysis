@@ -1,16 +1,16 @@
 # Market Regime Analysis API
 
-REST API for market regime analysis using Hidden Markov Models.
+REST + WebSocket API for market regime analysis using Hidden Markov Models
+(package `mra_web`, FastAPI).
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Installation
 
 ```bash
-# Install dependencies
 uv sync
 
-# Set up environment variables (optional)
+# Optional: data provider credentials (Yahoo Finance and mock need none)
 export ALPHA_VANTAGE_API_KEY=your_key_here
 export POLYGON_API_KEY=your_key_here
 export APCA_API_KEY_ID=your_key_id APCA_API_SECRET_KEY=your_secret
@@ -20,441 +20,502 @@ export TIINGO_API_KEY=your_key_here
 ### Start the Server
 
 ```bash
-# Development mode: auto-reload, docs enabled, unauthenticated requests allowed
-uv run mra-api --dev
+# Development: ENVIRONMENT=development, auto-reload, DEBUG logging, docs at /docs,
+# unauthenticated requests allowed. No JWT_SECRET needed.
+uv run mra-api --dev            # or: uv run mra start-api --dev
 
 # Production (the default environment): a JWT secret of 32+ characters is required
 export JWT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
 uv run mra-api --host 0.0.0.0 --port 8000 --workers 4
 ```
 
-Outside `ENVIRONMENT=development` the server refuses to start when `JWT_SECRET` is unset,
-empty, a placeholder, or shorter than 32 characters. In development a random per-process
-secret is generated (with a warning) instead.
+`mra-api` options: `--host` (`API_HOST`, default `127.0.0.1`), `--port` (`API_PORT`, default
+`8000`), `--workers` (`API_WORKERS`, default 1), `--reload` (`API_RELOAD`), `--log-level`
+(`LOG_LEVEL`), `--dev`. `mra start-api [--host] [--port] [--dev]` runs the same server.
 
-### Access the API
+Outside `ENVIRONMENT=development` the server refuses to start (exit code 2) when `JWT_SECRET`
+is unset, empty, a well-known placeholder, or shorter than 32 characters, or when `API_KEYS`
+contains a key shorter than 16 characters. In development a random per-process secret is
+generated instead (with a warning); tokens signed with it do not survive a restart, and it
+cannot be combined with `--workers` > 1.
 
-- **API Documentation**: <http://localhost:8000/docs> (Swagger UI; development or `ENABLE_DOCS=true`)
-- **Alternative Docs**: <http://localhost:8000/redoc> (ReDoc; same condition)
-- **Health Check**: <http://localhost:8000/health> (public)
-- **Metrics**: <http://localhost:8000/metrics> (authenticated)
+### Routes
 
-All `/api/v1/*` examples below omit credentials for brevity. Outside development, add
-`-H "Authorization: Bearer $TOKEN"` or `-H "X-API-Key: $KEY"` (see [Authentication](#-authentication)).
+| Method | Path | Auth | Response |
+|--------|------|------|----------|
+| GET | `/` | public | API info |
+| GET | `/health`, `/api/v1/health` | public | `{"status": "healthy", "timestamp", "version"}` |
+| GET | `/ready` | public | readiness checks |
+| GET | `/metrics` | required | API metrics + WebSocket connection stats |
+| GET | `/api/v1/metrics` | required | API metrics |
+| POST | `/api/v1/analysis/detailed` | required | `AnalysisResponse` (one timeframe) |
+| POST | `/api/v1/analysis/current` | required | `MultiAnalysisResponse` (1D, 1H, 15m) |
+| POST | `/api/v1/analysis/multi-symbol` | required | `PortfolioAnalysisResponse` |
+| POST | `/api/v1/position-sizing` | required | `PositionSizingResponse` |
+| GET | `/api/v1/providers` | required | `ProvidersResponse` |
+| POST | `/api/v1/charts/generate` | required | `image/png` |
+| POST | `/api/v1/export/csv` | required | `text/csv` |
+| GET | `/ws/monitoring/status` | required | active WebSocket connections |
+| WS | `/ws/monitoring/{symbol}` | required | regime update stream |
+| GET | `/docs`, `/redoc`, `/openapi.json` | public | only in development or with `ENABLE_DOCS=true` |
+| GET | `/debug/config` | public | development only; configuration without secrets |
 
-## 📚 API Endpoints
+"Required" means a JWT or API key (see [Authentication](#authentication)); in development,
+requests without credentials are accepted as `dev_user`.
 
-### Analysis Endpoints
+The `curl` examples below use `$AUTH`, e.g. `AUTH="Authorization: Bearer $TOKEN"` or
+`AUTH="X-API-Key: $KEY"`. Against a development server you can drop the `-H "$AUTH"` part.
 
-#### POST `/api/v1/analysis/detailed`
+## Authentication
 
-Single timeframe HMM analysis with comprehensive metrics.
+There is no login or token-issuing endpoint. Clients authenticate with one of:
 
-```bash
-curl -X POST "http://localhost:8000/api/v1/analysis/detailed" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "symbol": "SPY",
-    "timeframe": "1D",
-    "provider": "yfinance"
-  }'
-```
+1. **JWT Bearer token** — `Authorization: Bearer <token>`. Tokens are HS256-signed with
+   `JWT_SECRET` and must carry `sub` and `exp` claims; other algorithms (including `none`)
+   are rejected. Mint them out of band, where `JWT_SECRET` is available:
 
-#### POST `/api/v1/analysis/current`
+   ```bash
+   # Lifetime defaults to JWT_EXPIRATION_HOURS (24)
+   TOKEN=$(JWT_SECRET=... uv run mra-token --sub alice --hours 12)
+   ```
 
-Multi-timeframe analysis across 1D, 1H, and 15m intervals. Each timeframe is loaded and
-analyzed independently; timeframes that fail are omitted (503 only if all fail).
+   `mra-token` exits with code 2 if `JWT_SECRET` is missing or weak.
 
-```bash
-curl -X POST "http://localhost:8000/api/v1/analysis/current" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "symbol": "SPY",
-    "provider": "yfinance"
-  }'
-```
+2. **API key** — `X-API-Key: <key>`, one of the comma-separated keys in `API_KEYS` (16+
+   characters each). Keys are compared in constant time. Query-string keys are not accepted.
 
-#### POST `/api/v1/analysis/multi-symbol`
+   ```bash
+   export API_KEYS="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+   ```
 
-Portfolio analysis across multiple symbols (max 20). Each symbol is analyzed once;
-`correlations` are correlations of returns over the symbols that loaded (`null` where
-undefined), and `correlation_risk` is `null` with fewer than two analyzed symbols.
-
-```bash
-curl -X POST "http://localhost:8000/api/v1/analysis/multi-symbol" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "symbols": ["SPY", "QQQ", "IWM"],
-    "timeframe": "1D",
-    "provider": "yfinance"
-  }'
-```
-
-### Utility Endpoints
-
-#### POST `/api/v1/position-sizing`
-
-Kelly Criterion-based position sizing with regime adjustments.
+If both headers are sent, only `X-API-Key` is checked. Missing or invalid credentials return
+`401` with `WWW-Authenticate: Bearer`. In development, requests **without** credentials are
+accepted as `dev_user`, but credentials that are sent are still validated.
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/position-sizing" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "base_size": 0.02,
-    "regime": "Bull Trending",
-    "confidence": 0.8,
-    "persistence": 0.75,
-    "correlation": 0.1
-  }'
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/v1/providers
+curl -H "X-API-Key: $KEY" http://localhost:8000/api/v1/providers
 ```
 
-#### GET `/api/v1/providers`
+The `api_key` field in request bodies (and the WebSocket `api_key` query parameter) is the
+**data provider** key, not an API credential. If it is omitted, the server uses its own
+provider environment variables.
 
-List available data providers and their capabilities.
+## Endpoints
+
+All request bodies are JSON. Common fields: `provider` (default **`alphavantage`**; one of
+`yfinance`, `alphavantage`, `polygon`, `alpaca`, `tiingo`, `mock`) and `api_key` (provider
+key, optional). For `alpaca`, pass `api_key` as `"KEY_ID:SECRET_KEY"` or set both `APCA_*`
+variables on the server.
+
+Symbols are upper-cased and must match `^[A-Z0-9^][A-Z0-9.\-^=]{0,14}$` (e.g. `BRK.B`,
+`^GSPC`, `ES=F`). Timeframes are `1D`, `1H`, `15m`.
+
+### POST `/api/v1/analysis/detailed`
+
+HMM analysis for one timeframe; only that timeframe is loaded.
 
 ```bash
-curl "http://localhost:8000/api/v1/providers"
-```
-
-#### POST `/api/v1/charts/generate`
-
-Render the 5-panel HMM regime chart. Returns `image/png`.
-
-```bash
-curl -X POST "http://localhost:8000/api/v1/charts/generate" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "symbol": "SPY",
-    "timeframe": "1D",
-    "days": 60,
-    "provider": "yfinance"
-  }' -o spy_chart.png
-```
-
-#### POST `/api/v1/export/csv`
-
-Export the analysis (one row per timeframe) as `text/csv`. The CSV is built in memory and
-returned in the response; nothing is written on the server. `filename` (optional, letters,
-digits, `.`, `_`, `-`) only sets the download name in `Content-Disposition`. The
-`X-Record-Count` header holds the number of rows.
-
-```bash
-curl -X POST "http://localhost:8000/api/v1/export/csv" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "symbol": "SPY",
-    "provider": "yfinance",
-    "filename": "spy_analysis.csv"
-  }' -o spy_analysis.csv
-```
-
-Symbols must match `^[A-Z0-9^][A-Z0-9.\-^=]{0,14}$` after upper-casing (e.g. `BRK.B`,
-`^GSPC`, `ES=F`). Multi-symbol requests accept at most 20 symbols; duplicates are dropped.
-
-## 🌐 WebSocket Monitoring
-
-Real-time regime monitoring via WebSocket connections.
-
-WebSocket connections must authenticate (except in development). The server checks, in
-order, an `X-API-Key` header, an `Authorization: Bearer` header, or a `token` query
-parameter (a JWT or API key) before accepting the handshake. Clients that cannot set headers
-can instead send `{"token": "<JWT or API key>"}` as the first message within 5 seconds.
-Invalid or missing credentials, an unknown `provider`, or an `interval` outside 60-3600
-seconds close the socket with code `1008`. Analysis runs in a worker thread (bounded by
-`API_TIMEOUT`); the server stops monitoring as soon as the client disconnects, and closes
-with `1011` after 5 consecutive failed analyses (each reported as a generic `error` message). Browser `Origin` headers
-must be listed in `CORS_ORIGINS`. Connections are capped (`WS_MAX_CONNECTIONS`, default 100;
-`WS_MAX_CONNECTIONS_PER_IP`, default 5); over the cap the handshake is refused (code `1013`).
-`api_key` in the query string is the **data provider** key, not an API credential.
-
-### Connection
-
-```javascript
-const ws = new WebSocket('ws://localhost:8000/ws/monitoring/SPY?provider=yfinance&interval=300');
-ws.onopen = () => ws.send(JSON.stringify({ token: TOKEN }));
-
-ws.onmessage = function(event) {
-    const data = JSON.parse(event.data);
-    console.log('Message type:', data.message_type);
-    console.log('Data:', data.data);
-};
-```
-
-### Python Example
-
-```python
-import asyncio
-import websockets
-import json
-
-async def monitor_symbol():
-    uri = "ws://localhost:8000/ws/monitoring/SPY?provider=yfinance&interval=60"
-
-    async with websockets.connect(uri) as websocket:
-        await websocket.send(json.dumps({"token": TOKEN}))
-        while True:
-            message = await websocket.recv()
-            data = json.loads(message)
-
-            if data["message_type"] == "update":
-                update = data["data"]
-                print(f"Regime: {update['current_regime']}")
-                print(f"Confidence: {update['regime_confidence']:.3f}")
-
-                if update["regime_change"]:
-                    print(f"🚨 REGIME CHANGE: {update['previous_regime']} → {update['current_regime']}")
-
-asyncio.run(monitor_symbol())
-```
-
-## 🔐 Authentication
-
-Every `/api/v1/*` route (except `/api/v1/health`), `/metrics`, `/ws/monitoring/status` and
-the WebSocket endpoint require credentials unless `ENVIRONMENT=development`. In
-development, requests **without** credentials are accepted as `dev_user`; credentials
-that are sent are still validated. Missing or invalid credentials return `401`.
-
-There is no token-issuing endpoint. Tokens are minted out of band with the server's secret.
-
-### 1. JWT Bearer Tokens
-
-Tokens are HS256-signed with `JWT_SECRET` and must carry `sub` and `exp` claims; other
-algorithms (including `none`) are rejected.
-
-```bash
-# Mint a token where JWT_SECRET is available (lifetime defaults to JWT_EXPIRATION_HOURS)
-TOKEN=$(JWT_SECRET=... uv run mra-token --sub alice --hours 12)
-
-curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:8000/api/v1/analysis/detailed" \
-  -H "Content-Type: application/json" \
+curl -X POST http://localhost:8000/api/v1/analysis/detailed \
+  -H "$AUTH" -H "Content-Type: application/json" \
   -d '{"symbol": "SPY", "timeframe": "1D", "provider": "yfinance"}'
 ```
 
-### 2. API Keys
-
-Set `API_KEYS` to a comma-separated list of long random keys (16+ characters) and send
-one in the `X-API-Key` header. Keys are compared in constant time. Query-string keys are
-not accepted.
-
-```bash
-export API_KEYS="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-curl -H "X-API-Key: $KEY" "http://localhost:8000/api/v1/providers"
-```
-
-## 🐍 Python Client
-
-`examples/api_client.py` contains a small client:
-
-```python
-from examples.api_client import MarketRegimeAPIClient
-
-# JWT from `uv run mra-token --sub demo`, or service_key=<one of API_KEYS>
-client = MarketRegimeAPIClient("http://localhost:8000", token=TOKEN)
-
-analysis = client.detailed_analysis("SPY", "1D")
-print(f"Current regime: {analysis['current_regime']}")
-print(f"Confidence: {analysis['regime_confidence']:.3f}")
-
-portfolio = client.multi_symbol_analysis(["SPY", "QQQ", "IWM"], "1D")
-print(f"Dominant regime: {portfolio['portfolio_metrics']['dominant_regime']}")
-```
-
-## 🏃 Running Examples
-
-```bash
-# Run all API examples (set MRA_TOKEN or MRA_API_KEY unless the server is in development)
-uv run examples/api_client.py
-
-# Test WebSocket monitoring
-uv run examples/api_client.py websocket
-```
-
-## ⚙️ Configuration
-
-### Environment Variables
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `ENVIRONMENT` | `production` | `development` enables the unauthenticated dev user, docs and `/debug/config` |
-| `JWT_SECRET` | none | HS256 secret, 32+ characters; required outside development |
-| `JWT_EXPIRATION_HOURS` | `24` | Default lifetime of tokens minted by `mra-token` |
-| `API_KEYS` | empty | Comma-separated keys accepted in `X-API-Key` (16+ characters each) |
-| `CORS_ORIGINS` | empty | Comma-separated browser origins allowed for CORS and WebSockets |
-| `RATE_LIMIT_PER_MINUTE` | `60` | Per-client-IP limit for all HTTP routes except health probes |
-| `API_HOST` / `API_PORT` | `127.0.0.1` / `8000` | Bind address for `mra-api` |
-| `ENABLE_DOCS` | dev only | Serve `/docs`, `/redoc`, `/openapi.json` |
-| `WS_MAX_CONNECTIONS` / `WS_MAX_CONNECTIONS_PER_IP` | `100` / `5` | WebSocket caps |
-| `API_TIMEOUT` | `300` | Seconds an analysis may run before the request gets `504` |
-| `API_MAX_CONCURRENT_ANALYSES` | `4` | Analyses running at once per process (HTTP + WebSocket); excess requests get `503` with `Retry-After`. A timed-out analysis keeps its slot until its thread finishes |
-| `API_WORKERS`, `API_RELOAD`, `LOG_LEVEL`, `DEBUG` | | Server tuning |
-
-```bash
-# Data providers
-export ALPHA_VANTAGE_API_KEY=your_key_here
-export POLYGON_API_KEY=your_key_here
-export APCA_API_KEY_ID=your_key_id
-export APCA_API_SECRET_KEY=your_secret
-export ALPACA_DATA_FEED=iex   # or sip
-export TIINGO_API_KEY=your_key_here
-```
-
-Rate limits are kept in process memory, so each worker enforces its own window. Behind a
-reverse proxy, run uvicorn with `--proxy-headers` and trusted `--forwarded-allow-ips` so the
-limit applies per real client rather than per proxy.
-
-### Data Providers
-
-| Provider | API Key Required | Rate Limit | Data Quality |
-|----------|------------------|------------|--------------|
-| **Yahoo Finance** | No | 60 req/min | Community |
-| **Alpha Vantage** | Yes | 5 req/min | Professional |
-| **Polygon.io** | Yes | 60+ req/min | Institutional |
-| **Alpaca** | Yes (key ID + secret) | 200 req/min (free) | IEX (free) / SIP |
-| **Tiingo** | Yes | 50 req/hour (free) | Adjusted EOD + IEX intraday |
-
-For `provider: "alpaca"`, set `api_key` in the request to `"KEY_ID:SECRET_KEY"`, or set both `APCA_*` variables on the server.
-
-## 📊 Response Format
-
-All API responses follow a consistent format:
-
-### Success Response
+Response (`AnalysisResponse`; values from the `mock` provider, rounded):
 
 ```json
 {
   "symbol": "SPY",
   "timeframe": "1D",
-  "current_regime": "Bull Trending",
-  "regime_confidence": 0.847,
-  "regime_persistence": 0.723,
-  "transition_probability": 0.156,
+  "current_regime": "High Volatility",
+  "regime_confidence": 1.0,
+  "regime_persistence": 0.45,
+  "transition_probability": 0.345,
   "hmm_state": 2,
-  "risk_level": "Medium",
-  "position_sizing_multiplier": 1.25,
-  "recommended_strategy": "Momentum Following",
-  "analysis_timestamp": "2024-01-15T10:30:00.000Z",
+  "risk_level": "High",
+  "position_sizing_multiplier": 0.154,
+  "recommended_strategy": "Volatility Trading",
+  "analysis_timestamp": "2026-10-03T17:21:27.281848Z",
   "metrics": {
-    "raw_features": [...],
-    "state_probabilities": [...],
-    "regime_description": "Strong upward momentum with high persistence",
-    "statistical_features": {...}
+    "arbitrage_opportunities": [],
+    "statistical_signals": ["MACD: Bearish signal"],
+    "key_levels": {
+      "resistance": 264.79, "support": 239.24, "sma_50": 250.24, "sma_200": 237.06,
+      "bb_upper": 253.70, "bb_lower": 238.07, "atr_resistance": 247.15, "atr_support": 238.71
+    },
+    "hmm_state": 2,
+    "transition_probability": 0.345
   }
 }
 ```
 
-### Error Response
+`metrics` always has the keys `arbitrage_opportunities` (list of strings),
+`statistical_signals` (list of strings), `key_levels` (name → price), `hmm_state` and
+`transition_probability`.
 
-Every error (auth, validation, routing, rate limit, provider, unexpected) uses one envelope:
+### POST `/api/v1/analysis/current`
+
+Analysis for all timeframes (1D, 1H, 15m). Each timeframe is loaded and analyzed
+independently; failed timeframes are omitted from `analyses`. If every timeframe fails, the
+error of the last failure is returned (see [Errors](#errors)).
+
+```bash
+curl -X POST http://localhost:8000/api/v1/analysis/current \
+  -H "$AUTH" -H "Content-Type: application/json" \
+  -d '{"symbol": "SPY", "provider": "yfinance"}'
+```
+
+Response: `{"symbol": "SPY", "analyses": [AnalysisResponse, ...], "analysis_timestamp": ...}`.
+
+### POST `/api/v1/analysis/multi-symbol`
+
+Portfolio analysis across up to 20 symbols (blank entries and duplicates are dropped). Only
+the requested timeframe is loaded and each symbol is analyzed once. Symbols that fail are
+left out of `analyses`.
+
+```bash
+curl -X POST http://localhost:8000/api/v1/analysis/multi-symbol \
+  -H "$AUTH" -H "Content-Type: application/json" \
+  -d '{"symbols": ["SPY", "QQQ", "IWM"], "timeframe": "1D", "provider": "yfinance"}'
+```
+
+Response fields: `symbols`, `timeframe`, `analyses` (list of `AnalysisResponse`),
+`correlations` (symbol → symbol → correlation of **returns**, `null` where undefined), and
+`portfolio_metrics` with `total_symbols`, `analyzed_symbols`, `dominant_regime`,
+`average_confidence`, `regime_consensus`, `risk_level`, `correlation_risk`,
+`diversification_benefit` (both `null` with fewer than two analyzed symbols) and
+`regime_distribution`.
+
+If **no** symbol could be analyzed the response is `503` (`"Failed to analyze any symbols"`),
+whatever the cause (e.g. every symbol unknown). Per-symbol causes are only in the server log.
+
+### POST `/api/v1/position-sizing`
+
+Regime-adjusted position size: the base size is scaled by the regime multiplier, confidence
+and persistence, then adjusted for correlation. No market data is fetched.
+
+```bash
+curl -X POST http://localhost:8000/api/v1/position-sizing \
+  -H "$AUTH" -H "Content-Type: application/json" \
+  -d '{"base_size": 0.02, "regime": "Bull Trending", "confidence": 0.8,
+       "persistence": 0.75, "correlation": 0.1}'
+```
 
 ```json
 {
-  "error_code": "SERVICE_UNAVAILABLE",
-  "message": "Data provider unavailable",
-  "details": {},
-  "timestamp": "2024-01-15T10:30:00Z"
+  "base_size": 0.02,
+  "regime": "Bull Trending",
+  "regime_adjusted_size": 0.020683,
+  "correlation_adjusted_size": 0.020683,
+  "final_recommendation": 0.020683,
+  "calculations": {
+    "base_position_size": 0.02,
+    "regime_multiplier": 1.03415,
+    "confidence_factor": 0.8,
+    "persistence_factor": 0.75,
+    "correlation_adjustment": 1.0
+  },
+  "timestamp": "2026-10-03T17:21:48.120717Z"
+}
+```
+
+`regime` must be one of `Bull Trending`, `Bear Trending`, `Mean Reverting`,
+`High Volatility`, `Low Volatility`, `Breakout`, `Unknown`; `base_size`, `confidence` and
+`persistence` are in `[0, 1]`, `correlation` in `[-1, 1]`.
+
+### GET `/api/v1/providers`
+
+Registered data providers with `description`, `requires_api_key`, `rate_limit_per_minute`,
+`supported_intervals` and `supported_periods`.
+
+```bash
+curl -H "$AUTH" http://localhost:8000/api/v1/providers
+```
+
+### POST `/api/v1/charts/generate`
+
+Renders the 5-panel regime chart in memory (headless backend) and returns it as
+**`image/png`** with `Content-Disposition: inline; filename="<SYMBOL>_<TF>_<days>_regime_chart.png"`.
+`days` defaults to 60 (1–365). Nothing is written on the server.
+
+```bash
+curl -X POST http://localhost:8000/api/v1/charts/generate \
+  -H "$AUTH" -H "Content-Type: application/json" \
+  -d '{"symbol": "SPY", "timeframe": "1D", "days": 60, "provider": "yfinance"}' \
+  -o spy_chart.png
+```
+
+### POST `/api/v1/export/csv`
+
+Returns the analysis (one row per timeframe that could be analyzed) as **`text/csv`**,
+built in memory. `filename` (optional; letters, digits, `.`, `_`, `-`, max 100 chars, `.csv`
+appended if missing) only sets the download name in `Content-Disposition: attachment`;
+nothing is written on the server. The `X-Record-Count` header holds the number of rows. If
+no row could be produced the response is `503`.
+
+```bash
+curl -X POST http://localhost:8000/api/v1/export/csv \
+  -H "$AUTH" -H "Content-Type: application/json" \
+  -d '{"symbol": "SPY", "provider": "yfinance", "filename": "spy_analysis.csv"}' \
+  -o spy_analysis.csv
+```
+
+Columns: `timestamp, symbol, timeframe, close_price, regime, hmm_state, regime_confidence,
+regime_persistence, transition_probability, strategy, position_multiplier, risk_level,
+arbitrage_count, signal_count, rsi, macd, volatility, atr_percent, price_zscore, autocorr_1`,
+then one `level_<name>` column per key level.
+
+### Metrics
+
+`GET /api/v1/metrics` returns:
+
+```json
+{
+  "uptime_seconds": 22.6,
+  "request_counts": {"/analysis/detailed": 2, "/export/csv": 1},
+  "error_counts": {"/analysis/detailed": 1},
+  "average_response_times": {"/analysis/detailed": 0.91, "/export/csv": 3.59},
+  "total_requests": 3,
+  "total_errors": 1
+}
+```
+
+`GET /metrics` returns the same plus `websocket_connections` (`total_connections`,
+`active_symbols`, `connections_by_symbol`). Counters are per worker process and reset on
+restart.
+
+## Errors
+
+Every error response — authentication, validation, unknown route, rate limit, provider
+failure, or unexpected exception — uses one envelope:
+
+```json
+{
+  "error_code": "VALIDATION_ERROR",
+  "message": "Request validation failed",
+  "details": {
+    "errors": [
+      {"loc": ["body", "timeframe"], "msg": "Value error, Timeframe must be one of: 1D, 1H, 15m",
+       "type": "value_error"}
+    ]
+  },
+  "timestamp": "2026-10-03T17:21:34.618320Z"
 }
 ```
 
 | Status | `error_code` | When |
 |--------|--------------|------|
-| 400 | `BAD_REQUEST`, `API_KEY_REQUIRED` | Invalid input / no data for the symbol; provider key missing (`details.required_env_vars`) |
-| 401 | `UNAUTHORIZED` | Missing or invalid credentials |
+| 400 | `BAD_REQUEST` | Unknown or invalid symbol, or invalid input / no data for the symbol |
+| 400 | `API_KEY_REQUIRED` | The provider needs a key and none was sent or configured; `details` has `provider` and `required_env_vars` |
+| 401 | `UNAUTHORIZED` | Missing or invalid credentials (`WWW-Authenticate: Bearer`) |
 | 404 / 405 | `NOT_FOUND` / `METHOD_NOT_ALLOWED` | Unknown route or method |
-| 422 | `VALIDATION_ERROR` | Request body/query invalid; `details.errors` lists `loc`, `msg`, `type` (input values are not echoed) |
-| 429 | `RATE_LIMITED` | Rate limit exceeded (`Retry-After` header) |
+| 422 | `VALIDATION_ERROR` | Invalid body or query; `details.errors` lists `loc`, `msg`, `type` (input values are not echoed) |
+| 429 | `RATE_LIMITED` | Rate limit exceeded; `details.retry_after` and a `Retry-After` header |
 | 500 | `INTERNAL_SERVER_ERROR` | Unexpected failure |
 | 502 | `HTTP_502` | The data provider rejected the server's provider credentials |
-| 503 | `SERVICE_UNAVAILABLE` | Provider unreachable or rate-limited (`Retry-After`), or nothing could be analyzed |
+| 503 | `SERVICE_UNAVAILABLE` | Provider unreachable, provider rate limit (`Retry-After: 60`), server busy (`Retry-After: 5`, see `API_MAX_CONCURRENT_ANALYSES`), or nothing could be analyzed/exported |
 | 504 | `TIMEOUT` | Analysis exceeded `API_TIMEOUT` seconds |
 
-Responses are strict JSON: `NaN`/`Infinity` values (e.g. an undefined correlation or
-confidence) are returned as `null`.
+Provider failures are classified by the root cause, wherever it is in the exception chain
+(the analyzer re-wraps provider errors): unknown symbol → 400, provider auth failure → 502,
+provider rate limit or connection/timeout error → 503.
 
-Error messages are generic on purpose: provider errors can embed request URLs that carry
-API keys, so exception text is only written to the server log (with `apikey=`, `token=`,
-bearer tokens and configured secrets redacted). Rate-limited requests return `429` with a
-`Retry-After` header.
+Messages are generic on purpose: provider errors can embed request URLs that carry API keys,
+so exception text is only written to the server log, with `apikey=`, `token=`, bearer tokens
+and configured secrets redacted.
 
-## 🚀 Performance
+Successful responses are strict JSON: `NaN`/`Infinity` values (e.g. an undefined
+correlation) are returned as `null`.
 
-- **Async Support**: Analysis runs in a thread pool, so the event loop stays responsive
-- **Per-timeframe loading**: Single-timeframe requests load only that timeframe
-- **Rate Limiting**: Per-client limit on all HTTP routes (`RATE_LIMIT_PER_MINUTE`)
-- **WebSocket Streaming**: Real-time updates with minimal latency
+## Rate Limits
 
-## 🔧 Monitoring
+Every HTTP route except `/health`, `/ready` and `/api/v1/health` is limited to
+`RATE_LIMIT_PER_MINUTE` requests (default 60) per client IP in a fixed one-minute window.
+IPv6 clients are keyed by their /64 prefix. The limit is applied by request path in a small
+ASGI middleware (`mra_web/ratelimit.py`), so it covers every route.
 
-### Health Checks
+Counters live in process memory: with `--workers N`, each worker enforces its own window
+(a client can get up to N × the limit), and they reset on restart. Behind a reverse proxy,
+run uvicorn with `--proxy-headers` and trusted `--forwarded-allow-ips`, otherwise all clients
+share the proxy's address.
 
-```bash
-# Basic health check
-curl http://localhost:8000/health
+Independently, `API_MAX_CONCURRENT_ANALYSES` (default 4) bounds analyses running at once per
+process (HTTP and WebSocket); excess HTTP requests get `503` with `Retry-After: 5`. A
+timed-out analysis keeps its slot until its thread finishes.
 
-# Readiness check (for K8s)
-curl http://localhost:8000/ready
+## WebSocket Monitoring
+
+`/ws/monitoring/{symbol}` streams regime updates for the daily (`1D`) timeframe.
+
+Query parameters: `provider` (default `alphavantage`), `api_key` (data provider key),
+`interval` (seconds between updates, 60–3600, default 300), and optionally `token`.
+
+**Authentication** is checked before the handshake is accepted, from (in order) an
+`X-API-Key` header, an `Authorization: Bearer` header, or the `token` query parameter (a JWT
+or an API key). Clients that cannot set headers and do not want the token in the URL can
+connect without credentials and send `{"token": "<JWT or API key>"}` as the first message
+within 5 seconds. In development, connections without credentials are accepted.
+
+**Origin**: browser `Origin` headers must be listed in `CORS_ORIGINS` (`*` allows any);
+clients that send no `Origin` (non-browser) are allowed but still need credentials.
+
+**Caps**: `WS_MAX_CONNECTIONS` (default 100) in total and `WS_MAX_CONNECTIONS_PER_IP`
+(default 5), per worker process.
+
+**Close codes**:
+
+| Code | Reason |
+|------|--------|
+| 1008 | Disallowed origin, invalid credentials, invalid symbol/provider/interval, no first-message token within 5 s, or a provider key is required but missing |
+| 1013 | Connection cap reached |
+| 1011 | 5 consecutive failed analyses, or an internal error |
+
+Each analysis runs in the thread pool (bounded by `API_TIMEOUT` and the shared analysis
+slots), so the event loop is never blocked. Monitoring stops as soon as the client
+disconnects.
+
+**Messages** are JSON objects `{"message_type", "symbol", "data", "timestamp"}`:
+
+- `connection` — `data`: `status`, `provider`, `interval`, `message`
+- `update` — `data`: `symbol`, `current_regime`, `regime_confidence`, `regime_change`,
+  `previous_regime`, `alert_level` (`low`; `medium` when confidence < 0.6; `high` on a regime
+  change), `timestamp`
+- `alert` — sent after an `update` that changes the regime; `data`: `alert_type`
+  (`regime_change`), `previous_regime`, `new_regime`, `confidence`, `message`
+- `error` — `data`: `error` (`"Analysis failed"` or `"Server busy"`), `error_count`,
+  `max_errors`
+
+`GET /ws/monitoring/status` (authenticated) returns `active_connections`,
+`monitored_symbols` and `connections_by_symbol`.
+
+### JavaScript
+
+```javascript
+const ws = new WebSocket('ws://localhost:8000/ws/monitoring/SPY?provider=yfinance&interval=300');
+ws.onopen = () => ws.send(JSON.stringify({ token: TOKEN }));  // JWT or API key
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  console.log(msg.message_type, msg.data);
+};
 ```
 
-### Metrics
+### Python
 
-```bash
-# Get API metrics (authenticated)
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/metrics
+```python
+import asyncio
+import json
+
+import websockets
+
+TOKEN = "..."  # JWT from `uv run mra-token --sub <name>`, or one of API_KEYS
+
+
+async def monitor_symbol():
+    uri = "ws://localhost:8000/ws/monitoring/SPY?provider=yfinance&interval=60"
+    async with websockets.connect(uri) as websocket:
+        await websocket.send(json.dumps({"token": TOKEN}))
+        while True:
+            msg = json.loads(await websocket.recv())
+            if msg["message_type"] == "update":
+                update = msg["data"]
+                print(f"Regime: {update['current_regime']} ({update['regime_confidence']:.3f})")
+                if update["regime_change"]:
+                    print(f"REGIME CHANGE: {update['previous_regime']} -> {update['current_regime']}")
+
+
+asyncio.run(monitor_symbol())
 ```
 
-Returns:
+## Python Client
 
-- Request counts by endpoint
-- Error rates and types
-- Average response times
-- WebSocket connection statistics
-- System uptime
-
-### Logging
-
-All API requests and errors are logged with structured format:
-
-```text
-2024-01-15 10:30:00 - INFO - API Request - Endpoint: /analysis/detailed, Client: 192.168.1.100
-2024-01-15 10:30:01 - INFO - API Response - Endpoint: /analysis/detailed, Status: 200, Time: 0.856s
-```
-
-## 🐳 Docker Deployment
-
-The repository `Dockerfile` builds a multi-stage image that runs `mra-api` as a non-root user on
-port 8000 with a `/health` healthcheck. `JWT_SECRET` (>=32 characters) is required.
+[`examples/api_client.py`](../examples/api_client.py) contains `MarketRegimeAPIClient` and a
+demo that exercises the endpoints against `http://localhost:8000`. It reads credentials from
+`MRA_TOKEN` (a JWT) or `MRA_API_KEY` (one of `API_KEYS`); neither is needed against a
+development server.
 
 ```bash
-# docker compose (reads .env; publishes on 127.0.0.1:${API_PORT:-8000})
-cp .env.example .env   # then set JWT_SECRET and any provider keys
+uv run mra-api --dev &                       # or a production server plus credentials:
+# export MRA_TOKEN=$(uv run mra-token --sub demo)   (with the server's JWT_SECRET)
+uv run examples/api_client.py                # REST demo (uses yfinance)
+uv run examples/api_client.py websocket      # 30-second WebSocket demo
+```
+
+```python
+from examples.api_client import MarketRegimeAPIClient  # run from the repository root
+
+client = MarketRegimeAPIClient("http://localhost:8000", token=TOKEN)  # or service_key=KEY
+analysis = client.detailed_analysis("SPY", "1D")  # provider defaults to yfinance here
+print(analysis["current_regime"], analysis["regime_confidence"])
+portfolio = client.multi_symbol_analysis(["SPY", "QQQ", "IWM"], "1D")
+print(portfolio["portfolio_metrics"]["dominant_regime"])
+```
+
+## Configuration
+
+Read by `mra_web/config.py` (and `mra_web/server.py` for the bind options):
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ENVIRONMENT` | `production` | `development` allows unauthenticated requests, an ephemeral JWT secret, docs and `/debug/config` |
+| `JWT_SECRET` | none | HS256 secret, 32+ characters; required outside development |
+| `JWT_EXPIRATION_HOURS` | `24` | Default lifetime of tokens minted by `mra-token` |
+| `API_KEYS` | empty | Comma-separated keys accepted in `X-API-Key` (16+ characters each) |
+| `CORS_ORIGINS` | empty | Comma-separated browser origins allowed for CORS and WebSockets |
+| `CORS_METHODS` / `CORS_HEADERS` | `GET,POST,OPTIONS` / `Authorization,Content-Type,X-API-Key` | CORS policy (only used when `CORS_ORIGINS` is set) |
+| `RATE_LIMIT_PER_MINUTE` | `60` | Per-client-IP limit (see [Rate Limits](#rate-limits)) |
+| `API_HOST` / `API_PORT` | `127.0.0.1` / `8000` | Bind address for `mra-api` |
+| `API_WORKERS` / `API_RELOAD` | `1` / `false` | `mra-api` worker processes / auto-reload |
+| `ENABLE_DOCS` | development only | Serve `/docs`, `/redoc`, `/openapi.json` |
+| `API_TIMEOUT` | `300` | Seconds an analysis may run before the request gets `504` |
+| `API_MAX_CONCURRENT_ANALYSES` | `4` | Analyses running at once per process (HTTP + WebSocket) |
+| `WS_MAX_CONNECTIONS` / `WS_MAX_CONNECTIONS_PER_IP` | `100` / `5` | WebSocket caps per process |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
+
+Data provider credentials: `ALPHA_VANTAGE_API_KEY` (or `ALPHAVANTAGE_API_KEY`),
+`ALPHA_VANTAGE_PREMIUM`, `POLYGON_API_KEY`, `APCA_API_KEY_ID` + `APCA_API_SECRET_KEY`,
+`ALPACA_DATA_FEED` (`iex` or `sip`), `TIINGO_API_KEY`. See [`.env.example`](../.env.example).
+
+| Provider | API key | Client-side limit (`rate_limit_per_minute`) |
+|----------|---------|---------------------------------------------|
+| `yfinance` | no | 60 req/min |
+| `alphavantage` | yes | 5 req/min (free tier: 25 req/day) |
+| `polygon` | yes | 5 req/min (free plan) |
+| `alpaca` | key ID + secret | 200 req/min |
+| `tiingo` | yes | 1 req/min (free tier: 50 req/hour) |
+| `mock` | no | none (offline synthetic data) |
+
+## Docker
+
+The repository [`Dockerfile`](../Dockerfile) builds a two-stage image that runs
+`mra-api --host 0.0.0.0 --port 8000` as a non-root user (`ENVIRONMENT=production`), exposes
+port 8000 and has a `/health` `HEALTHCHECK`. `JWT_SECRET` (32+ characters) is required.
+
+```bash
+# docker compose: reads .env and publishes on 127.0.0.1:${API_PORT:-8000}
+cp .env.example .env   # set JWT_SECRET and any provider keys
 docker compose up -d --build
 
-# or plain docker
+# plain docker
 docker build -t market-regime-analysis .
-docker run -p 127.0.0.1:8000:8000 -e JWT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" \
-  -e ALPHA_VANTAGE_API_KEY=your_key market-regime-analysis
+docker run -p 127.0.0.1:8000:8000 \
+  -e JWT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" \
+  market-regime-analysis
+
+# the image also contains the CLI and the token minter
+docker run --rm --entrypoint mra market-regime-analysis --provider mock current-analysis
+docker run --rm -e JWT_SECRET=... --entrypoint mra-token market-regime-analysis --sub alice
 ```
 
-## 🎯 Production Deployment
-
-### Environment Setup
+## Production Notes
 
 ```bash
-# Production configuration (ENVIRONMENT defaults to production)
 export JWT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
 export API_KEYS="<long-random-key>"
 export CORS_ORIGINS=https://yourdomain.com
-export RATE_LIMIT_PER_MINUTE=100
+uv run mra-api --host 0.0.0.0 --port 8000 --workers 4
 ```
 
-### Run with Gunicorn
-
-```bash
-pip install gunicorn
-gunicorn mra_web.app:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
-```
-
-### Nginx Configuration
+Put a TLS-terminating reverse proxy in front. WebSockets need the upgrade headers:
 
 ```nginx
 server {
@@ -464,7 +525,6 @@ server {
     location / {
         proxy_pass http://127.0.0.1:8000;
         proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
 
@@ -477,66 +537,19 @@ server {
 }
 ```
 
-## 📈 Scaling
+Known limitations: rate-limit counters, metrics and WebSocket caps are per process (there is
+no shared store), and fitted models are not cached, so every request refits the HMM.
 
-### Horizontal Scaling
+## Troubleshooting
 
-- Deploy multiple API server instances behind a load balancer
-- Use Redis for shared rate limiting and session storage
-- Configure WebSocket sticky sessions for real-time monitoring
-
-### Performance Optimization
-
-- Enable response compression (gzip)
-- Implement caching layer (Redis/Memcached)
-- Use connection pooling for data providers
-- Monitor and tune worker process counts
-
-## 🔍 Troubleshooting
-
-### Common Issues
-
-1. **Port Already in Use**
-
-   ```bash
-   # Find process using port 8000
-   lsof -i :8000
-   # Kill the process
-   kill -9 PID
-   ```
-
-2. **Missing API Keys**
-
-   ```bash
-   # Check environment variables
-   echo $ALPHA_VANTAGE_API_KEY
-   echo $POLYGON_API_KEY
-   ```
-
-3. **Rate Limiting**
-
-   ```bash
-   # Check current limits
-   curl http://localhost:8000/metrics
-   ```
-
-4. **WebSocket Connection Issues**
-   - Verify WebSocket URL format
-   - Check proxy configurations
-   - Monitor server logs for connection errors
-
-### Debug Mode
-
-```bash
-# Start in debug mode
-uv run mra-api --dev
-
-# Check debug configuration (development only, secrets omitted)
-curl http://localhost:8000/debug/config
-```
-
-## Support
-
-- Interactive docs at `/docs` (Swagger UI; development or `ENABLE_DOCS=true`)
-- Server logs carry error details; responses stay generic
-- Health check endpoints for system status
+- **Server exits with "Refusing to start"** — set a `JWT_SECRET` of 32+ characters, or use
+  `--dev` locally.
+- **`401` everywhere** — send `Authorization: Bearer $TOKEN` or `X-API-Key`; a token minted
+  with a different `JWT_SECRET` (or an ephemeral development secret) is rejected.
+- **`400 API_KEY_REQUIRED`** — the default provider is `alphavantage`; pass
+  `"provider": "yfinance"` (or `mock`), or set the provider's key.
+- **`503` with `Retry-After: 5`** — all analysis slots are busy; retry or raise
+  `API_MAX_CONCURRENT_ANALYSES`.
+- **WebSocket closes with 1008** — check the credentials, `Origin` vs `CORS_ORIGINS`, and the
+  `interval` range.
+- **Debug configuration** — in development, `curl http://localhost:8000/debug/config`.

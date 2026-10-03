@@ -31,8 +31,8 @@ uv run mra current-analysis --symbol SPY
 # Run fully offline with deterministic synthetic data
 uv run mra current-analysis --provider mock --symbol SPY
 
-# Run tests
-just test
+# Run the offline test suite
+just test-unit
 ```
 
 See `uv run mra --help` for all CLI commands.
@@ -77,44 +77,68 @@ See `uv run mra --help` for all CLI commands.
 
 ### REST API
 
-- FastAPI with JWT / API-key auth and WebSocket monitoring — see [docs/api.md](docs/api.md)
-- Production is the default: set `JWT_SECRET` (32+ chars) before `uv run mra-api`, then mint
-  tokens with `uv run mra-token --sub <name>` or configure `API_KEYS` (sent as `X-API-Key`).
-  `uv run mra-api --dev` runs locally without credentials.
+FastAPI with JWT / API-key auth, CSV and PNG exports, and WebSocket monitoring — see
+[docs/api.md](docs/api.md).
+
+```bash
+# Local development: no credentials needed, docs at http://127.0.0.1:8000/docs
+uv run mra-api --dev
+
+# Production (the default): a JWT secret of 32+ characters is required
+export JWT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+uv run mra-api
+TOKEN=$(uv run mra-token --sub alice)          # mint a JWT (same JWT_SECRET)
+curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"symbol": "SPY", "timeframe": "1D", "provider": "yfinance"}' \
+  http://127.0.0.1:8000/api/v1/analysis/detailed
+```
+
+Alternatively set `API_KEYS` (comma-separated, 16+ characters each) and send one as
+`X-API-Key`. There is no login endpoint. Note that API requests default to
+`"provider": "alphavantage"`.
 
 ### Example Output
+
+`uv run mra current-analysis --provider mock --symbol SPY` (deterministic synthetic data; the
+1D section is shown, followed by 1H and 15m sections):
 
 ```text
 ================================================================================
 HMM MARKET REGIME ANALYSIS - SPY (1D)
 ================================================================================
-Current Price: $432.50
-Analysis Time: 2025-07-19 15:30:00
+Current Price: $242.93
+Analysis Time: 2026-10-03 13:23:07
 
-REGIME CLASSIFICATION:
-   Current Regime: Bull Trending
+📊 REGIME CLASSIFICATION:
+   Current Regime: High Volatility
    HMM State: 2
-   Confidence: 82.5%
-   Persistence: 75.0%
-   Transition Prob: 68.2%
+   Confidence: 100.0%
+   Persistence: 45.0%
+   Transition Prob: 34.5%
 
-TRADING RECOMMENDATION:
-   Strategy: Trend Following
-   Position Multiplier: 0.50x
-   Risk Level: Medium
+📈 TRADING RECOMMENDATION:
+   Strategy: Volatility Trading
+   Position Multiplier: 0.15x
+   Risk Level: High
 
-STATISTICAL ARBITRAGE:
-   Mean Reversion: LONG signal (Z-score: -2.15)
-   Momentum Breakdown: Low autocorr (0.045)
+📡 STATISTICAL SIGNALS:
+   • MACD: Bearish signal
 
-KEY LEVELS:
-   RESISTANCE: $438.20
-   SUPPORT: $425.80
-   SMA_50: $429.15
-   BB_UPPER: $441.50
-   BB_LOWER: $423.70
+🎯 KEY LEVELS:
+   RESISTANCE: $264.79
+   SUPPORT: $239.24
+   SMA_50: $250.24
+   SMA_200: $237.06
+   BB_UPPER: $253.70
+   BB_LOWER: $238.07
+   ATR_RESISTANCE: $247.15
+   ATR_SUPPORT: $238.71
 ================================================================================
 ```
+
+With live data a `💰 STATISTICAL ARBITRAGE:` block appears when there are mean-reversion or
+momentum-breakdown signals. Confidence is frequently 100%: the models are overparameterized,
+so treat it as uncalibrated (see [docs/status.md](docs/status.md)).
 
 ## CLI Commands
 
@@ -205,10 +229,11 @@ analyzer = MarketRegimeAnalyzer("SPY", periods=periods)
 - **scikit-learn** — Gaussian Mixture Models
 - **hmmlearn** — True HMM implementation (Viterbi decoding)
 - **click** — CLI framework
-- **yfinance**, **alpha-vantage**, **polygon-api-client**, **requests** (Alpaca, Tiingo) — Market data providers
+- **yfinance**, **polygon-api-client**, **requests** (Alpha Vantage, Alpaca, Tiingo) — Market data providers
+- **statsmodels** — Cointegration tests for pairs
 - **matplotlib** — Visualization
 - **fastapi**, **uvicorn**, **pydantic** — Web API
-- **python-jose**, **slowapi**, **websockets** — Auth, rate limiting, WebSocket
+- **python-jose** — JWT auth; **uvicorn[standard]** provides the WebSocket implementation
 
 Python 3.13+ required. All deps managed via `uv`.
 
@@ -219,25 +244,20 @@ just test        # All tests
 uv run pytest    # Or directly with pytest
 ```
 
-The tests cover:
-
-- Analyzer initialization and regime detection (`test_system.py`, `test_mock.py`)
-- RegimeStrategy signal generation, parameter vectors, confidence scaling (`test_strategy.py`)
-- BacktestEngine direction propagation, LONG/SHORT entries, direction reversals (`test_engine.py`)
-- Walk-forward return compounding and window aggregation (`test_engine.py`)
-- Optimizer scoring, ranking, and print robustness (`test_engine.py`)
-- Regime forecasting: n-step projection, stationary distribution, stability (`test_forecasting.py`)
-- Regime multiplier calibration: scoring methods, normalization (`test_calibrator.py`)
-- Transaction cost models: all components, presets, P&L after costs (`test_transaction_costs.py`)
-- Provider base class, registry, factory, mock provider, DataFrame standardization (`test_providers.py`)
-- SimonsRiskCalculator, PortfolioPositionLimits, BacktestEngine integration (`test_risk_calculator.py`)
+Tests live next to each package (`packages/<pkg>/tests/`) and run offline with the `mock`
+provider; tests that call live provider APIs are marked `integration` and excluded from
+`just test-unit` / `just test-cov`. Coverage is enforced at 65% (currently about 92%). They
+cover the analyzer and both detectors, providers and their contracts, risk sizing, the
+backtest engine (including flat-price long/short round trips), metrics, walk-forward and the
+optimizer, the calibrator, every CLI command, and the web API (auth matrix, error envelope,
+rate limits, CSV/PNG responses, WebSocket lifecycle).
 
 ## Contributing
 
 Contributions are welcome. Please ensure:
 
 - Type hints throughout
-- Docstrings following numpy/scipy style
+- Google-style docstrings (`Args:` / `Returns:` / `Raises:`)
 - Unit tests for new functionality
 - `just qa` passes before submitting
 
@@ -259,6 +279,13 @@ The image runs the web API on port 8000; compose publishes it on `127.0.0.1` onl
 cp .env.example .env   # set JWT_SECRET (and any provider keys)
 just docker-up         # docker compose up -d
 just docker-health     # GET http://127.0.0.1:8000/health
+```
+
+The image also contains the CLI and the token minter:
+
+```bash
+docker run --rm --entrypoint mra market-regime-analysis --provider mock current-analysis
+docker compose exec api mra-token --sub alice   # uses the container's JWT_SECRET
 ```
 
 See [AGENTS.md](AGENTS.md) for full development guide, architecture details, and contribution guidelines.
