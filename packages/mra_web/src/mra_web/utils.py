@@ -8,11 +8,12 @@ import asyncio
 import json
 import logging
 import math
+import threading
 from collections import deque
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from enum import Enum
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import numpy as np
 import pandas as pd
@@ -184,28 +185,86 @@ def convert_regime_analysis_to_response(
     )
 
 
+class AnalysisCapacityError(RuntimeError):
+    """All analysis slots are busy."""
+
+
+_slots_lock = threading.Lock()
+_analysis_slots: threading.BoundedSemaphore | None = None
+
+
+def analysis_slots() -> threading.BoundedSemaphore:
+    """Process-wide semaphore bounding concurrent analysis threads."""
+    global _analysis_slots  # noqa: PLW0603
+    with _slots_lock:
+        if _analysis_slots is None:
+            _analysis_slots = threading.BoundedSemaphore(get_config().max_concurrent_analyses)
+        return _analysis_slots
+
+
+async def run_blocking(
+    func: Callable[..., T], *args: Any, timeout: float | None = None, **kwargs: Any
+) -> T:
+    """Run a blocking call in the thread pool, bounded by ``API_MAX_CONCURRENT_ANALYSES``.
+
+    A slot is held until the worker *thread* finishes, not just until the caller
+    stops waiting: a timed-out or cancelled call cannot be interrupted, so its
+    thread keeps the slot and new work is refused instead of piling up threads.
+
+    Raises:
+        AnalysisCapacityError: If no slot is free.
+        TimeoutError: If the call does not finish within ``timeout`` seconds
+            (default ``API_TIMEOUT``).
+    """
+    slots = analysis_slots()
+    if not slots.acquire(blocking=False):
+        raise AnalysisCapacityError("All analysis slots are busy")
+
+    state_lock = threading.Lock()
+    state = {"started": False, "abandoned": False}
+
+    def guarded() -> T | None:
+        with state_lock:
+            if state["abandoned"]:
+                return None  # caller gave up before we started; it released the slot
+            state["started"] = True
+        try:
+            return func(*args, **kwargs)
+        finally:
+            slots.release()
+
+    limit = get_config().timeout if timeout is None else timeout
+    try:
+        async with asyncio.timeout(limit):
+            result = await run_in_threadpool(guarded)
+    except BaseException:
+        with state_lock:
+            if not state["started"]:
+                state["abandoned"] = True
+                slots.release()
+        raise
+    return cast(T, result)
+
+
 async def run_in_thread(
     func: Callable[..., T], *args: Any, _timeout: float | None = None, **kwargs: Any
 ) -> T:
-    """Run a blocking function in Starlette's thread pool with a timeout.
-
-    Args:
-        func: Blocking callable
-        *args, **kwargs: Passed to ``func``
-        _timeout: Seconds to wait (default ``API_TIMEOUT``)
+    """HTTP wrapper around :func:`run_blocking`.
 
     Raises:
-        HTTPException: 504 if the call does not finish in time. The worker thread
-            cannot be cancelled and finishes in the background.
+        HTTPException: 503 (with ``Retry-After``) when the server is at capacity,
+            504 if the call does not finish within ``API_TIMEOUT``.
     """
-    timeout = get_config().timeout if _timeout is None else _timeout
     try:
-        async with asyncio.timeout(timeout):
-            return await run_in_threadpool(func, *args, **kwargs)
+        return await run_blocking(func, *args, timeout=_timeout, **kwargs)
+    except AnalysisCapacityError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Server busy, retry later",
+            headers={"Retry-After": "5"},
+        ) from e
     except TimeoutError as e:
-        logger.warning(
-            "Blocking call %s timed out after %ss", getattr(func, "__name__", func), timeout
-        )
+        logger.warning("Blocking call %s timed out", getattr(func, "__name__", func))
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Analysis timed out"
         ) from e

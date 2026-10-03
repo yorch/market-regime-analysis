@@ -365,7 +365,7 @@ class TestExportAndCharts:
         assert "apikey" not in resp.text
 
     @pytest.mark.parametrize(
-        ("path", "code"), [("/api/v1/export/csv", 503), ("/api/v1/charts/generate", 500)]
+        ("path", "code"), [("/api/v1/export/csv", 500), ("/api/v1/charts/generate", 500)]
     )
     def test_export_errors_do_not_leak(self, client, auth_headers, stub_analyzer, path, code):
         stub_analyzer.error = RuntimeError("token=LEAKED123456")

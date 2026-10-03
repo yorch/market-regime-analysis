@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
+from pydantic import ValidationError as PydanticValidationError
 
 from mra_lib import MarketRegimeAnalyzer, PortfolioHMMAnalyzer, SimonsRiskCalculator
 from mra_lib.config.data_classes import RegimeAnalysis
@@ -69,8 +70,11 @@ _ProviderRateLimitError: type[Exception] | None = getattr(_provider_base, "RateL
 PROVIDER_RETRY_AFTER_SECONDS = 60
 
 
-def classify_exception(exc: Exception) -> HTTPException:
+def classify_exception(exc: Exception) -> HTTPException:  # noqa: PLR0911
     """Map an analysis exception to an HTTP error with a generic, safe detail."""
+    if isinstance(exc, PydanticValidationError):
+        # Server-side model failure (a ValueError subclass), not bad client input.
+        return HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR)
     if _InvalidSymbolError is not None and isinstance(exc, _InvalidSymbolError):
         return HTTPException(status.HTTP_400_BAD_REQUEST, detail="Unknown or invalid symbol")
     if _ProviderAuthError is not None and isinstance(exc, _ProviderAuthError):
@@ -185,6 +189,7 @@ async def current_analysis(
 
         def run_analysis() -> list[AnalysisResponse]:
             analyses = []
+            last_error: Exception | None = None
             for timeframe in TIMEFRAMES:
                 try:
                     analyzer = _analyzer(
@@ -194,17 +199,14 @@ async def current_analysis(
                     analyses.append(
                         convert_regime_analysis_to_response(analysis, request.symbol, timeframe)
                     )
-                except Exception:
+                except Exception as e:
+                    last_error = e
                     logger.warning("Failed to analyze timeframe %s", timeframe, exc_info=True)
+            if not analyses and last_error is not None:
+                raise last_error  # every timeframe failed: report the real cause
             return analyses
 
         analyses = await run_in_thread(run_analysis)
-
-        if not analyses:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Failed to analyze any timeframes",
-            )
         return MultiAnalysisResponse(symbol=request.symbol, analyses=analyses)
 
 
@@ -431,6 +433,7 @@ async def export_csv(
 
         def export_data() -> tuple[str, int]:
             frames = []
+            last_error: Exception | None = None
             for timeframe in TIMEFRAMES:
                 try:
                     analyzer = _analyzer(
@@ -439,8 +442,11 @@ async def export_csv(
                     frame = analyzer.build_export_dataframe()
                     if not frame.empty:
                         frames.append(frame)
-                except Exception:
+                except Exception as e:
+                    last_error = e
                     logger.warning("CSV export skipped timeframe %s", timeframe, exc_info=True)
+            if not frames and last_error is not None:
+                raise last_error  # every timeframe failed: report the real cause
             export_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
             return export_df.to_csv(index=False), len(export_df)
 

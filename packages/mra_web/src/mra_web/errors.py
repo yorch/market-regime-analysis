@@ -18,7 +18,7 @@ from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from mra_web.models import ErrorResponse
-from mra_web.utils import to_jsonable
+from mra_web.utils import NumpyJSONResponse, to_jsonable
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ def error_response(
         message=message,
         details=to_jsonable(details or {}),
     )
-    return JSONResponse(
+    return NumpyJSONResponse(
         status_code=status_code, content=body.model_dump(mode="json"), headers=headers
     )
 
@@ -77,7 +77,7 @@ async def http_exception_handler(_request: Request, exc: Exception) -> JSONRespo
     """FastAPI and Starlette HTTP exceptions (including 404/405 from routing)."""
     assert isinstance(exc, StarletteHTTPException)
     body = _envelope_from_detail(exc.status_code, exc.detail)
-    return JSONResponse(
+    return NumpyJSONResponse(
         status_code=exc.status_code,
         content=body.model_dump(mode="json"),
         headers=getattr(exc, "headers", None),
@@ -113,7 +113,13 @@ async def rate_limit_exception_handler(_request: Request, exc: Exception) -> JSO
 
 
 async def unhandled_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
-    """Anything else: log server-side, return a generic 500."""
+    """Anything else: log server-side, return a generic 500.
+
+    Starlette runs this from its outermost ``ServerErrorMiddleware``, so the
+    response bypasses CORS/timing middleware and the exception is re-raised for
+    the server to log. Endpoints therefore convert their own failures into
+    ``HTTPException`` (see ``endpoints._tracked``); this is the last resort.
+    """
     logger.error("Unhandled exception", exc_info=exc)
     return error_response(status.HTTP_500_INTERNAL_SERVER_ERROR, "An unexpected error occurred")
 

@@ -115,6 +115,11 @@ class APIConfig(BaseModel):
     ws_max_connections: int = Field(default=100, description="Max concurrent WebSockets")
     ws_max_connections_per_ip: int = Field(default=5, description="Max WebSockets per client IP")
 
+    # Blocking analyses running at once (HTTP and WebSocket); excess requests get 503
+    max_concurrent_analyses: int = Field(
+        default=4, ge=1, description="Max concurrent analysis worker threads"
+    )
+
     # Environment
     environment: str = Field(default=PRODUCTION, description="Environment (development/production)")
     debug: bool = Field(default=False, description="Debug mode")
@@ -213,6 +218,7 @@ class APIConfig(BaseModel):
             or ["Authorization", "Content-Type", "X-API-Key"],
             ws_max_connections=int(os.getenv("WS_MAX_CONNECTIONS", "100")),
             ws_max_connections_per_ip=int(os.getenv("WS_MAX_CONNECTIONS_PER_IP", "5")),
+            max_concurrent_analyses=int(os.getenv("API_MAX_CONCURRENT_ANALYSES", "4")),
             environment=os.getenv("ENVIRONMENT", PRODUCTION),
             debug=_env_bool("DEBUG", False),
             enable_docs=None

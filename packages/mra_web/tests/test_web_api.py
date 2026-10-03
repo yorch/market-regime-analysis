@@ -432,6 +432,16 @@ def ws_analysis(monkeypatch):
 WS_BASE = "/ws/monitoring/SPY?provider=yfinance"
 
 
+def _fast_ticks(monkeypatch):
+    """Shrink only the inter-tick sleep so later ticks happen immediately."""
+    real = ws_module._sleep_or_disconnect
+
+    async def fast(disconnected, interval):
+        return await real(disconnected, 0.01)
+
+    monkeypatch.setattr(ws_module, "_sleep_or_disconnect", fast)
+
+
 class TestWebSocketLifecycle:
     def test_connect_update_disconnect_terminates_loop(self, client, api_key_headers, ws_analysis):
         start = time.monotonic()
@@ -449,13 +459,7 @@ class TestWebSocketLifecycle:
         assert ws_analysis["calls"] == 1
 
     def test_regime_change_alert(self, client, api_key_headers, ws_analysis, monkeypatch):
-        real_wait = asyncio.wait
-
-        async def fast_wait(aws, timeout=None, **kw):
-            # Shrink the inter-tick sleep so the second tick happens immediately
-            return await real_wait(aws, timeout=0.01 if timeout else None, **kw)
-
-        monkeypatch.setattr(ws_module.asyncio, "wait", fast_wait)
+        _fast_ticks(monkeypatch)
         ws_analysis["results"] = [
             _analysis(MarketRegime.BULL_TRENDING),
             _analysis(MarketRegime.BEAR_TRENDING),
@@ -472,12 +476,7 @@ class TestWebSocketLifecycle:
     def test_errors_are_generic_and_close_1011(
         self, client, api_key_headers, ws_analysis, monkeypatch
     ):
-        real_wait = asyncio.wait
-
-        async def fast_wait(aws, timeout=None, **kw):
-            return await real_wait(aws, timeout=0.01 if timeout else None, **kw)
-
-        monkeypatch.setattr(ws_module.asyncio, "wait", fast_wait)
+        _fast_ticks(monkeypatch)
         ws_analysis["results"] = [
             ConnectionError("https://x?apikey=LEAKED123456")
         ] * ws_module.MAX_CONSECUTIVE_ERRORS
@@ -547,3 +546,89 @@ class TestExceptionClassification:
         limited = endpoints.classify_exception(RateLimitError("x"))
         assert limited.status_code == 503
         assert limited.headers == {"Retry-After": "60"}
+
+
+class TestAnalysisCapacity:
+    @pytest.fixture
+    def one_slot(self, monkeypatch):
+        import threading
+
+        sem = threading.BoundedSemaphore(1)
+        monkeypatch.setattr(utils_module, "_analysis_slots", sem)
+        return sem
+
+    def test_timed_out_thread_keeps_slot_until_done(self, one_slot):
+        import threading
+
+        release = threading.Event()
+
+        async def scenario():
+            with pytest.raises(HTTPException) as timeout_exc:
+                await run_in_thread(release.wait, 5, _timeout=0.05)
+            assert timeout_exc.value.status_code == 504
+            # The abandoned thread still holds the only slot
+            with pytest.raises(HTTPException) as busy:
+                await run_in_thread(lambda: 1)
+            assert busy.value.status_code == 503
+            assert busy.value.headers == {"Retry-After": "5"}
+            release.set()
+            for _ in range(100):
+                if one_slot.acquire(blocking=False):
+                    one_slot.release()
+                    break
+                await asyncio.sleep(0.01)
+            return await run_in_thread(lambda: 2)
+
+        assert asyncio.run(scenario()) == 2
+
+    def test_slot_released_after_error(self, one_slot):
+        def boom():
+            raise ValueError("x")
+
+        async def scenario():
+            with pytest.raises(ValueError):
+                await run_in_thread(boom)
+            return await run_in_thread(lambda: 3)
+
+        assert asyncio.run(scenario()) == 3
+
+    def test_ws_reports_busy(self, client, api_key_headers, one_slot, monkeypatch):
+        one_slot.acquire()  # exhaust capacity
+        try:
+            monkeypatch.setattr(ws_module, "analyze_symbol", lambda *a: None)
+            url = f"{WS_BASE}&interval=3600"
+            with client.websocket_connect(url, headers=api_key_headers) as ws:
+                ws.receive_json()
+                msg = ws.receive_json()
+                assert msg["message_type"] == "error"
+                assert msg["data"]["error"] == "Server busy"
+        finally:
+            one_slot.release()
+
+
+def test_pydantic_validation_error_is_500():
+    from pydantic import BaseModel
+
+    from mra_web.endpoints import classify_exception
+
+    class M(BaseModel):
+        x: float
+
+    try:
+        M(x="nope")  # type: ignore[arg-type]
+    except Exception as e:
+        assert classify_exception(e).status_code == 500
+
+
+def test_current_reports_cause_when_all_timeframes_fail(authed, monkeypatch):
+    from mra_web import endpoints
+
+    class Failing:
+        def __init__(self, *a, **k):
+            raise ConnectionError("down apikey=LEAKED123456")
+
+    monkeypatch.setattr(endpoints, "MarketRegimeAnalyzer", Failing)
+    resp = authed.post("/api/v1/analysis/current", json={"symbol": "SPY", "provider": "yfinance"})
+    body = _assert_envelope(resp, 503, "SERVICE_UNAVAILABLE")
+    assert "LEAKED" not in resp.text
+    assert body["message"] == "Data provider unavailable"

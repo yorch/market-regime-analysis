@@ -17,7 +17,6 @@ from datetime import UTC, datetime
 
 from fastapi import Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.routing import APIRouter
-from starlette.concurrency import run_in_threadpool
 
 from mra_lib import MarketRegimeAnalyzer
 from mra_lib.config.data_classes import RegimeAnalysis
@@ -31,7 +30,13 @@ from .auth import (
 )
 from .config import APIConfig
 from .models import MonitoringMessage, MonitoringUpdate, normalize_symbol, validate_provider_name
-from .utils import periods_for, to_jsonable, validate_api_key
+from .utils import (
+    AnalysisCapacityError,
+    periods_for,
+    run_blocking,
+    to_jsonable,
+    validate_api_key,
+)
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -214,7 +219,7 @@ async def _authenticate_first_message(websocket: WebSocket, cfg: APIConfig) -> U
         if not isinstance(token, str) or not token:
             return None
         return authenticate_token(cfg, token)
-    except (TimeoutError, ValueError, HTTPException):
+    except (TimeoutError, ValueError, KeyError, HTTPException):  # KeyError: binary frame
         return None
 
 
@@ -393,17 +398,33 @@ def _update_messages(
     return messages
 
 
+async def _sleep_or_disconnect(disconnected: asyncio.Task[None], interval: float) -> bool:
+    """Wait up to ``interval`` seconds; True if the client disconnected meanwhile."""
+    await asyncio.wait({disconnected}, timeout=interval)
+    return disconnected.done()
+
+
+def _error_message(symbol: str, error: str, error_count: int) -> MonitoringMessage:
+    # Generic text only: exception messages can carry provider keys
+    return MonitoringMessage(
+        message_type="error",
+        symbol=symbol,
+        data={"error": error, "error_count": error_count, "max_errors": MAX_CONSECUTIVE_ERRORS},
+    )
+
+
 async def monitoring_loop(
     websocket: WebSocket, symbol: str, provider: str, api_key: str, interval: int
 ) -> None:
     """
     Main monitoring loop for one WebSocket connection.
 
-    Analysis runs in the thread pool (with ``API_TIMEOUT``), so the event loop is
-    never blocked. A concurrent receive task detects client disconnects, which
-    stop the loop immediately, also while waiting for the next interval. A failed
-    send stops the loop. After ``MAX_CONSECUTIVE_ERRORS`` failed analyses the
-    socket is closed with 1011.
+    Analysis runs in the thread pool (bounded by ``API_TIMEOUT`` and the shared
+    ``API_MAX_CONCURRENT_ANALYSES`` slots), so the event loop is never blocked. A
+    concurrent receive task detects client disconnects, which stop the loop
+    immediately, also while waiting for the next interval. A failed send stops
+    the loop. After ``MAX_CONSECUTIVE_ERRORS`` failed analyses the socket is
+    closed with 1011.
 
     Args:
         websocket: Accepted WebSocket connection
@@ -414,38 +435,28 @@ async def monitoring_loop(
     """
     timeout = get_app_config(websocket).timeout
     disconnected = asyncio.create_task(_wait_for_disconnect(websocket))
+    analysis_task: asyncio.Task[RegimeAnalysis] | None = None
     previous_regime: str | None = None
     error_count = 0
 
     try:
         while True:
             analysis_task = asyncio.create_task(
-                asyncio.wait_for(
-                    run_in_threadpool(analyze_symbol, symbol, provider, api_key), timeout
-                )
+                run_blocking(analyze_symbol, symbol, provider, api_key, timeout=timeout)
             )
             await asyncio.wait({analysis_task, disconnected}, return_when=asyncio.FIRST_COMPLETED)
             if disconnected.done():
-                analysis_task.cancel()  # the worker thread finishes in the background
                 return
 
             try:
                 analysis = analysis_task.result()
+            except AnalysisCapacityError:
+                error_count += 1
+                messages = [_error_message(symbol, "Server busy", error_count)]
             except Exception:
                 error_count += 1
                 logger.exception("Monitoring error for %s", symbol)
-                # Generic text only: exception messages can carry provider keys
-                messages = [
-                    MonitoringMessage(
-                        message_type="error",
-                        symbol=symbol,
-                        data={
-                            "error": "Analysis failed",
-                            "error_count": error_count,
-                            "max_errors": MAX_CONSECUTIVE_ERRORS,
-                        },
-                    )
-                ]
+                messages = [_error_message(symbol, "Analysis failed", error_count)]
             else:
                 error_count = 0
                 messages = _update_messages(symbol, analysis, previous_regime)
@@ -462,11 +473,16 @@ async def monitoring_loop(
                 return
 
             # Sleep until the next tick, waking early if the client disconnects
-            await asyncio.wait({disconnected}, timeout=interval)
-            if disconnected.done():
+            if await _sleep_or_disconnect(disconnected, interval):
                 return
     finally:
+        # The worker thread (if any) finishes in the background and keeps its
+        # analysis slot until then.
+        if analysis_task is not None and not analysis_task.done():
+            analysis_task.cancel()
         disconnected.cancel()
+        if disconnected.done() and not disconnected.cancelled():
+            disconnected.exception()  # retrieve, so it is never reported as unhandled
         manager.disconnect(websocket)
 
 
