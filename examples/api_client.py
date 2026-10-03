@@ -14,7 +14,10 @@ from typing import Any
 import requests
 import websockets
 
-from examples.common import Banner
+try:  # `python -m examples.api_client` / imported as a package
+    from examples.common import Banner
+except ImportError:  # `uv run examples/api_client.py` puts examples/ on sys.path
+    from common import Banner  # type: ignore[no-redef]
 
 banner = Banner(50)
 

@@ -4,6 +4,5 @@ Run examples via:
 
     uv run examples/programmatic.py
     uv run examples/api_client.py
-
-Root-level wrappers exist for backwards compatibility (examples.py, examples_api.py).
+    uv run examples/custom_provider.py
 """

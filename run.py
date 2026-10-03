@@ -8,11 +8,14 @@ Usage:
 """
 
 import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent
 
 # Ensure workspace packages are importable from source
-sys.path.insert(0, "packages/mra_lib/src")
-sys.path.insert(0, "packages/mra_cli/src")
-sys.path.insert(0, "packages/mra_web/src")
+sys.path.insert(0, str(_ROOT / "packages/mra_lib/src"))
+sys.path.insert(0, str(_ROOT / "packages/mra_cli/src"))
+sys.path.insert(0, str(_ROOT / "packages/mra_web/src"))
 
 from mra_cli.main import cli
 

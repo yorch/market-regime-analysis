@@ -25,8 +25,11 @@ git clone <repository-url>
 cd market-regime-analysis
 uv sync
 
-# Run analysis (no API key needed)
-uv run mra current-analysis --provider yfinance --symbol SPY
+# Run analysis (Yahoo Finance is the default provider; no API key needed)
+uv run mra current-analysis --symbol SPY
+
+# Run fully offline with deterministic synthetic data
+uv run mra current-analysis --provider mock --symbol SPY
 
 # Run tests
 just test
@@ -62,7 +65,7 @@ See `uv run mra --help` for all CLI commands.
 
 - **Daily (1D)**: Long-term regime trends (2 years of data)
 - **Hourly (1H)**: Medium-term regime shifts (6 months of data)
-- **15-Minute (15m)**: Short-term regime changes (2 months of data)
+- **15-Minute (15m)**: Short-term regime changes (1 month of data; Yahoo Finance only serves 60 days of 15m bars)
 
 ### Backtesting & Strategy Optimization
 
@@ -97,7 +100,7 @@ REGIME CLASSIFICATION:
 
 TRADING RECOMMENDATION:
    Strategy: Trend Following
-   Position Size: 15.8%
+   Position Multiplier: 0.50x
    Risk Level: Medium
 
 STATISTICAL ARBITRAGE:
@@ -116,28 +119,45 @@ KEY LEVELS:
 ## CLI Commands
 
 ```bash
-uv run mra current-analysis --symbol SPY --provider yfinance
+uv run mra current-analysis --symbol SPY
 uv run mra detailed-analysis --symbol SPY --timeframe 1D
-uv run mra generate-charts --symbol SPY --timeframe 1D --days 60
+uv run mra generate-charts --symbol SPY --timeframe 1D --days 60 --output spy.png
 uv run mra multi-symbol-analysis --symbols "SPY,QQQ,IWM"
 uv run mra position-sizing --base-size 0.02 --regime "Bull Trending" --confidence 0.8
 uv run mra export-csv --symbol SPY --filename analysis.csv
+uv run mra continuous-monitoring --symbol SPY --interval 300   # --once / --max-iterations N
 uv run mra regime-forecast --symbol SPY --steps 10
 uv run mra calibrate-multipliers --symbol SPY --method sharpe_weighted
 uv run mra list-providers
-uv run mra start-api --dev
+uv run mra start-api --dev                                     # binds 127.0.0.1 by default
 uv run mra-optimize --mode grid --symbol SPY --provider yfinance
 ```
+
+`--provider` and `--api-key` work before or after the subcommand
+(`mra --provider polygon current-analysis` or `mra current-analysis --provider polygon`).
+The default provider is `yfinance`; set `DEFAULT_PROVIDER` to change it. API keys are only
+checked by commands that fetch data, so `--help`, `list-providers`, and `position-sizing`
+never need one. Commands exit non-zero when the analysis, chart, or export fails (for
+`current-analysis`, when every timeframe fails); add `--debug` for a full traceback.
 
 ## Data Providers
 
 | Provider | API Key | Setup |
 |----------|---------|-------|
-| Yahoo Finance | Not required | `--provider yfinance` |
+| Yahoo Finance (default) | Not required | `--provider yfinance` |
+| Mock (offline) | Not required | `--provider mock` |
 | Alpha Vantage | `ALPHA_VANTAGE_API_KEY` | `--provider alphavantage` |
 | Polygon.io | `POLYGON_API_KEY` | `--provider polygon` |
 | Alpaca | `APCA_API_KEY_ID` + `APCA_API_SECRET_KEY` | `--provider alpaca` |
 | Tiingo | `TIINGO_API_KEY` | `--provider tiingo` |
+
+All providers return float OHLCV columns on a tz-naive index: intraday bars are labeled in UTC, daily bars by session date. Requests use `ProviderConfig.timeout`/`retries` and a client-side rate limiter shared by every instance with the same provider and key. They raise `InvalidSymbolError` (a `ValueError`), `AuthError` or `RateLimitError` (both `ConnectionError`s) so callers can tell a bad symbol from a network problem.
+
+The mock provider generates a deterministic series per symbol, for demos, tests, and offline work.
+
+Alpha Vantage's free tier returns **unadjusted** daily prices (splits show up as large one-day moves) and only about the last 30 days of intraday bars. Full daily history is also premium-only, so free keys get only the latest 100 daily bars. With a premium key, set `ALPHA_VANTAGE_PREMIUM=1` to get full, split/dividend-adjusted daily history. Weekly, monthly, and intraday bars are always adjusted. The free tier also allows only 25 requests per day.
+
+Yahoo Finance serves sub-hourly bars for the last 60 days only, and hourly bars for the last 730 days. Requests outside these windows fail up front.
 
 Alpaca uses the free IEX feed by default. Its volume covers only IEX trades, so set `ALPACA_DATA_FEED=sip` for consolidated volume. On the free plan, SIP data is delayed 15 minutes. To pass Alpaca keys with `--api-key`, use the form `KEY_ID:SECRET_KEY`. Alpaca intraday bars are limited to regular trading hours (09:30–16:00 ET) so they match the other providers. To keep pre- and post-market bars, pass `extended_hours=True` in the provider config.
 
@@ -168,11 +188,11 @@ The system provides two HMM implementations:
 ## Configuration
 
 ```python
-# Custom periods for different timeframes
+# Custom periods for different timeframes (defaults: mra_lib.config.timeframes.DEFAULT_PERIODS)
 periods = {
     "1D": "2y",    # Daily data for 2 years
     "1H": "6mo",   # Hourly data for 6 months
-    "15m": "2mo"   # 15-min data for 2 months
+    "15m": "1mo"   # 15-min data for 1 month
 }
 
 from mra_lib import MarketRegimeAnalyzer
