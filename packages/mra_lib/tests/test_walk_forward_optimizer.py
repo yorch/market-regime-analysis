@@ -84,7 +84,7 @@ class TestRegimeDetection:
         assert type(det) is TrueHMMDetector
         # Same class and model settings as the analyzer (only fewer EM restarts)
         assert det.n_init == v.hmm_n_init
-        assert det.n_iter == TrueHMMDetector().n_iter
+        assert det.n_iter == v.hmm_n_iter
         assert det.covariance_type == TrueHMMDetector().covariance_type
 
     def test_failed_refit_keeps_previous_model(self, data, monkeypatch, caplog):

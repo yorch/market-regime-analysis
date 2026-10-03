@@ -693,6 +693,8 @@ def select_n_states(
         ValueError: If no candidate could be fitted
     """
     detector_kwargs.pop("n_states", None)
+    # each candidate must be fitted at its own size, never silently shrunk
+    detector_kwargs["adapt_n_states"] = False
     scores: dict[int, float] = {}
     for n in candidates:
         detector = TrueHMMDetector(n_states=n, **detector_kwargs)
