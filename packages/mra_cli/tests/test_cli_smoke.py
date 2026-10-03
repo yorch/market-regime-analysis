@@ -55,6 +55,23 @@ class TestValidateApiKey:
         result = validate_api_key("polygon", None)
         assert result == "poly_key"
 
+    def test_alpaca_env_pair(self, monkeypatch):
+        monkeypatch.setenv("APCA_API_KEY_ID", "kid")
+        monkeypatch.setenv("APCA_API_SECRET_KEY", "sec")
+        assert validate_api_key("alpaca", None) == "kid:sec"
+
+    def test_alpaca_missing_secret_raises(self, monkeypatch):
+        monkeypatch.setenv("APCA_API_KEY_ID", "kid")
+        monkeypatch.delenv("APCA_API_SECRET_KEY", raising=False)
+        import click
+
+        with pytest.raises(click.ClickException, match="APCA_API_SECRET_KEY"):
+            validate_api_key("alpaca", None)
+
+    def test_tiingo_env_var(self, monkeypatch):
+        monkeypatch.setenv("TIINGO_API_KEY", "tk")
+        assert validate_api_key("tiingo", None) == "tk"
+
 
 class TestValidatePercentage:
     def test_valid(self):

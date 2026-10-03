@@ -9,7 +9,6 @@ implementing Jim Simons' Hidden Markov Model methodology for quantitative tradin
 
 import concurrent.futures
 import functools
-import os
 from typing import Any
 
 import click
@@ -21,7 +20,8 @@ from mra_lib import (
     SimonsRiskCalculator,
 )
 from mra_lib.backtesting import RegimeMultiplierCalibrator
-from mra_lib.data_providers import MarketDataProvider
+from mra_lib.data_providers import MarketDataProvider, required_env_vars, resolve_api_key
+from mra_lib.data_providers.credentials import PROVIDER_ENV_PAIRS
 from mra_lib.indicators.true_hmm_detector import TrueHMMDetector
 
 
@@ -38,27 +38,17 @@ def validate_api_key(provider: str, api_key: str | None) -> str:
     Raises:
         click.ClickException: If required API key is missing
     """
-    if provider not in ["alphavantage", "polygon"]:
-        return api_key or ""
-
-    if api_key:
-        return api_key
-
-    # Try environment variables
-    env_keys = {
-        "alphavantage": ["ALPHA_VANTAGE_API_KEY", "ALPHAVANTAGE_API_KEY"],
-        "polygon": ["POLYGON_API_KEY"],
-    }
-
-    for env_var in env_keys.get(provider, []):
-        api_key = os.getenv(env_var)
-        if api_key:
-            return api_key
+    resolved = resolve_api_key(provider, api_key)
+    if resolved is not None:
+        return resolved
 
     provider_name = provider.replace("_", " ").title()
+    # Key-pair providers need every variable; otherwise any one of them will do
+    joiner = " and " if provider in PROVIDER_ENV_PAIRS else " or "
+    env_vars = joiner.join(required_env_vars(provider))
     raise click.ClickException(
         f"{provider_name} API key is required when using {provider} provider. "
-        f"Set {env_keys[provider][0]} environment variable or use --api-key option."
+        f"Set {env_vars} or use --api-key option."
     )
 
 
@@ -137,7 +127,7 @@ def analyze_timeframe_parallel(
 @click.option("--debug/--no-debug", default=False, help="Enable debug mode")
 @click.option(
     "--provider",
-    type=click.Choice(["yfinance", "alphavantage", "polygon"]),
+    type=click.Choice(["yfinance", "alphavantage", "polygon", "alpaca", "tiingo"]),
     default="alphavantage",
     help="Data provider for all commands",
 )
@@ -326,8 +316,12 @@ def list_providers() -> None:
     print("   --provider yfinance")
     print("   --provider alphavantage --api-key YOUR_KEY")
     print("   --provider polygon --api-key YOUR_KEY")
+    print("   --provider alpaca --api-key KEY_ID:SECRET_KEY")
+    print("   --provider tiingo --api-key YOUR_KEY")
     print("   export ALPHA_VANTAGE_API_KEY=your_key")
     print("   export POLYGON_API_KEY=your_key")
+    print("   export APCA_API_KEY_ID=your_key_id APCA_API_SECRET_KEY=your_secret")
+    print("   export TIINGO_API_KEY=your_key")
 
 
 @cli.command()

@@ -7,7 +7,6 @@ This module provides helper functions and error handling utilities.
 import asyncio
 import json
 import logging
-import os
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -18,6 +17,7 @@ from fastapi.responses import JSONResponse
 
 from mra_lib.config.data_classes import RegimeAnalysis
 from mra_lib.config.enums import MarketRegime, TradingStrategy
+from mra_lib.data_providers import required_env_vars, resolve_api_key
 
 from .models import AnalysisResponse, ErrorResponse
 
@@ -86,23 +86,9 @@ def convert_numpy_types(obj: Any) -> Any:  # noqa: PLR0911
 
 def validate_api_key(provider: str, api_key: str | None) -> str:
     """Validate and retrieve API key for providers that require it."""
-
-    if provider not in ["alphavantage", "polygon"]:
-        return api_key or ""
-
-    if api_key:
-        return api_key
-
-    # Try environment variables
-    env_keys = {
-        "alphavantage": ["ALPHA_VANTAGE_API_KEY", "ALPHAVANTAGE_API_KEY"],
-        "polygon": ["POLYGON_API_KEY"],
-    }
-
-    for env_var in env_keys.get(provider, []):
-        api_key = os.getenv(env_var)
-        if api_key:
-            return api_key
+    resolved = resolve_api_key(provider, api_key)
+    if resolved is not None:
+        return resolved
 
     provider_name = provider.replace("_", " ").title()
     raise HTTPException(
@@ -112,7 +98,7 @@ def validate_api_key(provider: str, api_key: str | None) -> str:
             f"{provider_name} API key is required when using {provider} provider.",
             {
                 "provider": provider,
-                "required_env_vars": env_keys[provider],
+                "required_env_vars": required_env_vars(provider),
             },
         ).model_dump(),
     )

@@ -63,7 +63,7 @@ app = FastAPI(
     - **Portfolio Analysis**: Cross-asset correlation and regime analysis
     - **Real-time Monitoring**: WebSocket streaming for continuous updates
     - **Risk Management**: Kelly Criterion-based position sizing
-    - **Multiple Providers**: Support for Alpha Vantage, Polygon.io, and Yahoo Finance
+    - **Multiple Providers**: Support for Alpha Vantage, Polygon.io, Alpaca, Tiingo, and Yahoo Finance
     
     ## Authentication
     

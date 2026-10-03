@@ -133,6 +133,10 @@ uv run mra-optimize --mode grid --symbol SPY --provider yfinance
 | Yahoo Finance | Not required | `--provider yfinance` |
 | Alpha Vantage | `ALPHA_VANTAGE_API_KEY` | `--provider alphavantage` |
 | Polygon.io | `POLYGON_API_KEY` | `--provider polygon` |
+| Alpaca | `APCA_API_KEY_ID` + `APCA_API_SECRET_KEY` | `--provider alpaca` |
+| Tiingo | `TIINGO_API_KEY` | `--provider tiingo` |
+
+Alpaca uses the free IEX feed by default. Its volume covers only IEX trades, so set `ALPACA_DATA_FEED=sip` for consolidated volume. On the free plan, SIP data is delayed 15 minutes. To pass Alpaca keys with `--api-key`, use the form `KEY_ID:SECRET_KEY`. Alpaca intraday bars are limited to regular trading hours (09:30–16:00 ET) so they match the other providers. To keep pre- and post-market bars, pass `extended_hours=True` in the provider config.
 
 ## Mathematical Approach
 
@@ -178,7 +182,7 @@ analyzer = MarketRegimeAnalyzer("SPY", periods=periods)
 - **scikit-learn** — Gaussian Mixture Models
 - **hmmlearn** — True HMM implementation (Viterbi decoding)
 - **click** — CLI framework
-- **yfinance**, **alpha-vantage**, **polygon-api-client** — Market data providers
+- **yfinance**, **alpha-vantage**, **polygon-api-client**, **requests** (Alpaca, Tiingo) — Market data providers
 - **matplotlib** — Visualization
 - **fastapi**, **uvicorn**, **pydantic** — Web API
 - **python-jose**, **slowapi**, **websockets** — Auth, rate limiting, WebSocket

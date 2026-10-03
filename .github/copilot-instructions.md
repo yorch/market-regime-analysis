@@ -36,7 +36,7 @@
 
 ## Integration & External Dependencies
 
-- Data providers: `yfinance`, `alpha-vantage`, `polygon` (see `packages/mra_lib/src/mra_lib/data_providers/` package).
+- Data providers: `yfinance`, `alpha-vantage`, `polygon`, `alpaca`, `tiingo` (see `packages/mra_lib/src/mra_lib/data_providers/` package).
 - Core dependencies: pandas, numpy, scikit-learn, matplotlib, yfinance, alpha-vantage.
 - Optional: TA-Lib for technical indicators (fallbacks provided).
 

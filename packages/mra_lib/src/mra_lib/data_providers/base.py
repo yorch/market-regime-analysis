@@ -5,9 +5,47 @@ Core interfaces and utilities for market data providers in the plug-and-play arc
 """
 
 from abc import ABC, abstractmethod
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 import pandas as pd
+
+# Lookback in days for the standard period strings shared across providers
+PERIOD_DAYS: dict[str, int] = {
+    "1d": 1,
+    "5d": 5,
+    "1mo": 30,
+    "2mo": 60,
+    "3mo": 90,
+    "6mo": 180,
+    "1y": 365,
+    "2y": 730,
+    "5y": 1825,
+    "10y": 3650,
+    "max": 7300,  # ~20 years
+}
+
+
+def period_to_start(period: str, end: datetime | None = None) -> datetime:
+    """
+    Convert a period string (e.g. '1y', '6mo', 'ytd') into a start datetime.
+
+    Args:
+        period: Period string; one of ``PERIOD_DAYS`` keys or ``'ytd'``
+        end: End of the range (defaults to now, UTC)
+
+    Returns:
+        Start datetime with the same timezone as ``end``
+
+    Raises:
+        ValueError: If the period is not recognized
+    """
+    end = end or datetime.now(UTC)
+    if period == "ytd":
+        return end.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    if period not in PERIOD_DAYS:
+        raise ValueError(f"Unsupported period '{period}'. Supported: {sorted(PERIOD_DAYS)}")
+    return end - timedelta(days=PERIOD_DAYS[period])
 
 
 class ProviderConfig:
