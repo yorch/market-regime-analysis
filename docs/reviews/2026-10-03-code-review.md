@@ -17,6 +17,42 @@ several reviewers are merged; the reviewer count is shown as `×N` where it adds
 | `uv lock --check`, `uv build` | clean |
 | `docker compose up` | **crash-loops** (`unrecognized arguments: --no-dashboard`) |
 
+## Remediation status (updated after #13–#20)
+
+| Gate | At review (`388235a`) | Now (`7cbbf30`) |
+|---|---|---|
+| `pytest` (non-integration) | 472 passed, 1 failed | **880 passed** |
+| Coverage (honest regex) | ~67% | **92%** |
+| `mypy packages/` | 16 errors, soft-fail | **0 errors, blocking in CI** |
+| `docker compose up` | crash-loops | boots; CI smoke-tests `/health` |
+
+| PR | Resolved |
+|---|---|
+| #15 `fix(deploy,ci)` | P0-16 (compose/Docker), coverage regex, integration markers, CI permissions/secret scoping/`--locked`/SHA pins, pre-commit local hooks, dependency declarations, non-root volume ownership, `.env.example` rewrite |
+| #16 `fix(analytics)` | P0-11 (persistence/transition), P0-12 (GMM feature lookup), risk sizing (no-edge floor, hedge headroom, vol targeting, Kelly cap), multiplier saturation, timeframe annualization, returns-based correlations + Engle-Granger pairs, shared `config/regime_tables.py`, scoped warnings |
+| #17 `fix(web)` security | P0-1…6 (token minting removed → `mra-token`, strong `JWT_SECRET`, env `API_KEYS` via `X-API-Key`, CSV streamed not written, generic errors + log scrubbing, authenticated WebSocket), production default, CORS, rate limits (slowapi was silently not applied → path-based limiter), input caps, P0-7 headless charts |
+| #18 `fix(backtesting)` | P0-10 (short accounting), Sharpe/Sortino/Calmar, stitched drawdown, gap-aware stops, half-spread + market impact, unified trade stats, regime cache (~20× faster optimizer), holdout split, seeded search |
+| #19 `fix(cli,providers)` | P0-13/14/15 (15m period, yfinance default, lazy keys, per-subcommand `--provider`), `mock` provider, exit codes, resilient monitoring, provider timeouts/error types/rate limiter, AV adjusted + period trim, Polygon pagination, tz contract, runnable examples |
+| #20 `fix(web)` stability | P0-8/9 (WebSocket lifecycle + event loop), thread-pool timeout + concurrency cap, single error envelope, strict JSON, per-timeframe loading, multi-symbol via portfolio APIs |
+| #13, #14 | Dependabot; mypy made blocking; `generate-charts` repair after #17/#19 |
+
+### Still open
+
+- **Refactor**: one detector everywhere (analyzer uses GMM, walk-forward validates TrueHMM);
+  stationary feature set; overparameterized models (confidence ≈ 1.0); TrueHMM vol-percentile
+  mapping bias; non-causal volume-feature selection in `TrueHMMDetector._prepare_features`;
+  `print` → `logging` in `mra_lib`; analyzer re-wraps provider errors as `ValueError`; typed
+  results instead of dicts; unused `types/protocols.py`.
+- **Decision**: backtest `strategy.py` regime→strategy map differs from shared `REGIME_STRATEGIES`.
+- **Small**: `mra start-api --dev` doesn't set `ENVIRONMENT=development`; unused `slowapi` and
+  `alpha-vantage` deps; multi-symbol returns blanket 503 when all symbols fail; in-memory
+  per-worker rate limits; optimizer multiple-testing correction (deflated Sharpe); calibrator
+  bar-by-bar regime attribution.
+- **Docs**: `docs/api.md`, `docs/status.md`, README/AGENTS.md need to reflect the merged changes
+  (new auth flow, error envelope, CSV/PNG responses, `WS_MAX_CONNECTIONS*`,
+  `API_MAX_CONCURRENT_ANALYSES`).
+- **Features**: none of the proposals below have started.
+
 ---
 
 ## P0 — Critical
