@@ -14,10 +14,23 @@ import pandas as pd
 
 from mra_lib.config.data_classes import RegimeAnalysis
 from mra_lib.config.enums import MarketRegime, TradingStrategy
+from mra_lib.config.regime_tables import (
+    REGIME_MULTIPLIERS,
+    TRADING_DAYS_PER_YEAR,
+    get_regime_strategy,
+    periods_per_year,
+)
 from mra_lib.data_providers import MarketDataProvider, ProviderConfig
 from mra_lib.indicators.hmm_detector import HiddenMarkovRegimeDetector
 
-warnings.filterwarnings("ignore", category=FutureWarning)
+MAX_POSITION_MULTIPLIER = 0.5
+"""Position multiplier for the strongest regime at full confidence."""
+
+MIN_POSITION_MULTIPLIER = 0.01
+"""Floor applied to non-zero position multipliers."""
+
+PERSISTENCE_LOOKBACK = 20
+"""Number of most recent bars used for the regime-persistence metric."""
 
 
 class MarketRegimeAnalyzer:
@@ -57,16 +70,8 @@ class MarketRegimeAnalyzer:
         self.indicators: dict[str, pd.DataFrame] = {}
         self.hmm_models: dict[str, HiddenMarkovRegimeDetector] = {}
 
-        # Regime multipliers following Renaissance approach
-        self.regime_multipliers = {
-            MarketRegime.BULL_TRENDING: 1.3,
-            MarketRegime.BEAR_TRENDING: 0.7,
-            MarketRegime.MEAN_REVERTING: 1.2,
-            MarketRegime.HIGH_VOLATILITY: 0.4,
-            MarketRegime.LOW_VOLATILITY: 1.1,
-            MarketRegime.BREAKOUT: 0.9,
-            MarketRegime.UNKNOWN: 0.2,
-        }
+        # Regime multipliers: copy of the canonical table (config/regime_tables.py)
+        self.regime_multipliers: dict[MarketRegime, float] = dict(REGIME_MULTIPLIERS)
 
         # Data provider selection using factory pattern
         config = ProviderConfig(api_key=api_key) if api_key else ProviderConfig()
@@ -114,16 +119,22 @@ class MarketRegimeAnalyzer:
                 print(f"✗ Failed to load {timeframe} data: {e!s}")
                 raise ValueError(f"Data loading failed for {timeframe}: {e!s}")
 
-    def _calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _calculate_technical_indicators(
+        self, df: pd.DataFrame, timeframe: str = "1D"
+    ) -> pd.DataFrame:
         """
-        Calculate comprehensive technical indicators with TA-Lib fallbacks.
+        Calculate comprehensive technical indicators.
 
         Args:
             df: OHLCV DataFrame
+            timeframe: Bar timeframe (``1D``, ``1H``, ``15m``); sets the
+                annualization factor for ``volatility`` and the one-year
+                window for ``vol_rank``
 
         Returns:
             DataFrame with technical indicators
         """
+        bars_per_year = periods_per_year(timeframe)
         indicators = df.copy()
 
         # Basic price indicators
@@ -170,9 +181,16 @@ class MarketRegimeAnalyzer:
         indicators["macd_signal"] = indicators["macd"].ewm(span=9).mean()
         indicators["macd_histogram"] = indicators["macd"] - indicators["macd_signal"]
 
-        # Volatility measures
-        indicators["volatility"] = indicators["returns"].rolling(20).std() * np.sqrt(252)
-        indicators["vol_rank"] = indicators["volatility"].rolling(252).rank(pct=True)
+        # Volatility measures, annualized for the bar timeframe. vol_rank is the
+        # percentile of current vol over the trailing year of bars; it needs at
+        # least TRADING_DAYS_PER_YEAR bars of history before it is defined.
+        indicators["volatility"] = indicators["returns"].rolling(20).std() * np.sqrt(bars_per_year)
+        rank_window = round(bars_per_year)
+        indicators["vol_rank"] = (
+            indicators["volatility"]
+            .rolling(rank_window, min_periods=min(rank_window, TRADING_DAYS_PER_YEAR))
+            .rank(pct=True)
+        )
 
         # Volume analysis
         if df["Volume"].sum() > 0:
@@ -210,7 +228,9 @@ class MarketRegimeAnalyzer:
         print("Calculating technical indicators...")
 
         for timeframe, df in self.data.items():
-            self.indicators[timeframe] = self._calculate_technical_indicators(df)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=FutureWarning)
+                self.indicators[timeframe] = self._calculate_technical_indicators(df, timeframe)
             print(f"✓ Calculated indicators for {timeframe}")
 
     def _train_hmm_models(self) -> None:
@@ -236,37 +256,48 @@ class MarketRegimeAnalyzer:
         Returns:
             Recommended trading strategy
         """
-        strategy_map = {
-            MarketRegime.BULL_TRENDING: TradingStrategy.TREND_FOLLOWING,
-            MarketRegime.BEAR_TRENDING: TradingStrategy.DEFENSIVE,
-            MarketRegime.MEAN_REVERTING: TradingStrategy.MEAN_REVERSION,
-            MarketRegime.HIGH_VOLATILITY: TradingStrategy.VOLATILITY_TRADING,
-            MarketRegime.LOW_VOLATILITY: TradingStrategy.MOMENTUM,
-            MarketRegime.BREAKOUT: TradingStrategy.MOMENTUM,
-            MarketRegime.UNKNOWN: TradingStrategy.AVOID,
-        }
-
-        return strategy_map.get(regime, TradingStrategy.AVOID)
+        return get_regime_strategy(regime)
 
     def _get_position_sizing_multiplier(self, regime: MarketRegime, confidence: float) -> float:
         """
         Calculate risk-adjusted position sizing multiplier.
 
+        The regime multiplier is normalized by the largest regime multiplier,
+        so the strongest regime at full confidence maps to
+        ``MAX_POSITION_MULTIPLIER`` (50%) and every other regime keeps its
+        relative size (e.g. Bear Trending = 0.7/1.3 of Bull Trending). Before
+        this normalization the raw 1.3/0.7 multipliers saturated the 50% cap,
+        making Bull and Bear sizing identical.
+
         Args:
             regime: Current market regime
-            confidence: Confidence in regime classification
+            confidence: Confidence in regime classification (0-1)
 
         Returns:
-            Position sizing multiplier
+            Position sizing multiplier in ``[0.01, 0.5]``, or ``0.0`` for a
+            regime with no allocation (e.g. UNKNOWN)
         """
-        base_multiplier = self.regime_multipliers.get(regime, 0.2)
+        base_multiplier = self.regime_multipliers.get(regime, 0.0)
+        max_multiplier = max(self.regime_multipliers.values(), default=0.0)
+        if base_multiplier <= 0 or max_multiplier <= 0:
+            return 0.0
 
         # Confidence scaling (0.3 to 1.0)
         confidence_factor = 0.3 + (confidence * 0.7)
 
-        # Final multiplier with safety caps
-        multiplier = base_multiplier * confidence_factor
-        return max(0.01, min(0.5, multiplier))  # Cap between 1% and 50%
+        multiplier = (
+            MAX_POSITION_MULTIPLIER * (base_multiplier / max_multiplier) * confidence_factor
+        )
+        return max(MIN_POSITION_MULTIPLIER, min(MAX_POSITION_MULTIPLIER, multiplier))
+
+    @staticmethod
+    def _assess_risk_level(confidence: float, persistence: float) -> str:
+        """Map regime confidence and persistence to a Low/Medium/High risk label."""
+        if confidence > 0.8 and persistence > 0.7:
+            return "Low"
+        if confidence > 0.6 and persistence > 0.5:
+            return "Medium"
+        return "High"
 
     def _identify_arbitrage_opportunities(self, df: pd.DataFrame) -> list[str]:
         """
@@ -437,34 +468,21 @@ class MarketRegimeAnalyzer:
         if hmm is None:
             raise ValueError(f"HMM model not available for {timeframe}")
 
-        # Get regime prediction
-        regime, state, confidence = hmm.predict_regime(df)
+        # Predict the full state sequence once over the feature matrix; the
+        # current state is its last element.
+        regime, states, confidence = hmm.predict_with_states(df)
+        state = int(states[-1])
 
-        # Calculate regime persistence
-        recent_predictions = []
-        lookback = min(20, len(df) - 50)
-        for i in range(lookback):
-            window_df = df.iloc[-(lookback - i) :]
-            if len(window_df) >= 50:
-                _, temp_state, _ = hmm.predict_regime(window_df)
-                recent_predictions.append(temp_state)
+        # Persistence: share of the last PERSISTENCE_LOOKBACK bars in the current state
+        persistence = hmm.calculate_regime_persistence(states, lookback=PERSISTENCE_LOOKBACK)
 
-        persistence = hmm.calculate_regime_persistence(np.array(recent_predictions + [state]))
-
-        # Get transition probability
-        if len(recent_predictions) > 0:
-            prev_state = recent_predictions[-1] if recent_predictions else state
-            transition_prob = hmm.get_transition_probability(prev_state, state)
+        # Transition probability from the previous bar's state into the current one
+        if len(states) >= 2:
+            transition_prob = hmm.get_transition_probability(int(states[-2]), state)
         else:
-            transition_prob = 0.5
+            transition_prob = 0.0  # no previous bar: no observed transition
 
-        # Determine risk level
-        if confidence > 0.8 and persistence > 0.7:
-            risk_level = "Low"
-        elif confidence > 0.6 and persistence > 0.5:
-            risk_level = "Medium"
-        else:
-            risk_level = "High"
+        risk_level = self._assess_risk_level(confidence, persistence)
 
         # Get trading strategy
         strategy = self._get_trading_strategy(regime)

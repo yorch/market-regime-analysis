@@ -8,6 +8,7 @@ import pytest
 
 from mra_lib.analyzer import MarketRegimeAnalyzer
 from mra_lib.config.enums import MarketRegime, TradingStrategy
+from mra_lib.config.regime_tables import REGIME_MULTIPLIERS, REGIME_STRATEGIES
 
 
 def _make_ohlcv(n=300, seed=42):
@@ -32,15 +33,7 @@ def _build_analyzer(df=None, n=300):
     analyzer = object.__new__(MarketRegimeAnalyzer)
     analyzer.symbol = "TEST"
     analyzer.periods = {"1D": "2y"}
-    analyzer.regime_multipliers = {
-        MarketRegime.BULL_TRENDING: 1.3,
-        MarketRegime.BEAR_TRENDING: 0.7,
-        MarketRegime.MEAN_REVERTING: 1.2,
-        MarketRegime.HIGH_VOLATILITY: 0.4,
-        MarketRegime.LOW_VOLATILITY: 1.1,
-        MarketRegime.BREAKOUT: 0.9,
-        MarketRegime.UNKNOWN: 0.2,
-    }
+    analyzer.regime_multipliers = dict(REGIME_MULTIPLIERS)
     if df is None:
         df = _make_ohlcv(n)
     analyzer.data = {"1D": df}
@@ -92,10 +85,35 @@ class TestGetPositionSizingMultiplier:
         mult = a._get_position_sizing_multiplier(MarketRegime.BULL_TRENDING, 1.0)
         assert 0.01 <= mult <= 0.5
 
-    def test_unknown_low_confidence(self):
+    def test_unknown_gets_no_allocation(self):
         a = _build_analyzer()
-        mult = a._get_position_sizing_multiplier(MarketRegime.UNKNOWN, 0.0)
-        assert mult == pytest.approx(0.06, abs=0.03)
+        assert a._get_position_sizing_multiplier(MarketRegime.UNKNOWN, 0.0) == 0.0
+        assert a._get_position_sizing_multiplier(MarketRegime.UNKNOWN, 1.0) == 0.0
+
+    @pytest.mark.parametrize("confidence", [0.5, 0.8, 1.0])
+    def test_bull_sized_larger_than_bear(self, confidence):
+        """Regression: raw multipliers saturated the 50% cap so Bull == Bear."""
+        a = _build_analyzer()
+        bull = a._get_position_sizing_multiplier(MarketRegime.BULL_TRENDING, confidence)
+        bear = a._get_position_sizing_multiplier(MarketRegime.BEAR_TRENDING, confidence)
+        assert bull > bear
+        assert bear / bull == pytest.approx(0.7 / 1.3)
+
+    def test_strongest_regime_full_confidence_hits_cap(self):
+        a = _build_analyzer()
+        assert a._get_position_sizing_multiplier(MarketRegime.BULL_TRENDING, 1.0) == pytest.approx(
+            0.5
+        )
+
+    def test_multipliers_distinct_across_regimes(self):
+        a = _build_analyzer()
+        values = {
+            r: a._get_position_sizing_multiplier(r, 0.9)
+            for r in MarketRegime
+            if r != MarketRegime.UNKNOWN
+        }
+        # All base multipliers are distinct, so no two regimes may collapse to the cap.
+        assert len(set(values.values())) == len(values)
 
     def test_caps_at_boundaries(self):
         a = _build_analyzer()
@@ -278,7 +296,9 @@ class TestAnalyzeCurrentRegime:
         assert 0 <= result.regime_persistence <= 1
         assert result.recommended_strategy in list(TradingStrategy)
         assert result.risk_level in ["Low", "Medium", "High"]
-        assert 0.01 <= result.position_sizing_multiplier <= 0.5
+        mult = result.position_sizing_multiplier
+        assert mult == 0.0 or 0.01 <= mult <= 0.5
+        assert isinstance(result.hmm_state, int)
 
 
 class TestInitialization:
@@ -298,3 +318,136 @@ class TestInitialization:
         assert "1D" in analyzer.data
         assert "1D" in analyzer.indicators
         assert "1D" in analyzer.hmm_models
+
+
+class _FakeDetector:
+    """Detector stub with a controlled state sequence and transition matrix."""
+
+    def __init__(self, states, confidence, regime=MarketRegime.BULL_TRENDING):
+        from mra_lib.indicators.hmm_detector import HiddenMarkovRegimeDetector
+
+        self._real = HiddenMarkovRegimeDetector(n_states=3)
+        self._real.fitted = True
+        self._real.transition_matrix = np.array(
+            [[0.7, 0.2, 0.1], [0.3, 0.6, 0.1], [0.25, 0.25, 0.5]]
+        )
+        self.states = np.array(states)
+        self.confidence = confidence
+        self.regime = regime
+        self.calls = 0
+
+    def predict_with_states(self, df):
+        self.calls += 1
+        return self.regime, self.states, self.confidence
+
+    def calculate_regime_persistence(self, states, lookback=20):
+        return self._real.calculate_regime_persistence(states, lookback)
+
+    def get_transition_probability(self, a, b):
+        return self._real.get_transition_probability(a, b)
+
+
+class TestPersistenceAndTransitionRegression:
+    """Regression for review item P0-11: persistence was always 0, risk always High."""
+
+    def _analyze(self, detector):
+        a = _build_analyzer(n=300)
+        a.indicators["1D"] = a._calculate_technical_indicators(a.data["1D"])
+        a.hmm_models["1D"] = detector
+        return a.analyze_current_regime("1D")
+
+    def test_state_sequence_predicted_once(self):
+        det = _FakeDetector([0] * 30, 0.9)
+        self._analyze(det)
+        assert det.calls == 1
+
+    def test_persistence_from_sequence_tail(self):
+        res = self._analyze(_FakeDetector([1] * 10 + [0] * 15, 0.9))
+        assert res.regime_persistence == pytest.approx(15 / 20)
+        assert res.hmm_state == 0
+
+    def test_transition_uses_previous_state(self):
+        res = self._analyze(_FakeDetector([0] * 10 + [1, 2], 0.9))
+        # previous state 1 -> current state 2
+        assert res.transition_probability == pytest.approx(0.1)
+        res = self._analyze(_FakeDetector([2] * 10, 0.9))
+        assert res.transition_probability == pytest.approx(0.5)
+
+    def test_risk_level_varies_with_inputs(self):
+        stable = self._analyze(_FakeDetector([0] * 30, 0.95))
+        medium = self._analyze(_FakeDetector([1] * 8 + [0] * 12, 0.7))
+        choppy = self._analyze(_FakeDetector([0, 1] * 15, 0.95))
+        assert stable.risk_level == "Low"
+        assert medium.risk_level == "Medium"
+        assert choppy.risk_level == "High"
+
+    @pytest.mark.parametrize("seed", [1, 7, 42])
+    def test_persistence_positive_on_synthetic_data(self, seed):
+        from mra_lib.indicators.hmm_detector import HiddenMarkovRegimeDetector
+
+        a = _build_analyzer(df=_make_ohlcv(300, seed=seed))
+        df = a.data["1D"]
+        a.indicators["1D"] = a._calculate_technical_indicators(df)
+        hmm = HiddenMarkovRegimeDetector(n_states=4)
+        hmm.fit(df)
+        a.hmm_models["1D"] = hmm
+        result = a.analyze_current_regime("1D")
+        assert result.regime_persistence > 0
+        assert result.transition_probability > 0
+        _, states, _ = hmm.predict_with_states(df)
+        assert result.transition_probability == pytest.approx(
+            hmm.get_transition_probability(int(states[-2]), int(states[-1]))
+        )
+
+
+class TestAnnualization:
+    def test_volatility_annualized_by_timeframe(self):
+        a = _build_analyzer()
+        df = _make_ohlcv(300)
+        daily = a._calculate_technical_indicators(df, "1D")["volatility"]
+        hourly = a._calculate_technical_indicators(df, "1H")["volatility"]
+        m15 = a._calculate_technical_indicators(df, "15m")["volatility"]
+        ratio_h = (hourly / daily).dropna()
+        ratio_m = (m15 / daily).dropna()
+        np.testing.assert_allclose(ratio_h, np.sqrt(6.5))
+        np.testing.assert_allclose(ratio_m, np.sqrt(26))
+
+    def test_vol_rank_defined_for_intraday(self):
+        a = _build_analyzer()
+        ind = a._calculate_technical_indicators(_make_ohlcv(600), "15m")
+        assert ind["vol_rank"].notna().any()
+        valid = ind["vol_rank"].dropna()
+        assert ((valid > 0) & (valid <= 1)).all()
+
+    def test_unknown_timeframe_raises(self):
+        a = _build_analyzer()
+        with pytest.raises(ValueError, match="Unknown timeframe"):
+            a._calculate_technical_indicators(_make_ohlcv(100), "3W")
+
+
+class TestRegimeTablesSingleSource:
+    def test_analyzer_uses_canonical_tables(self):
+        a = _build_analyzer()
+        for regime in MarketRegime:
+            assert a._get_trading_strategy(regime) == REGIME_STRATEGIES[regime]
+
+    def test_init_copies_canonical_multipliers(self):
+        with patch("mra_lib.analyzer.MarketDataProvider") as mock_provider_cls:
+            mock_provider = MagicMock()
+            mock_provider.fetch.return_value = _make_ohlcv(300)
+            mock_provider_cls.create_provider.return_value = mock_provider
+            analyzer = MarketRegimeAnalyzer("TEST", periods={"1D": "2y"})
+        assert analyzer.regime_multipliers == dict(REGIME_MULTIPLIERS)
+        # A copy, so instance overrides cannot mutate the shared table
+        analyzer.regime_multipliers[MarketRegime.BULL_TRENDING] = 9.9
+        assert REGIME_MULTIPLIERS[MarketRegime.BULL_TRENDING] == 1.3
+
+    def test_risk_calculator_uses_canonical_multipliers(self):
+        from mra_lib.risk.risk_calculator import SimonsRiskCalculator
+
+        sizes = {
+            r: SimonsRiskCalculator.calculate_regime_adjusted_size(0.1, r, 1.0, 1.0)
+            for r in MarketRegime
+        }
+        for regime, mult in REGIME_MULTIPLIERS.items():
+            assert sizes[regime] == pytest.approx(0.1 * mult if mult > 0 else 0.0)

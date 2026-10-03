@@ -15,8 +15,9 @@ from sklearn.preprocessing import StandardScaler
 
 from mra_lib.config.enums import MarketRegime
 
-warnings.filterwarnings("ignore", category=UserWarning)
-warnings.filterwarnings("ignore", category=DeprecationWarning)
+# Regime thresholds for standardized (z-unit) state means.
+_TREND_Z = 0.2
+_BREAKOUT_VOL_Z = 0.4
 
 
 class TrueHMMDetector:
@@ -73,8 +74,8 @@ class TrueHMMDetector:
         """
         Extract comprehensive features for HMM analysis.
 
-        Uses same features as original detector for fair comparison,
-        but calculates them without look-ahead bias.
+        Every feature is causal: it is computed from trailing rolling windows
+        that only use the current and earlier bars (no look-ahead).
 
         Args:
             df: DataFrame with OHLCV data
@@ -90,11 +91,11 @@ class TrueHMMDetector:
 
         features = pd.DataFrame(index=df.index)
 
-        # Basic price features (shifted to avoid look-ahead)
+        # Basic price features
         features["returns"] = df["Close"].pct_change()
         features["log_returns"] = np.log(df["Close"] / df["Close"].shift(1))
 
-        # Volatility features (using expanding window to avoid bias)
+        # Volatility features (trailing 20-bar window, at least 10 observations)
         features["volatility"] = features["returns"].rolling(20, min_periods=10).std()
         features["log_volatility"] = np.log(features["volatility"] + 1e-8)
 
@@ -137,7 +138,7 @@ class TrueHMMDetector:
         else:
             features["volume_ratio"] = 1.0
 
-        # Price Z-score (using rolling mean/std - shifted to avoid bias)
+        # Price Z-score against a trailing 50-bar mean/std (current bar included)
         rolling_mean = df["Close"].rolling(50, min_periods=25).mean()
         rolling_std = df["Close"].rolling(50, min_periods=25).std()
         features["price_zscore"] = (df["Close"] - rolling_mean) / (rolling_std + 1e-8)
@@ -194,7 +195,9 @@ class TrueHMMDetector:
             )
 
             # Fit using Baum-Welch algorithm
-            self.model.fit(X_scaled)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=DeprecationWarning)
+                self.model.fit(X_scaled)
 
             # Store learned parameters
             self.transition_matrix = self.model.transmat_
@@ -211,6 +214,35 @@ class TrueHMMDetector:
         except Exception as e:
             raise ValueError(f"HMM fitting failed: {e!s}") from e
 
+    def _require_fitted(self) -> tuple[hmm.GaussianHMM, StandardScaler, np.ndarray]:
+        """
+        Return the fitted model, scaler and transition matrix.
+
+        Raises:
+            ValueError: If the detector has not been fitted
+        """
+        if (
+            not self.fitted
+            or self.model is None
+            or self.scaler is None
+            or self.transition_matrix is None
+        ):
+            raise ValueError("Model must be fitted before use")
+        return self.model, self.scaler, self.transition_matrix
+
+    def _current_posterior(self, df: pd.DataFrame) -> np.ndarray:
+        """
+        Posterior state distribution for the most recent bar.
+
+        ``GaussianHMM.predict_proba`` returns forward-backward (smoothed)
+        posteriors P(s_t | o_1..o_T). For the last bar t = T, so the smoothed
+        and filtered posteriors coincide and this is P(s_T | o_1..o_T).
+        """
+        model, scaler, _ = self._require_fitted()
+        X_scaled = scaler.transform(self._prepare_features(df))
+        posterior: np.ndarray = model.predict_proba(X_scaled)[-1]
+        return posterior
+
     def predict_regime(
         self, df: pd.DataFrame, use_viterbi: bool = True
     ) -> tuple[MarketRegime, int, float]:
@@ -219,46 +251,32 @@ class TrueHMMDetector:
 
         Args:
             df: DataFrame with OHLCV data
-            use_viterbi: If True, use Viterbi algorithm for optimal state sequence.
-                         If False, use forward algorithm for marginal probabilities.
+            use_viterbi: If True, decode the most likely state sequence with
+                Viterbi. If False, take the argmax of the per-bar smoothed
+                (forward-backward) posteriors.
 
         Returns:
-            Tuple of (regime, state, confidence)
+            Tuple of (regime, state, confidence). ``confidence`` is the
+            posterior probability of the returned state at the last bar
+            (smoothed == filtered at the final time step).
 
         Raises:
-            ValueError: If model not fitted
+            ValueError: If model not fitted or prediction fails
         """
-        if not self.fitted or self.model is None:
-            raise ValueError("Model must be fitted before prediction")
+        model, scaler, _ = self._require_fitted()
 
         try:
-            # Prepare features
-            X = self._prepare_features(df)
-            X_scaled = self.scaler.transform(X)
+            X_scaled = scaler.transform(self._prepare_features(df))
 
-            if use_viterbi:
-                # Viterbi: optimal state sequence considering full history
-                states = self.model.predict(X_scaled)
-            else:
-                # Forward algorithm: marginal probabilities for each time step
-                state_probs = self.model.predict_proba(X_scaled)
-                states = np.argmax(state_probs, axis=1)
+            # Smoothed posteriors P(s_t | o_1..o_T) for every bar.
+            state_probs = model.predict_proba(X_scaled)
 
-            # Get current state
+            # Viterbi path, or per-bar argmax of the smoothed posteriors
+            states = model.predict(X_scaled) if use_viterbi else np.argmax(state_probs, axis=1)
+
             current_state = int(states[-1])
-
-            # Calculate confidence using state probability from forward algorithm
-            # This gives us P(state_t | observations_1:t)
-            if len(X_scaled) > 0:
-                # Get probability distribution over states for most recent observation
-                state_probs = self.model.predict_proba(X_scaled)
-                # Confidence is probability of being in the predicted state
-                confidence = float(state_probs[-1][current_state])
-            else:
-                confidence = 0.0
-
-            # Map state to interpretable regime
-            regime = self._map_state_to_regime(X_scaled, states, current_state)
+            confidence = float(state_probs[-1][current_state])
+            regime = self._map_state_index_to_regime(current_state)
 
             return regime, current_state, confidence
 
@@ -269,84 +287,21 @@ class TrueHMMDetector:
         self, X: np.ndarray, states: np.ndarray, current_state: int
     ) -> MarketRegime:
         """
-        Map HMM state to interpretable market regime.
+        Map the current HMM state to a regime.
 
-        Uses state characteristics to assign regime labels based on:
-        - Returns (positive/negative)
-        - Volatility (high/low)
-        - Trend strength
-        - Autocorrelation (momentum vs mean-reversion)
-
-        Args:
-            X: Scaled feature matrix
-            states: Predicted state sequence
-            current_state: Current state index
-
-        Returns:
-            MarketRegime classification
+        Kept for backward compatibility; the label depends only on the learned
+        emission means, so this delegates to :meth:`_map_state_index_to_regime`
+        (``X`` and ``states`` are unused).
         """
-        if self.state_means is None:
-            return MarketRegime.UNKNOWN
-
-        try:
-            # Get state characteristics from learned emission means
-            state_features = self.state_means[current_state]
-
-            # Map features back to original indices
-            # Assume feature order: returns, log_returns, volatility, ...
-            # We need to be careful with indices
-            feature_dict = {}
-            for idx, name in enumerate(self.feature_names):
-                if idx < len(state_features):
-                    feature_dict[name] = state_features[idx]
-
-            # Extract key features (already standardized - values around 0 mean, 1 std)
-            avg_returns = feature_dict.get("returns", 0.0)
-            avg_volatility = feature_dict.get("volatility", 0.0)
-            avg_trend = feature_dict.get("trend_9_21", 0.0)
-            avg_autocorr = feature_dict.get("autocorr_1", 0.0)
-
-            # Calculate volatility percentiles across all states
-            # Find volatility feature index
-            vol_idx = None
-            for idx, name in enumerate(self.feature_names):
-                if name == "volatility":
-                    vol_idx = idx
-                    break
-
-            if vol_idx is not None:
-                all_volatilities = [self.state_means[i, vol_idx] for i in range(self.n_states)]
-                vol_threshold_high = np.percentile(all_volatilities, 75)
-                vol_threshold_low = np.percentile(all_volatilities, 25)
-            else:
-                vol_threshold_high = 0.5
-                vol_threshold_low = -0.5
-
-            # Regime classification logic (adjusted for standardized values)
-            # Since features are standardized, use more appropriate thresholds
-            if avg_volatility > vol_threshold_high:
-                return MarketRegime.HIGH_VOLATILITY
-            elif avg_volatility < vol_threshold_low:
-                return MarketRegime.LOW_VOLATILITY
-            elif avg_returns > 0.2 and avg_trend > 0.2:  # Above mean trending up
-                return MarketRegime.BULL_TRENDING
-            elif avg_returns < -0.2 and avg_trend < -0.2:  # Below mean trending down
-                return MarketRegime.BEAR_TRENDING
-            elif abs(avg_autocorr) < 0.3:  # Low autocorrelation suggests mean reversion
-                return MarketRegime.MEAN_REVERTING
-            elif avg_volatility > 0.4:  # Above average volatility
-                return MarketRegime.BREAKOUT
-            else:
-                return MarketRegime.UNKNOWN
-
-        except Exception:
-            return MarketRegime.UNKNOWN
+        return self._map_state_index_to_regime(current_state)
 
     def calculate_regime_persistence(self, states: np.ndarray, lookback: int = 20) -> float:
         """
         Calculate regime stability metric.
 
-        Measures what percentage of recent observations remained in same state.
+        Fraction of the last ``lookback`` states equal to the current (last)
+        state. Fewer than two observations carry no information about
+        persistence and return 0.0 (same as the GMM detector).
 
         Args:
             states: State sequence
@@ -357,14 +312,11 @@ class TrueHMMDetector:
         """
         lookback = min(lookback, len(states))
 
-        if lookback == 0:
+        if lookback < 2:
             return 0.0
 
-        recent_states = states[-lookback:]
-        current_state = states[-1]
-
-        persistence = np.mean(recent_states == current_state)
-        return float(persistence)
+        recent_states = np.asarray(states)[-lookback:]
+        return float(np.mean(recent_states == recent_states[-1]))
 
     def get_transition_probability(self, from_state: int, to_state: int) -> float:
         """
@@ -415,10 +367,19 @@ class TrueHMMDetector:
 
     def _map_state_index_to_regime(self, state_index: int) -> MarketRegime:
         """
-        Map a state index to a MarketRegime using learned emission parameters only.
+        Map a state index to a MarketRegime using learned emission means only.
 
-        Unlike _map_state_to_regime, this does not require observed data,
-        making it suitable for forecasting future states.
+        Does not require observed data, so it is also used for forecasting.
+        Features are looked up by name; thresholds are in z-units because the
+        emission means live in standardized feature space:
+
+        - volatility above / below the 75th / 25th percentile of state means
+          -> HIGH / LOW_VOLATILITY
+        - returns and trend_9_21 both > +0.2 sd -> BULL_TRENDING
+        - returns and trend_9_21 both < -0.2 sd -> BEAR_TRENDING
+        - negative lag-1 autocorrelation in original units -> MEAN_REVERTING
+        - volatility > +0.4 sd -> BREAKOUT
+        - otherwise UNKNOWN
 
         Args:
             state_index: HMM state index
@@ -426,51 +387,50 @@ class TrueHMMDetector:
         Returns:
             MarketRegime classification
         """
-        if self.state_means is None or state_index >= self.n_states:
+        if self.state_means is None or not 0 <= state_index < self.n_states:
             return MarketRegime.UNKNOWN
 
         try:
             state_features = self.state_means[state_index]
-
-            # Build feature lookup from learned emission means
-            feature_dict = {}
-            for idx, name in enumerate(self.feature_names):
-                if idx < len(state_features):
-                    feature_dict[name] = state_features[idx]
+            feature_dict = {
+                name: float(state_features[idx])
+                for idx, name in enumerate(self.feature_names)
+                if idx < len(state_features)
+            }
 
             avg_returns = feature_dict.get("returns", 0.0)
             avg_volatility = feature_dict.get("volatility", 0.0)
             avg_trend = feature_dict.get("trend_9_21", 0.0)
-            avg_autocorr = feature_dict.get("autocorr_1", 0.0)
 
-            # Volatility thresholds from all states
-            vol_idx = None
-            for idx, name in enumerate(self.feature_names):
-                if name == "volatility":
-                    vol_idx = idx
-                    break
+            # Lag-1 autocorrelation back in original units so its sign is meaningful.
+            raw_autocorr: float | None = None
+            if "autocorr_1" in self.feature_names and self.scaler is not None:
+                ac_idx = self.feature_names.index("autocorr_1")
+                raw_autocorr = feature_dict.get("autocorr_1", 0.0) * float(
+                    self.scaler.scale_[ac_idx]
+                ) + float(self.scaler.mean_[ac_idx])
 
-            if vol_idx is not None:
-                all_vols = [self.state_means[i, vol_idx] for i in range(self.n_states)]
-                vol_high = np.percentile(all_vols, 75)
-                vol_low = np.percentile(all_vols, 25)
+            if "volatility" in self.feature_names:
+                vol_idx = self.feature_names.index("volatility")
+                all_vols = self.state_means[:, vol_idx]
+                vol_high = float(np.percentile(all_vols, 75))
+                vol_low = float(np.percentile(all_vols, 25))
             else:
                 vol_high, vol_low = 0.5, -0.5
 
             if avg_volatility > vol_high:
                 return MarketRegime.HIGH_VOLATILITY
-            elif avg_volatility < vol_low:
+            if avg_volatility < vol_low:
                 return MarketRegime.LOW_VOLATILITY
-            elif avg_returns > 0.2 and avg_trend > 0.2:
+            if avg_returns > _TREND_Z and avg_trend > _TREND_Z:
                 return MarketRegime.BULL_TRENDING
-            elif avg_returns < -0.2 and avg_trend < -0.2:
+            if avg_returns < -_TREND_Z and avg_trend < -_TREND_Z:
                 return MarketRegime.BEAR_TRENDING
-            elif abs(avg_autocorr) < 0.3:
+            if raw_autocorr is not None and raw_autocorr < 0:
                 return MarketRegime.MEAN_REVERTING
-            elif avg_volatility > 0.4:
+            if avg_volatility > _BREAKOUT_VOL_Z:
                 return MarketRegime.BREAKOUT
-            else:
-                return MarketRegime.UNKNOWN
+            return MarketRegime.UNKNOWN
 
         except Exception:
             return MarketRegime.UNKNOWN
@@ -508,21 +468,14 @@ class TrueHMMDetector:
         Raises:
             ValueError: If model not fitted or n_steps < 1
         """
-        if not self.fitted or self.model is None:
-            raise ValueError("Model must be fitted before forecasting")
+        _, _, transmat = self._require_fitted()
         if n_steps < 1:
             raise ValueError("n_steps must be >= 1")
 
-        # Get current posterior state distribution
-        X = self._prepare_features(df)
-        X_scaled = self.scaler.transform(X)
-        state_probs = self.model.predict_proba(X_scaled)
-        pi_t = state_probs[-1]  # Current state distribution
+        pi_t = self._current_posterior(df)
 
         # Project forward: pi_{t+n} = pi_t @ T^n
-        T_n = np.linalg.matrix_power(self.transition_matrix, n_steps)
-        forecast = pi_t @ T_n
-
+        forecast: np.ndarray = pi_t @ np.linalg.matrix_power(transmat, n_steps)
         return forecast
 
     def forecast_regime_sequence(self, df: pd.DataFrame, n_steps: int = 5) -> list[dict]:
@@ -544,30 +497,23 @@ class TrueHMMDetector:
                 - most_likely_regime: MarketRegime with highest probability
                 - most_likely_regime_probability: float
         """
-        if not self.fitted or self.model is None:
-            raise ValueError("Model must be fitted before forecasting")
-
-        # Get current posterior
-        X = self._prepare_features(df)
-        X_scaled = self.scaler.transform(X)
-        state_probs = self.model.predict_proba(X_scaled)
-        pi_t = state_probs[-1]
+        _, _, transmat = self._require_fitted()
+        pi_t = self._current_posterior(df)
 
         # Build state-to-regime mapping once
         state_regime_map = self.get_state_regime_map()
 
         results = []
         for step in range(1, n_steps + 1):
-            T_n = np.linalg.matrix_power(self.transition_matrix, step)
-            forecast_probs = pi_t @ T_n
+            forecast_probs = pi_t @ np.linalg.matrix_power(transmat, step)
 
             # Aggregate state probs by regime
             regime_probs: dict[MarketRegime, float] = {}
             for state_idx, prob in enumerate(forecast_probs):
                 regime = state_regime_map[state_idx]
-                regime_probs[regime] = regime_probs.get(regime, 0.0) + prob
+                regime_probs[regime] = regime_probs.get(regime, 0.0) + float(prob)
 
-            most_likely = max(regime_probs, key=regime_probs.get)
+            most_likely = max(regime_probs, key=lambda r: regime_probs[r])
 
             results.append(
                 {

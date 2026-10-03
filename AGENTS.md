@@ -125,7 +125,8 @@ market-regime-analysis/
 │   │   │   ├── analyzer.py         # MarketRegimeAnalyzer — main orchestrator
 │   │   │   ├── config/             # Enums, data classes, settings
 │   │   │   │   ├── enums.py        # MarketRegime, TradingStrategy
-│   │   │   │   └── data_classes.py # RegimeAnalysis dataclass
+│   │   │   │   ├── data_classes.py # RegimeAnalysis dataclass
+│   │   │   │   └── regime_tables.py # Canonical regime multipliers, regime→strategy map, bars/year
 │   │   │   ├── types/              # Protocol definitions
 │   │   │   │   └── protocols.py    # DashboardProtocol, DataStoreProtocol, etc.
 │   │   │   ├── indicators/         # HMM-based detectors

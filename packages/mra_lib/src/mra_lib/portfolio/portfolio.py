@@ -5,14 +5,25 @@ This module implements portfolio-level analysis following Renaissance
 Technologies' approach to multi-asset regime detection and correlation analysis.
 """
 
+import logging
+import warnings
 from itertools import combinations
 from typing import Any
 
 import numpy as np
 import pandas as pd
+from statsmodels.tsa.stattools import coint
 
 from mra_lib.analyzer import MarketRegimeAnalyzer
+from mra_lib.config.data_classes import RegimeAnalysis
 from mra_lib.config.enums import MarketRegime
+
+logger = logging.getLogger(__name__)
+
+# Derived (non-symbol) columns stored alongside prices in ``portfolio_data``.
+_DERIVED_COLUMNS = frozenset({"portfolio_return", "portfolio_volatility"})
+
+_MIN_PAIR_OBSERVATIONS = 50
 
 
 class PortfolioHMMAnalyzer:
@@ -84,55 +95,104 @@ class PortfolioHMMAnalyzer:
                 self.portfolio_data[timeframe] = portfolio_df
                 print(f"✓ Prepared {timeframe} portfolio data: {len(portfolio_df)} periods")
 
-    def calculate_regime_correlations(self, timeframe: str = "1D") -> pd.DataFrame:
+    def _symbol_columns(self, timeframe: str) -> list[str]:
+        """Price columns (symbols) in ``portfolio_data[timeframe]``, excluding derived ones."""
+        if timeframe not in self.portfolio_data:
+            return []
+        return [c for c in self.portfolio_data[timeframe].columns if c not in _DERIVED_COLUMNS]
+
+    def _collect_analyses(self, timeframe: str) -> dict[str, RegimeAnalysis]:
         """
-        Calculate cross-asset regime correlations.
+        Run ``analyze_current_regime`` once per symbol.
+
+        Symbols whose analysis fails are logged and omitted. Pass the result to
+        the other report methods to avoid re-running each symbol's analysis.
+        """
+        analyses: dict[str, RegimeAnalysis] = {}
+        for symbol, analyzer in self.analyzers.items():
+            try:
+                analyses[symbol] = analyzer.analyze_current_regime(timeframe)
+            except Exception as e:
+                logger.warning("Error analyzing %s: %s", symbol, e)
+        return analyses
+
+    def get_return_correlation_matrix(
+        self, timeframe: str = "1D", symbols: list[str] | None = None
+    ) -> pd.DataFrame:
+        """
+        Pearson correlation matrix of simple returns (``pct_change``).
+
+        Correlating price *levels* of trending/random-walk series produces
+        spurious correlations; returns are (approximately) stationary.
+
+        Args:
+            timeframe: Timeframe to use
+            symbols: Symbols to include (default: all symbols with data)
+
+        Returns:
+            Square DataFrame of return correlations (empty if no data)
+        """
+        cols = self._symbol_columns(timeframe)
+        if symbols is not None:
+            cols = [c for c in symbols if c in cols]
+        if not cols:
+            return pd.DataFrame()
+        returns = self.portfolio_data[timeframe][cols].pct_change().dropna(how="all")
+        corr: pd.DataFrame = returns.corr()
+        return corr
+
+    def calculate_regime_correlations(
+        self, timeframe: str = "1D", analyses: dict[str, RegimeAnalysis] | None = None
+    ) -> pd.DataFrame:
+        """
+        Calculate cross-asset regime info joined with return correlations.
 
         Args:
             timeframe: Timeframe for correlation analysis
+            analyses: Optional precomputed per-symbol analyses (avoids recomputation)
 
         Returns:
-            DataFrame with regime correlation matrix
+            DataFrame indexed by symbol with regime columns plus one
+            ``<symbol>_price_corr`` column per symbol. Despite the historical
+            ``_price_corr`` suffix (kept for API compatibility), these are
+            correlations of returns, not of price levels.
         """
         if timeframe not in self.portfolio_data:
             raise ValueError(f"Portfolio data not available for {timeframe}")
 
-        # Get regime predictions for all symbols
-        regime_data = {}
+        if analyses is None:
+            analyses = self._collect_analyses(timeframe)
 
-        for symbol, analyzer in self.analyzers.items():
-            try:
-                analysis = analyzer.analyze_current_regime(timeframe)
-                regime_data[symbol] = {
-                    "regime": analysis.current_regime.value,
-                    "confidence": analysis.regime_confidence,
-                    "state": analysis.hmm_state,
-                    "persistence": analysis.regime_persistence,
-                }
-            except Exception as e:
-                print(f"Error analyzing {symbol}: {e!s}")
-                continue
-
-        # Create correlation matrix
+        regime_data = {
+            symbol: {
+                "regime": analysis.current_regime.value,
+                "confidence": analysis.regime_confidence,
+                "state": analysis.hmm_state,
+                "persistence": analysis.regime_persistence,
+            }
+            for symbol, analysis in analyses.items()
+        }
         regime_df = pd.DataFrame(regime_data).T
 
-        # Calculate price correlations
-        price_data = self.portfolio_data[timeframe][list(regime_data.keys())]
-        if len(price_data.columns) > 1:
-            price_correlations = price_data.corr()
-            regime_df = regime_df.join(price_correlations.add_suffix("_price_corr"))
+        corr = self.get_return_correlation_matrix(timeframe, list(regime_data))
+        if len(corr.columns) > 1:
+            regime_df = regime_df.join(corr.add_suffix("_price_corr"))
 
         return regime_df
 
-    def get_portfolio_regime_summary(self, timeframe: str = "1D") -> dict[str, Any]:
+    def get_portfolio_regime_summary(
+        self, timeframe: str = "1D", analyses: dict[str, RegimeAnalysis] | None = None
+    ) -> dict[str, Any]:
         """
         Get portfolio-level regime metrics.
 
         Args:
             timeframe: Timeframe for analysis
+            analyses: Optional precomputed per-symbol analyses (avoids recomputation)
 
         Returns:
-            Dictionary with portfolio metrics
+            Dictionary with portfolio metrics. ``correlation_risk`` is the mean
+            absolute pairwise *return* correlation.
         """
         summary: dict[str, Any] = {
             "dominant_regime": None,
@@ -145,168 +205,173 @@ class PortfolioHMMAnalyzer:
         }
 
         try:
-            # Get all regime analyses
-            analyses = []
-            for symbol, analyzer in self.analyzers.items():
-                try:
-                    analysis = analyzer.analyze_current_regime(timeframe)
-                    analyses.append((symbol, analysis))
-                except Exception:
-                    continue
+            if analyses is None:
+                analyses = self._collect_analyses(timeframe)
 
             if not analyses:
                 return summary
 
             # Calculate regime distribution
-            regimes = [analysis.current_regime for _, analysis in analyses]
             regime_counts: dict[str, int] = {}
-            for regime in regimes:
-                regime_counts[regime.value] = regime_counts.get(regime.value, 0) + 1
+            for analysis in analyses.values():
+                key = analysis.current_regime.value
+                regime_counts[key] = regime_counts.get(key, 0) + 1
 
             summary["regime_distribution"] = regime_counts
 
-            # Find dominant regime
-            if regime_counts:
-                dominant_regime = max(regime_counts.items(), key=lambda x: x[1])
-                summary["dominant_regime"] = dominant_regime[0]
-                summary["regime_consensus"] = dominant_regime[1] / len(analyses)
+            total_assets = len(analyses)
+            dominant_regime = max(regime_counts.items(), key=lambda x: x[1])
+            summary["dominant_regime"] = dominant_regime[0]
+            summary["regime_consensus"] = dominant_regime[1] / total_assets
 
-            # Calculate average confidence
-            confidences = [analysis.regime_confidence for _, analysis in analyses]
-            summary["average_confidence"] = np.mean(confidences)
+            summary["average_confidence"] = float(
+                np.mean([a.regime_confidence for a in analyses.values()])
+            )
 
             # Assess portfolio risk level
-            high_vol_count = sum(
+            risky = sum(
                 1
-                for _, analysis in analyses
-                if analysis.current_regime == MarketRegime.HIGH_VOLATILITY
+                for a in analyses.values()
+                if a.current_regime in (MarketRegime.HIGH_VOLATILITY, MarketRegime.UNKNOWN)
             )
-            unknown_count = sum(
-                1 for _, analysis in analyses if analysis.current_regime == MarketRegime.UNKNOWN
-            )
-
-            total_assets = len(analyses)
-            if (high_vol_count + unknown_count) / total_assets > 0.5:
+            if risky / total_assets > 0.5:
                 summary["risk_level"] = "High"
-            elif (high_vol_count + unknown_count) / total_assets > 0.3:
+            elif risky / total_assets > 0.3:
                 summary["risk_level"] = "Medium"
             else:
                 summary["risk_level"] = "Low"
 
-            # Calculate correlation risk if we have portfolio data
-            if timeframe in self.portfolio_data and len(self.portfolio_data[timeframe].columns) > 2:
-                symbols_in_data = [
-                    s for s, _ in analyses if s in self.portfolio_data[timeframe].columns
-                ]
-                if len(symbols_in_data) > 1:
-                    price_data = self.portfolio_data[timeframe][symbols_in_data]
-                    corr_matrix = price_data.corr()
-
+            # Correlation risk: needs at least two analyzed symbols with price data
+            symbols_in_data = [s for s in analyses if s in self._symbol_columns(timeframe)]
+            if len(symbols_in_data) > 1:
+                corr_matrix = self.get_return_correlation_matrix(timeframe, symbols_in_data)
+                n = len(corr_matrix)
+                if n > 1:
                     # Average absolute correlation (excluding diagonal)
-                    n = len(corr_matrix)
-                    total_corr = corr_matrix.abs().sum().sum() - n  # Exclude diagonal
-                    avg_corr = total_corr / (n * (n - 1))
-                    summary["correlation_risk"] = avg_corr
-
-                    # Diversification benefit (lower correlation = higher benefit)
-                    summary["diversification_benefit"] = 1.0 - avg_corr
+                    total_corr = corr_matrix.abs().to_numpy().sum() - n
+                    avg_corr = float(total_corr / (n * (n - 1)))
+                    if not np.isnan(avg_corr):
+                        summary["correlation_risk"] = avg_corr
+                        summary["diversification_benefit"] = 1.0 - avg_corr
 
         except Exception as e:
-            print(f"Error calculating portfolio summary: {e!s}")
+            logger.warning("Error calculating portfolio summary: %s", e)
 
         return summary
 
-    def identify_arbitrage_pairs(self, timeframe: str = "1D") -> list[dict[str, Any]]:
+    @staticmethod
+    def _cointegration_spread(
+        price1: pd.Series, price2: pd.Series
+    ) -> tuple[pd.Series, float, float] | None:
         """
-        Statistical arbitrage pairs detection.
+        Engle-Granger spread of two price series.
+
+        Regresses ``log(price1)`` on ``log(price2)`` (OLS with intercept) and
+        tests the residual for a unit root via ``statsmodels`` ``coint``.
+
+        Returns:
+            ``(residual, hedge_ratio, coint_pvalue)`` or None when the series
+            are too short or contain non-positive prices.
+        """
+        pair = pd.concat([price1, price2], axis=1).dropna()
+        if len(pair) < _MIN_PAIR_OBSERVATIONS or (pair <= 0).to_numpy().any():
+            return None
+        log1 = np.log(pair.iloc[:, 0])
+        log2 = np.log(pair.iloc[:, 1])
+        if log2.std() == 0 or log1.std() == 0:
+            return None
+
+        hedge_ratio, intercept = np.polyfit(log2.to_numpy(), log1.to_numpy(), 1)
+        residual = log1 - (intercept + hedge_ratio * log2)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # statsmodels collinearity/convergence noise
+            _, pvalue, _ = coint(log1, log2)
+
+        return residual, float(hedge_ratio), float(pvalue)
+
+    def identify_arbitrage_pairs(
+        self,
+        timeframe: str = "1D",
+        analyses: dict[str, RegimeAnalysis] | None = None,
+        max_pvalue: float = 0.05,
+        entry_zscore: float = 2.0,
+    ) -> list[dict[str, Any]]:
+        """
+        Statistical arbitrage pairs detection (Engle-Granger cointegration).
+
+        For each pair the log-price hedge-ratio residual
+        ``log(p1) - (a + b * log(p2))`` is computed; the pair qualifies when the
+        Engle-Granger test rejects "no cointegration" at ``max_pvalue`` and the
+        current residual z-score exceeds ``entry_zscore`` in absolute value.
+        A positive z-score means symbol 1 is rich vs. symbol 2.
 
         Args:
             timeframe: Timeframe for analysis
+            analyses: Optional precomputed per-symbol analyses (avoids recomputation)
+            max_pvalue: Maximum cointegration p-value to accept a pair
+            entry_zscore: Minimum |z| of the current spread to signal
 
         Returns:
-            List of arbitrage opportunities
+            Up to 5 opportunities, strongest first
         """
         opportunities: list[dict[str, Any]] = []
 
         if timeframe not in self.portfolio_data:
             return opportunities
 
-        # Get available symbols with data
-        available_symbols = [s for s in self.symbols if s in self.analyzers]
-
+        price_columns = self._symbol_columns(timeframe)
+        available_symbols = [s for s in self.symbols if s in self.analyzers and s in price_columns]
         if len(available_symbols) < 2:
             return opportunities
 
-        # Analyze all possible pairs
+        cache: dict[str, RegimeAnalysis] = dict(analyses or {})
+        prices = self.portfolio_data[timeframe]
+
+        def _analysis(symbol: str) -> RegimeAnalysis:
+            if symbol not in cache:
+                cache[symbol] = self.analyzers[symbol].analyze_current_regime(timeframe)
+            return cache[symbol]
+
         for symbol1, symbol2 in combinations(available_symbols, 2):
             try:
-                # Get price data for both symbols
-                if (
-                    symbol1 not in self.portfolio_data[timeframe].columns
-                    or symbol2 not in self.portfolio_data[timeframe].columns
-                ):
+                spread = self._cointegration_spread(prices[symbol1], prices[symbol2])
+                if spread is None:
+                    continue
+                residual, hedge_ratio, pvalue = spread
+                if pvalue > max_pvalue:
                     continue
 
-                price1 = self.portfolio_data[timeframe][symbol1]
-                price2 = self.portfolio_data[timeframe][symbol2]
-
-                # Calculate correlation
-                correlation = price1.corr(price2)
-
-                # Skip if correlation is too low
-                if abs(correlation) < 0.3:
+                resid_std = residual.std()
+                if not resid_std > 0:
+                    continue
+                current_zscore = float((residual.iloc[-1] - residual.mean()) / resid_std)
+                if np.isnan(current_zscore) or abs(current_zscore) <= entry_zscore:
                     continue
 
-                # Calculate spread
-                returns1 = price1.pct_change().dropna()
-                returns2 = price2.pct_change().dropna()
+                analysis1 = _analysis(symbol1)
+                analysis2 = _analysis(symbol2)
+                return_corr = float(prices[symbol1].pct_change().corr(prices[symbol2].pct_change()))
 
-                # Align returns
-                common_index = returns1.index.intersection(returns2.index)
-                if len(common_index) < 50:
-                    continue
-
-                aligned_returns1 = returns1.loc[common_index]
-                aligned_returns2 = returns2.loc[common_index]
-
-                # Calculate spread Z-score
-                spread = aligned_returns1 - aligned_returns2
-                spread_mean = spread.rolling(50).mean()
-                spread_std = spread.rolling(50).std()
-                spread_zscore = (spread - spread_mean) / (spread_std + 1e-8)
-
-                current_zscore = spread_zscore.iloc[-1]
-
-                # Identify opportunity
-                if abs(current_zscore) > 2.0 and not pd.isna(current_zscore):
-                    # Get regime analyses for both symbols
-                    try:
-                        analysis1 = self.analyzers[symbol1].analyze_current_regime(timeframe)
-                        analysis2 = self.analyzers[symbol2].analyze_current_regime(timeframe)
-
-                        opportunity = {
-                            "pair": f"{symbol1}/{symbol2}",
-                            "correlation": correlation,
-                            "spread_zscore": current_zscore,
-                            "signal": (
-                                "LONG_1_SHORT_2" if current_zscore < -2 else "SHORT_1_LONG_2"
-                            ),
-                            "confidence_1": analysis1.regime_confidence,
-                            "confidence_2": analysis2.regime_confidence,
-                            "regime_1": analysis1.current_regime.value,
-                            "regime_2": analysis2.current_regime.value,
-                            "opportunity_strength": abs(current_zscore)
-                            * min(analysis1.regime_confidence, analysis2.regime_confidence),
-                        }
-
-                        opportunities.append(opportunity)
-
-                    except Exception as e:
-                        print(f"Error analyzing pair {symbol1}/{symbol2}: {e!s}")
-                        continue
+                opportunities.append(
+                    {
+                        "pair": f"{symbol1}/{symbol2}",
+                        "correlation": return_corr,
+                        "hedge_ratio": hedge_ratio,
+                        "coint_pvalue": pvalue,
+                        "spread_zscore": current_zscore,
+                        "signal": "LONG_1_SHORT_2" if current_zscore < 0 else "SHORT_1_LONG_2",
+                        "confidence_1": analysis1.regime_confidence,
+                        "confidence_2": analysis2.regime_confidence,
+                        "regime_1": analysis1.current_regime.value,
+                        "regime_2": analysis2.current_regime.value,
+                        "opportunity_strength": abs(current_zscore)
+                        * min(analysis1.regime_confidence, analysis2.regime_confidence),
+                    }
+                )
 
             except Exception as e:
-                print(f"Error processing pair {symbol1}/{symbol2}: {e!s}")
+                logger.warning("Error processing pair %s/%s: %s", symbol1, symbol2, e)
                 continue
 
         # Sort by opportunity strength
@@ -329,8 +394,11 @@ class PortfolioHMMAnalyzer:
         print(f"Portfolio: {', '.join(self.symbols)}")
         print(f"Active Symbols: {len(self.analyzers)}")
 
+        # Analyze each symbol once and reuse for every section of the report
+        analyses = self._collect_analyses(timeframe)
+
         # Portfolio metrics
-        summary = self.get_portfolio_regime_summary(timeframe)
+        summary = self.get_portfolio_regime_summary(timeframe, analyses=analyses)
 
         print("\n📊 PORTFOLIO REGIME SUMMARY:")
         print(f"   Dominant Regime: {summary['dominant_regime']}")
@@ -343,15 +411,18 @@ class PortfolioHMMAnalyzer:
         # Regime distribution
         if summary["regime_distribution"]:
             print("\n📈 REGIME DISTRIBUTION:")
+            analyzed = len(analyses)  # denominator = successful analyses
             for regime, count in summary["regime_distribution"].items():
-                percentage = count / len(self.analyzers) * 100
+                percentage = count / analyzed * 100
                 print(f"   {regime}: {count} assets ({percentage:.1f}%)")
 
         # Individual symbol analysis
         print("\n🔍 INDIVIDUAL SYMBOL ANALYSIS:")
         for symbol, analyzer in self.analyzers.items():
             try:
-                analysis = analyzer.analyze_current_regime(timeframe)
+                if symbol not in analyses:
+                    raise ValueError("analysis failed")
+                analysis = analyses[symbol]
                 price = analyzer.data[timeframe]["Close"].iloc[-1]
                 print(
                     f"   {symbol}: ${price:.2f} | {analysis.current_regime.value} | "
@@ -362,7 +433,7 @@ class PortfolioHMMAnalyzer:
                 print(f"   {symbol}: Error - {e!s}")
 
         # Statistical arbitrage opportunities
-        arbitrage_pairs = self.identify_arbitrage_pairs(timeframe)
+        arbitrage_pairs = self.identify_arbitrage_pairs(timeframe, analyses=analyses)
         if arbitrage_pairs:
             print("\n💰 STATISTICAL ARBITRAGE OPPORTUNITIES:")
             for i, opp in enumerate(arbitrage_pairs[:3], 1):
@@ -374,15 +445,21 @@ class PortfolioHMMAnalyzer:
 
         # Correlation analysis
         try:
-            correlations = self.calculate_regime_correlations(timeframe)
+            correlations = self.calculate_regime_correlations(timeframe, analyses=analyses)
             print("\n🔗 CORRELATION INSIGHTS:")
 
-            # Find highest and lowest correlations
-            if len(correlations) > 1:
-                price_corr_cols = [col for col in correlations.columns if "_price_corr" in col]
-                if price_corr_cols:
-                    print("   High correlation pairs (potential risk concentration)")
-                    print("   Low correlation pairs (diversification opportunities)")
+            # Highest and lowest pairwise return correlations
+            corr = self.get_return_correlation_matrix(timeframe, list(correlations.index))
+            pairs = [
+                (f"{a}/{b}", float(corr.loc[a, b]))
+                for a, b in combinations(corr.columns, 2)
+                if not pd.isna(corr.loc[a, b])
+            ]
+            if pairs:
+                high = max(pairs, key=lambda x: x[1])
+                low = min(pairs, key=lambda x: x[1])
+                print(f"   Highest return correlation: {high[0]} ({high[1]:.2f})")
+                print(f"   Lowest return correlation: {low[0]} ({low[1]:.2f})")
 
         except Exception as e:
             print(f"   Correlation analysis error: {e!s}")

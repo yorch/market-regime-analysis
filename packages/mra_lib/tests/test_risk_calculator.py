@@ -31,9 +31,12 @@ class TestKellyOptimalSize:
         size = SimonsRiskCalculator.calculate_kelly_optimal_size(0.0, 2.0, 1.0)
         assert size == 0.0
 
-    def test_perfect_win_rate(self):
+    def test_perfect_win_rate_still_capped(self):
+        # win_rate == 1 -> f* = 1, scaled by confidence, then the 25% cap applies
         size = SimonsRiskCalculator.calculate_kelly_optimal_size(1.0, 2.0, 1.0, confidence=0.5)
-        assert size == pytest.approx(0.5)  # confidence scaling
+        assert size == pytest.approx(0.25)
+        tiny = SimonsRiskCalculator.calculate_kelly_optimal_size(1.0, 2.0, 1.0, confidence=0.1)
+        assert tiny == pytest.approx(0.1)
 
     def test_confidence_scaling(self):
         full = SimonsRiskCalculator.calculate_kelly_optimal_size(0.6, 2.0, 1.0, confidence=1.0)
@@ -101,11 +104,23 @@ class TestRegimeAdjustedSize:
         )
         assert high > low
 
-    def test_minimum_cap(self):
+    def test_minimum_cap_applies_only_to_positive_sizes(self):
         size = SimonsRiskCalculator.calculate_regime_adjusted_size(
-            0.001, MarketRegime.UNKNOWN, 0.0, 0.0
+            0.001, MarketRegime.BULL_TRENDING, 0.0, 0.0
         )
-        assert size >= 0.01
+        assert size == pytest.approx(0.01)
+
+    def test_unknown_regime_gets_no_position(self):
+        size = SimonsRiskCalculator.calculate_regime_adjusted_size(
+            0.10, MarketRegime.UNKNOWN, 1.0, 1.0
+        )
+        assert size == 0.0
+
+    def test_zero_base_size_gets_no_position(self):
+        size = SimonsRiskCalculator.calculate_regime_adjusted_size(
+            0.0, MarketRegime.BULL_TRENDING, 1.0, 1.0
+        )
+        assert size == 0.0
 
     def test_maximum_cap(self):
         size = SimonsRiskCalculator.calculate_regime_adjusted_size(
@@ -147,6 +162,9 @@ class TestCorrelationAdjustedSize:
         size = SimonsRiskCalculator.calculate_correlation_adjusted_size(0.10, 1.0)
         assert size >= 0.01
 
+    def test_zero_base_stays_zero(self):
+        assert SimonsRiskCalculator.calculate_correlation_adjusted_size(0.0, 0.9) == 0.0
+
     def test_invalid_correlation_raises(self):
         with pytest.raises(ValueError):
             SimonsRiskCalculator.calculate_correlation_adjusted_size(0.10, 1.5)
@@ -163,6 +181,29 @@ class TestVolatilityAdjustedSize:
             0.10, current_volatility=0.10, historical_volatility=0.20
         )
         assert high < low
+
+    def test_single_ratio_volatility_targeting(self):
+        # target / current = 0.15 / 0.30 = 0.5, independent of historical vol
+        a = SimonsRiskCalculator.calculate_volatility_adjusted_size(
+            0.20, current_volatility=0.30, historical_volatility=0.10
+        )
+        b = SimonsRiskCalculator.calculate_volatility_adjusted_size(
+            0.20, current_volatility=0.30, historical_volatility=0.60
+        )
+        assert a == pytest.approx(0.10)
+        assert b == pytest.approx(0.10)
+
+    def test_historical_vol_used_as_target_when_none(self):
+        size = SimonsRiskCalculator.calculate_volatility_adjusted_size(
+            0.20, current_volatility=0.40, historical_volatility=0.20, vol_target=None
+        )
+        assert size == pytest.approx(0.10)
+
+    def test_zero_base_stays_zero(self):
+        size = SimonsRiskCalculator.calculate_volatility_adjusted_size(
+            0.0, current_volatility=0.10, historical_volatility=0.20
+        )
+        assert size == 0.0
 
     def test_zero_current_vol_raises(self):
         with pytest.raises(ValueError, match="Current volatility"):
@@ -211,11 +252,43 @@ class TestComprehensivePositionSize:
         )
         assert result["volatility_adjusted"] > 0
 
-    def test_final_size_always_positive(self):
+    def test_final_size_positive_for_tradeable_regime(self):
         result = SimonsRiskCalculator.calculate_comprehensive_position_size(
-            0.10, MarketRegime.UNKNOWN, 0.1, 0.1
+            0.10, MarketRegime.BULL_TRENDING, 0.1, 0.1
         )
         assert result["final_size"] > 0
+
+    def test_unknown_regime_final_size_zero(self):
+        result = SimonsRiskCalculator.calculate_comprehensive_position_size(
+            0.10, MarketRegime.UNKNOWN, 0.1, 0.1, current_vol=0.1, historical_vol=0.2
+        )
+        assert result["final_size"] == 0.0
+
+    def test_negative_edge_kelly_means_no_position(self):
+        # 40% win rate at 1:1 odds -> Kelly <= 0 -> no trade (previously floored to 1%)
+        result = SimonsRiskCalculator.calculate_comprehensive_position_size(
+            0.10,
+            MarketRegime.BULL_TRENDING,
+            0.8,
+            0.8,
+            win_rate=0.4,
+            avg_win=1.0,
+            avg_loss=1.0,
+            current_vol=0.10,
+            historical_vol=0.20,
+        )
+        assert result["kelly_optimal"] == 0.0
+        assert result["final_size"] == 0.0
+
+    def test_invalid_input_raises_instead_of_fallback(self):
+        with pytest.raises(ValueError):
+            SimonsRiskCalculator.calculate_comprehensive_position_size(
+                0.10, MarketRegime.BULL_TRENDING, 1.5, 0.8
+            )
+        with pytest.raises(ValueError):
+            SimonsRiskCalculator.calculate_comprehensive_position_size(
+                0.10, MarketRegime.BULL_TRENDING, 0.8, 0.8, win_rate=2.0, avg_win=1, avg_loss=1
+            )
 
 
 # ===========================================================================
@@ -356,6 +429,27 @@ class TestPortfolioPositionLimits:
         result = limits.check_limits("QQQ", "SHORT", 10000.0)
         # Net goes from 40k to 30k (30%) — within 50%
         assert result["allowed"] is True
+
+    def test_hedge_not_blocked_by_net_headroom(self):
+        """A short that reduces a maxed-out long book must be allowed through the clamp."""
+        limits = self._make_limits(
+            max_net_exposure=0.50, max_total_exposure=2.0, max_per_asset_exposure=0.30
+        )
+        limits.add_position(PositionRecord("SPY", "LONG", 30000.0))
+        limits.add_position(PositionRecord("IWM", "LONG", 20000.0))
+        # Net = 50k = 50% (at the cap). Long headroom is 0; short headroom is 100k.
+        assert limits.clamp_position_size("QQQ", "LONG", 10000.0) == 0.0
+        assert limits.clamp_position_size("QQQ", "SHORT", 10000.0) == pytest.approx(10000.0)
+        assert limits.check_limits("QQQ", "SHORT", 10000.0)["allowed"] is True
+
+    def test_short_headroom_when_net_short(self):
+        limits = self._make_limits(
+            max_net_exposure=0.50, max_total_exposure=2.0, max_per_asset_exposure=0.30
+        )
+        limits.add_position(PositionRecord("SPY", "SHORT", 30000.0))
+        limits.add_position(PositionRecord("IWM", "SHORT", 20000.0))
+        assert limits.clamp_position_size("QQQ", "SHORT", 10000.0) == 0.0
+        assert limits.clamp_position_size("QQQ", "LONG", 10000.0) == pytest.approx(10000.0)
 
     # --- Clamping ---
 
