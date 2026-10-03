@@ -12,13 +12,13 @@ mra-web = { workspace = true }
 
 [tool.uv]
 dev-dependencies = [
-    "mypy>=1.11.0",
-    "pre-commit>=4.2.0",
-    "pytest>=8.4.1",
-    "pytest-asyncio>=0.24.0",
-    "pytest-cov>=7.0.0",
-    "httpx>=0.28.0",
-    "ruff>=0.12.4",
+    "mypy>=2.4.0",
+    "pre-commit>=4.6.2",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "httpx>=0.28.1",
+    "ruff>=0.16.10",
 ]
 
 # ── Ruff (shared across all packages) ──────────────────────────────────────
@@ -37,13 +37,13 @@ ignore = ["E501"]
 fixable = ["ALL"]
 
 [tool.ruff.lint.per-file-ignores]
-"packages/mra_web/src/mra_web/*.py" = ["T201", "PLR2004", "PLR0913"]
+"packages/mra_web/src/mra_web/*.py" = ["T201", "PLR2004", "PLR0913", "PLR0917"]
 "packages/mra_lib/src/mra_lib/analyzer.py" = ["T201", "PLR2004", "B023", "B904", "PLR0912", "PLR0915", "PLC0415", "SIM102", "SIM118", "RUF005"]
 "packages/mra_lib/src/mra_lib/portfolio/*.py" = ["T201", "PLR2004"]
-"packages/mra_lib/src/mra_lib/risk/*.py" = ["T201", "PLR2004", "PLR0913"]
+"packages/mra_lib/src/mra_lib/risk/*.py" = ["T201", "PLR2004", "PLR0913", "PLR0917"]
 "packages/mra_lib/src/mra_lib/indicators/hmm_detector.py" = ["PLR2004", "B904", "B023", "PLR0911"]
 "packages/mra_lib/src/mra_lib/indicators/true_hmm_detector.py" = ["PLR2004", "PLR0911", "PLR0912"]
-"packages/mra_lib/src/mra_lib/backtesting/*.py" = ["T201", "PLR2004", "PLR0913", "SIM102", "SIM103"]
+"packages/mra_lib/src/mra_lib/backtesting/*.py" = ["T201", "PLR2004", "PLR0913", "PLR0917", "SIM102", "SIM103"]
 "packages/mra_cli/src/mra_cli/*.py" = ["T201", "PLR2004"]
 "**/tests/*.py" = ["T201", "PLC0415", "PLR0912", "PLR0915", "PLR2004"]
 "examples/*.py" = ["T201", "PLR2004"]

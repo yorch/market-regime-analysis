@@ -136,12 +136,12 @@ class TestValidateParameters:
 
     def test_invalid_interval_raises(self):
         provider = MockDataProvider()
-        with pytest.raises(ValueError, match="Interval.*not supported"):
+        with pytest.raises(ValueError, match=r"Interval.*not supported"):
             provider.validate_parameters("SPY", "1y", "1w")
 
     def test_invalid_period_raises(self):
         provider = MockDataProvider()
-        with pytest.raises(ValueError, match="Period.*not supported"):
+        with pytest.raises(ValueError, match=r"Period.*not supported"):
             provider.validate_parameters("SPY", "10y", "1d")
 
 
@@ -268,6 +268,12 @@ class TestMockDataProvider:
         provider = MockDataProvider()
         df = provider.fetch("SPY", "1y", "1d")
         assert isinstance(df.index, pd.DatetimeIndex)
+
+    def test_fetch_hourly_uses_hourly_frequency(self):
+        provider = MockDataProvider()
+        df = provider.fetch("SPY", "1mo", "1h")
+        assert len(df) == 30
+        assert (df.index.to_series().diff().dropna() == pd.Timedelta(hours=1)).all()
 
     def test_high_greater_than_low(self):
         provider = MockDataProvider()
