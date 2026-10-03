@@ -10,6 +10,7 @@ import requests
 
 from mra_lib.data_providers import (
     AlpacaProvider,
+    InvalidSymbolError,
     MarketDataProvider,
     ProviderConfig,
     TiingoProvider,
@@ -191,7 +192,8 @@ class TestAlpacaProvider:
         assert list(df.columns) == ["Open", "High", "Low", "Close", "Volume"]
         assert len(df) == 3
         assert df.index.tz is None
-        assert df.index[0] == pd.Timestamp("2026-01-02 05:00:00")
+        # Daily bars are labeled by session date (midnight), per the base contract
+        assert df.index[0] == pd.Timestamp("2026-01-02")
 
         first_url = get.call_args_list[0].args[0]
         first_params = get.call_args_list[0].kwargs["params"]
@@ -363,7 +365,7 @@ class TestTiingoProvider:
         provider = TiingoProvider(ProviderConfig(api_key="tk"))
         with (
             patch("requests.get", return_value=_response(body={"detail": "Not found."})),
-            pytest.raises(ConnectionError, match="Not found"),
+            pytest.raises(InvalidSymbolError, match="Not found"),
         ):
             provider.fetch("NOPE", "1y", "1d")
 

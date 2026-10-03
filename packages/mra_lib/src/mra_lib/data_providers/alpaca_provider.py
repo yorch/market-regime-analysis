@@ -127,7 +127,8 @@ class AlpacaProvider(MarketDataProvider):
             interval: Data interval (e.g., '1d', '1h', '15m')
 
         Returns:
-            DataFrame with standardized OHLCV columns and a tz-naive UTC datetime index
+            DataFrame following the ``base`` contract (tz-naive UTC intraday index,
+            session dates for daily bars)
 
         Raises:
             ValueError: If parameters are invalid or no data is returned
@@ -163,6 +164,7 @@ class AlpacaProvider(MarketDataProvider):
                 config=self.config,
                 params=params,
                 headers=self._headers,
+                throttle=self.throttle,
             )
             bars.extend(payload.get("bars") or [])
             token = payload.get("next_page_token")
@@ -187,7 +189,7 @@ class AlpacaProvider(MarketDataProvider):
             if df.empty:
                 raise ValueError(f"No regular-session data returned for {symbol}")
 
-        return self.standardize_dataframe(df)
+        return self.standardize_dataframe(df, interval)
 
     @classmethod
     def _regular_session(cls, df: pd.DataFrame, timeframe: str) -> pd.DataFrame:

@@ -6,7 +6,14 @@ Plug-and-play architecture for market data providers with automatic provider dis
 
 from .alpaca_provider import AlpacaProvider
 from .alphavantage_provider import AlphaVantageProvider
-from .base import MarketDataProvider, ProviderConfig
+from .base import (
+    AuthError,
+    InvalidSymbolError,
+    MarketDataProvider,
+    ProviderConfig,
+    ProviderError,
+    RateLimitError,
+)
 from .credentials import required_env_vars, requires_credentials, resolve_api_key
 from .mock_provider import MockDataProvider
 from .polygon_provider import PolygonProvider
@@ -19,14 +26,19 @@ MarketDataProvider.register(AlphaVantageProvider)
 MarketDataProvider.register(PolygonProvider)
 MarketDataProvider.register(AlpacaProvider)
 MarketDataProvider.register(TiingoProvider)
+MarketDataProvider.register(MockDataProvider)  # offline mode: --provider mock
 
 __all__ = [
     "AlpacaProvider",
     "AlphaVantageProvider",
+    "AuthError",
+    "InvalidSymbolError",
     "MarketDataProvider",
     "MockDataProvider",
     "PolygonProvider",
     "ProviderConfig",
+    "ProviderError",
+    "RateLimitError",
     "TiingoProvider",
     "YFinanceProvider",
     "required_env_vars",

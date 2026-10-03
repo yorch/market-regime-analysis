@@ -16,7 +16,13 @@ from urllib.parse import quote
 import pandas as pd
 
 from ._http import get_json
-from .base import PERIOD_DAYS, MarketDataProvider, ProviderConfig, period_to_start
+from .base import (
+    PERIOD_DAYS,
+    InvalidSymbolError,
+    MarketDataProvider,
+    ProviderConfig,
+    period_to_start,
+)
 
 API_KEY_ENV = "TIINGO_API_KEY"
 
@@ -58,6 +64,7 @@ class TiingoProvider(MarketDataProvider):
     supported_periods: ClassVar[set[str]] = {*PERIOD_DAYS, "ytd"}
     requires_api_key = True
     rate_limit_per_minute = 1  # Free tier: 50 requests/hour, 1000/day
+    rate_limit_burst = 10  # Allow a short burst (e.g. all analyzer timeframes) before spacing
     description = "Tiingo adjusted end-of-day prices and IEX intraday bars"
 
     def __init__(self, config: ProviderConfig | None = None) -> None:
@@ -77,7 +84,8 @@ class TiingoProvider(MarketDataProvider):
             interval: Data interval (e.g., '1d', '1h', '15m')
 
         Returns:
-            DataFrame with standardized OHLCV columns and a tz-naive UTC datetime index
+            DataFrame following the ``base`` contract (tz-naive UTC intraday index,
+            session dates for daily bars)
 
         Raises:
             ValueError: If parameters are invalid or no data is returned
@@ -113,17 +121,23 @@ class TiingoProvider(MarketDataProvider):
             config=self.config,
             params=params,
             headers={"Authorization": f"Token {self.config.api_key}"},
+            throttle=self.throttle,
         )
 
         # Tiingo reports errors (unknown ticker, exhausted quota) as {"detail": ...}
         if isinstance(rows, dict) and rows.get("detail"):
-            raise ConnectionError(f"Tiingo error for {symbol}: {rows['detail']}")
+            detail = str(rows["detail"])
+            if "not found" in detail.lower():
+                raise InvalidSymbolError(f"Tiingo error for {symbol}: {detail}")
+            raise ConnectionError(f"Tiingo error for {symbol}: {detail}")
         if not isinstance(rows, list) or not rows:
             raise ValueError(
                 f"No data returned for {symbol} in period {period} with interval {interval}"
             )
 
-        return self.standardize_dataframe(self._rows_to_dataframe(rows, adjusted=kind == "daily"))
+        return self.standardize_dataframe(
+            self._rows_to_dataframe(rows, adjusted=kind == "daily"), interval
+        )
 
     @staticmethod
     def _rows_to_dataframe(rows: list[dict[str, Any]], *, adjusted: bool) -> pd.DataFrame:
