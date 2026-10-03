@@ -1,76 +1,46 @@
 services:
-  scanner:
+  api:
     build: .
     image: market-regime-analysis
-    # Alternative: pull from GHCR
-    # image: ghcr.io/market-regime-analysis/market-regime-analysis:latest
+    # Alternative: pull the published image from GHCR
+    # image: ghcr.io/<owner>/market-regime-analysis:latest
     restart: unless-stopped
-    command:
-      - "--no-dashboard"
+    # The image's default command is `mra-api --host 0.0.0.0 --port 8000`.
     environment:
-      # ── Application behaviour ──────────────────────────────────────────
+      # ── Server ─────────────────────────────────────────────────────────
       ENVIRONMENT: "${ENVIRONMENT:-production}"
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
-      SCAN_INTERVAL: "${SCAN_INTERVAL:-300}"
-      SCAN_MODE: "${SCAN_MODE:-continuous}"
-      DEFAULT_SYMBOL: "${DEFAULT_SYMBOL:-SPY}"
-      DEFAULT_TIMEFRAME: "${DEFAULT_TIMEFRAME:-1D}"
+      ENABLE_DOCS: "${ENABLE_DOCS:-false}"
 
-      # ── Data provider ──────────────────────────────────────────────────
-      DEFAULT_PROVIDER: "${DEFAULT_PROVIDER:-yfinance}"
+      # ── Authentication (JWT_SECRET is required) ─────────────────────────
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set (>=32 chars)}"
+      JWT_EXPIRATION_HOURS: "${JWT_EXPIRATION_HOURS:-24}"
+      API_KEYS: "${API_KEYS:-}"
+
+      # ── HTTP policy ────────────────────────────────────────────────────
+      CORS_ORIGINS: "${CORS_ORIGINS:-}"
+      RATE_LIMIT_PER_MINUTE: "${RATE_LIMIT_PER_MINUTE:-60}"
+
+      # ── Data provider credentials ──────────────────────────────────────
       ALPHA_VANTAGE_API_KEY: "${ALPHA_VANTAGE_API_KEY:-}"
       POLYGON_API_KEY: "${POLYGON_API_KEY:-}"
       APCA_API_KEY_ID: "${APCA_API_KEY_ID:-}"
       APCA_API_SECRET_KEY: "${APCA_API_SECRET_KEY:-}"
       ALPACA_DATA_FEED: "${ALPACA_DATA_FEED:-}"
       TIINGO_API_KEY: "${TIINGO_API_KEY:-}"
-
-      # ── Alerts — Telegram ──────────────────────────────────────────────
-      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
-      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
-
-      # ── Alerts — Discord ──────────────────────────────────────────────
-      DISCORD_WEBHOOK_URL: "${DISCORD_WEBHOOK_URL:-}"
-
-      # ── Alerts — Email ─────────────────────────────────────────────────
-      EMAIL_SMTP_HOST: "${EMAIL_SMTP_HOST:-}"
-      EMAIL_SMTP_PORT: "${EMAIL_SMTP_PORT:-587}"
-      EMAIL_USERNAME: "${EMAIL_USERNAME:-}"
-      EMAIL_PASSWORD: "${EMAIL_PASSWORD:-}"
-      EMAIL_RECIPIENT: "${EMAIL_RECIPIENT:-}"
-
-      # ── Alerts — Webhook ───────────────────────────────────────────────
-      WEBHOOK_URL: "${WEBHOOK_URL:-}"
-
-      # ── Report output ──────────────────────────────────────────────────
-      REPORT_DIR: "${REPORT_DIR:-/data/reports}"
-      REPORT_FORMAT: "${REPORT_FORMAT:-json}"
-
-      # ── Persistent storage ─────────────────────────────────────────────
-      STORAGE_BACKEND: "${STORAGE_BACKEND:-none}"
-      # DATABASE_URL set via docker-compose.postgres.yml override
-
-      # ── Web dashboard ──────────────────────────────────────────────────
-      WEB_ENABLED: "${WEB_ENABLED:-false}"
-      WEB_PORT: "${WEB_PORT:-8080}"
-      WEB_PASSWORD: "${WEB_PASSWORD:-}"
-      JWT_SECRET: "${JWT_SECRET:-}"
     ports:
-      # Expose web dashboard port (only relevant when WEB_ENABLED=true)
-      - "${WEB_PORT:-8080}:${WEB_PORT:-8080}"
+      # Published on the host's loopback only; put a TLS reverse proxy in front
+      # (or change the bind address) to expose it beyond this machine.
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     volumes:
-      # Named volumes for data that should survive container restarts
-      - app-cache:/home/scanner/.cache    # Application cache
-      - app-reports:/data/reports          # Output reports
-      # Optional: mount read-only config file
-      # - ./config.json:/app/config.json:ro
+      # Provider caches (e.g. yfinance timezone cache) survive restarts
+      - app-cache:/home/mra/.cache
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 1G
         reservations:
           memory: 128M
 
 volumes:
   app-cache:
-  app-reports:

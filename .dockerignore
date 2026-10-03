@@ -9,12 +9,27 @@ __pycache__
 !.env.example
 **/tests/
 docs/
+examples/
+*.ipynb
 # Exclude markdown at root only — packages may need README.md for hatchling
 /*.md
 Justfile
+run.py
 scripts/
+dist/
+build/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 .ruff_cache
 .pytest_cache
 .mypy_cache
 .github
+.claude
+.vscode
+.idea
 .pre-commit-config.yaml
+docker-compose*.yml
+Dockerfile
+.dockerignore
