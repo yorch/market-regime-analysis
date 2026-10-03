@@ -1,52 +1,18 @@
-#!/usr/bin/env python3
-"""
-Simple test script to verify the market regime analysis system works correctly.
-"""
+"""End-to-end smoke test against a live data provider (requires network access)."""
 
-import os
-import sys
-
-# Add the package to the path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pytest
 
 from mra_lib import MarketRegimeAnalyzer
+from mra_lib.config.enums import MarketRegime, TradingStrategy
 
 
-def test_basic_functionality():
-    """Test basic functionality of the system."""
-    print("Testing Market Regime Analysis System...")
+@pytest.mark.integration
+def test_analyzer_end_to_end_with_live_yfinance_data():
+    """The analyzer fetches live SPY data and produces a well-formed daily analysis."""
+    analyzer = MarketRegimeAnalyzer("SPY", periods={"1D": "1y"}, provider_flag="yfinance")
 
-    try:
-        # Test 1: Basic analyzer initialization
-        print("\n1. Testing analyzer initialization...")
-        analyzer = MarketRegimeAnalyzer("SPY", periods={"1D": "1y"})
-        print("✓ Analyzer initialized successfully")
+    analysis = analyzer.analyze_current_regime("1D")
 
-        # Test 2: Regime analysis
-        print("\n2. Testing regime analysis...")
-        analysis = analyzer.analyze_current_regime("1D")
-        print(f"✓ Current regime: {analysis.current_regime.value}")
-        print(f"✓ Confidence: {analysis.regime_confidence:.2f}")
-        print(f"✓ Strategy: {analysis.recommended_strategy.value}")
-
-        # Test 3: Print report
-        print("\n3. Testing report generation...")
-        analyzer.print_analysis_report("1D")
-        print("✓ Report generated successfully")
-
-        print("\n🎉 All tests passed! The system is working correctly.")
-
-    except Exception as e:
-        print(f"❌ Test failed: {e!s}")
-        import traceback
-
-        traceback.print_exc()
-        raise AssertionError(f"Basic functionality test failed: {e}") from e
-
-
-if __name__ == "__main__":
-    try:
-        test_basic_functionality()
-        sys.exit(0)
-    except (AssertionError, Exception):
-        sys.exit(1)
+    assert isinstance(analysis.current_regime, MarketRegime)
+    assert isinstance(analysis.recommended_strategy, TradingStrategy)
+    assert 0.0 <= analysis.regime_confidence <= 1.0

@@ -10,8 +10,8 @@ mra-lib = { workspace = true }
 mra-cli = { workspace = true }
 mra-web = { workspace = true }
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "mypy>=2.4.0",
     "pre-commit>=4.6.2",
     "pytest>=9.1.1",
@@ -102,9 +102,17 @@ testpaths = [
     "packages/mra_cli/tests",
     "packages/mra_web/tests",
 ]
+addopts = "--strict-markers -ra"
 markers = [
     "integration: tests that call external APIs (deselect with '-m \"not integration\"')",
     "slow: tests that take a long time to run (deselect with '-m \"not slow\"')",
+]
+filterwarnings = [
+    # Third-party deprecations we cannot fix (polygon-api-client / websockets internals)
+    "ignore::DeprecationWarning:polygon.*",
+    "ignore::DeprecationWarning:websockets.*",
+    "ignore:Setting the shape on a NumPy array has been deprecated:DeprecationWarning",
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
 ]
 
 # ── coverage (shared across all packages) ────────────────────────────────
@@ -123,9 +131,12 @@ omit = [
 [tool.coverage.report]
 fail_under = 65
 show_missing = true
-exclude_lines = [
-    "pragma: no cover",
-    "if __name__ == .__main__.",
+# Regexes are matched against each source line; anchor them so e.g. "pass" does not
+# also exclude every ``@click.pass_context`` command.
+exclude_also = [
+    "if __name__ == .__main__.:",
     "if TYPE_CHECKING:",
-    "pass",
+    "^\\s*pass\\s*$",
+    "^\\s*\\.\\.\\.\\s*$",
+    "raise NotImplementedError",
 ]

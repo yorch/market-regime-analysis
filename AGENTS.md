@@ -65,10 +65,10 @@ uv run mra start-api --dev
 
 ```bash
 # Using just (preferred)
-just qa          # fmt + lint + types — gate before commit
+just qa          # fmt-check + lint + types — non-mutating gate before commit
+just fix         # Apply ruff autofixes + format (mutates files)
 just fmt         # Format code
 just lint        # Lint code
-just fix         # Fix auto-fixable issues
 just types       # Type check with mypy
 
 # Or directly
@@ -86,6 +86,12 @@ just test        # or: uv run pytest
 
 # Unit tests only (exclude integration/slow)
 just test-unit
+
+# Unit tests with coverage (threshold = [tool.coverage.report] fail_under; CI runs this)
+just test-cov
+
+# Live-provider tests (@pytest.mark.integration; needs network/API keys)
+just test-integration
 
 # Per-package
 just test-lib    # or: uv run pytest packages/mra_lib/tests/
@@ -105,9 +111,15 @@ uv run pytest packages/mra_lib/tests/test_system.py -v
 
 ### Docker
 
+The image runs the web API (`mra-api`) as non-root user `mra`, listening on 8000 inside the
+container with a `/health` `HEALTHCHECK`. Compose publishes it on `127.0.0.1:${API_PORT:-8000}`
+and **requires `JWT_SECRET`** (>=32 chars) — set it in `.env` (see `.env.example`); compose checks
+this for every command, including `down`/`build`.
+
 ```bash
 just docker-build    # Build image
-just docker-up       # Build and run
+just docker-up       # Start detached
+just docker-health   # Container status + GET /health
 just docker-down     # Stop
 ```
 
@@ -175,8 +187,7 @@ market-regime-analysis/
 ├── pyproject.toml                  # Workspace root (tool config)
 ├── Justfile                        # Task runner
 ├── Dockerfile                      # Two-stage Docker build
-├── docker-compose.yml
-├── docker-compose.postgres.yml     # Optional Postgres override
+├── docker-compose.yml              # Web API service (loopback-published, JWT_SECRET required)
 ├── .pre-commit-config.yaml
 ├── .github/workflows/ci.yml
 ├── .env.example
@@ -240,7 +251,7 @@ from .strategy import RegimeStrategy  # inside backtesting/
 | Ruff | Linting + formatting | `[tool.ruff]` in root `pyproject.toml` |
 | mypy | Type checking (with Pydantic plugin) | `[tool.mypy]` in root `pyproject.toml` |
 | pytest | Testing (with pytest-asyncio) | `[tool.pytest.ini_options]` in root `pyproject.toml` |
-| pre-commit | Git hooks (ruff + mypy) | `.pre-commit-config.yaml` |
+| pre-commit | Git hooks (local hooks: `uv run ruff` / `uv run mypy`, versions from `uv.lock`) | `.pre-commit-config.yaml` |
 | just | Task runner | `Justfile` |
 
 ## Development Guidelines
@@ -254,11 +265,13 @@ from .strategy import RegimeStrategy  # inside backtesting/
 ### Testing Strategy
 - Tests live alongside each package: `packages/<pkg>/tests/`
 - Root pytest config collects from all package test directories
-- Markers: `integration` (external APIs), `slow`
-- **Minimum coverage: 65%** — enforced in CI via `--cov-fail-under=65` and in `pyproject.toml` `[tool.coverage.report]`
+- Markers: `integration` (external APIs / network), `slow`; `--strict-markers` is on, so unknown markers fail
+- Any test that touches the network must be marked `@pytest.mark.integration`; unit tests use synthetic data
+  (`synthetic_ohlcv` fixture in `packages/mra_lib/tests/conftest.py`)
+- **Minimum coverage: 65%** — single source of truth is `fail_under` in `[tool.coverage.report]`; CI runs `just test-cov`
 - Run `just test-cov` to verify coverage locally; CI will fail if coverage drops below the threshold
 - Conventions: name tests `test_<unit>_<behavior>()`; use fixtures and deterministic inputs
-- Run `just qa` before committing (fmt + lint + types)
+- Run `just qa` before committing (fmt-check + lint + types; `just fix` to autofix)
 
 ### Commit & PR Guidelines
 - Commits follow Conventional Commits: `feat:`, `fix:`, `docs:`, etc.
@@ -289,12 +302,16 @@ from .strategy import RegimeStrategy  # inside backtesting/
 
 ## CI Pipeline
 
-Four jobs run in parallel, Docker depends on all:
+`.github/workflows/ci.yml` — workflow token is read-only by default (`permissions: contents: read`),
+all installs use `uv sync --locked`, third-party actions are pinned to commit SHAs, and superseded PR
+runs are cancelled (main/tag runs are not). Four jobs run in parallel; docker depends on them:
 1. **lint** — ruff check + ruff format --check
 2. **typecheck** — mypy (soft-fail until fully annotated)
-3. **test** — pytest across all packages
+3. **test** — `just test-cov` (unit tests, coverage gate from `pyproject.toml`)
 4. **build** — uv build to verify packages build
-5. **docker** — multi-stage build on main/tags
+5. **docker** — builds the image, smoke-tests it (`docker run` + poll `/health`), pushes to GHCR on
+   main/tags (or PRs labelled `publish-docker`, applied on the next push); only job with `packages: write`
+6. **integration-test** — `workflow_dispatch` only; `just test-integration`; the only job given provider secrets
 
 ## Dependencies
 

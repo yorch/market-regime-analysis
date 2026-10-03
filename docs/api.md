@@ -374,23 +374,18 @@ All API requests and errors are logged with structured format:
 
 ## 🐳 Docker Deployment
 
-```dockerfile
-FROM python:3.13-slim
-
-WORKDIR /app
-COPY . .
-
-RUN pip install uv && uv sync --frozen
-
-EXPOSE 8000
-
-CMD ["uv", "run", "mra-api", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
-```
+The repository `Dockerfile` builds a multi-stage image that runs `mra-api` as a non-root user on
+port 8000 with a `/health` healthcheck. `JWT_SECRET` (>=32 characters) is required.
 
 ```bash
-# Build and run
-docker build -t market-regime-api .
-docker run -p 8000:8000 -e ALPHA_VANTAGE_API_KEY=your_key market-regime-api
+# docker compose (reads .env; publishes on 127.0.0.1:${API_PORT:-8000})
+cp .env.example .env   # then set JWT_SECRET and any provider keys
+docker compose up -d --build
+
+# or plain docker
+docker build -t market-regime-analysis .
+docker run -p 127.0.0.1:8000:8000 -e JWT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" \
+  -e ALPHA_VANTAGE_API_KEY=your_key market-regime-analysis
 ```
 
 ## 🎯 Production Deployment
