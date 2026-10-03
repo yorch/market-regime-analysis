@@ -1,128 +1,71 @@
-"""
-Test and compare True HMM implementation vs GMM approach.
+"""TrueHMMDetector (hmmlearn) vs GMM detector on deterministic synthetic data."""
 
-This script validates the new TrueHMMDetector and compares it
-with the original GMM-based HiddenMarkovRegimeDetector.
-"""
+import numpy as np
+import pytest
 
-import sys
-
-from mra_lib.data_providers import MarketDataProvider
+from mra_lib.config.enums import MarketRegime
 from mra_lib.indicators.hmm_detector import HiddenMarkovRegimeDetector
 from mra_lib.indicators.true_hmm_detector import TrueHMMDetector
 
 
-def main():
-    """Run comparison test between True HMM and GMM."""
-    print("=" * 100)
-    print("COMPARING TRUE HMM vs GMM APPROACH")
-    print("=" * 100)
-
-    # Load data
-    print("\n1. Loading market data...")
-    try:
-        provider = MarketDataProvider.create_provider("yfinance")
-        df = provider.fetch("SPY", "2y", "1d")
-        print(f"   ✓ Loaded {len(df)} days of SPY data")
-    except Exception as e:
-        print(f"   ✗ Failed to load data: {e}")
-        sys.exit(1)
-
-    # Test True HMM
-    print("\n2. Testing True HMM (hmmlearn-based)...")
-    try:
-        true_hmm = TrueHMMDetector(n_states=6, n_iter=100)
-        true_hmm.fit(df)
-
-        convergence = true_hmm.get_training_convergence()
-        print("   ✓ HMM trained successfully")
-        print(f"     - Log-likelihood: {convergence['log_likelihood']:.2f}")
-        print(f"     - Converged: {convergence['converged']}")
-        print(f"     - Features: {convergence['n_features']}")
-
-        # Predict regime
-        regime, state, confidence = true_hmm.predict_regime(df, use_viterbi=True)
-        print("\n   True HMM Prediction:")
-        print(f"     - Regime: {regime.value}")
-        print(f"     - State: {state}")
-        print(f"     - Confidence: {confidence:.2%}")
-
-        # Show transition matrix
-        print("\n   Learned Transition Matrix (top 3 transitions):")
-        for i in range(min(3, true_hmm.n_states)):
-            top_transitions = sorted(
-                [(j, true_hmm.transition_matrix[i, j]) for j in range(true_hmm.n_states)],
-                key=lambda x: x[1],
-                reverse=True,
-            )[:3]
-            print(f"     State {i} -> {', '.join([f'{j}({p:.2%})' for j, p in top_transitions])}")
-
-    except Exception as e:
-        print(f"   ✗ True HMM failed: {e}")
-        import traceback
-
-        traceback.print_exc()
-        sys.exit(1)
-
-    # Test GMM approach
-    print("\n3. Testing GMM Approach (original)...")
-    try:
-        gmm_detector = HiddenMarkovRegimeDetector(n_states=6)
-        gmm_detector.fit(df)
-        print("   ✓ GMM trained successfully")
-
-        # Predict regime
-        regime, state, confidence = gmm_detector.predict_regime(df)
-        print("\n   GMM Prediction:")
-        print(f"     - Regime: {regime.value}")
-        print(f"     - State: {state}")
-        print(f"     - Confidence: {confidence:.2%}")
-
-    except Exception as e:
-        print(f"   ✗ GMM failed: {e}")
-        import traceback
-
-        traceback.print_exc()
-
-    # Compare approaches
-    print("\n4. Comparing Approaches...")
-    try:
-        comparison = true_hmm.compare_with_gmm(df, gmm_detector)
-        print("\n   Comparison Results:")
-        print(f"     - Regime Agreement: {comparison['regime_agreement']}")
-        print(f"     - HMM Regime: {comparison['hmm_regime']}")
-        print(f"     - GMM Regime: {comparison['gmm_regime']}")
-        print(f"     - HMM Confidence: {comparison['hmm_confidence']:.2%}")
-        print(f"     - GMM Confidence: {comparison['gmm_confidence']:.2%}")
-
-    except Exception as e:
-        print(f"   ✗ Comparison failed: {e}")
-
-    # Key differences explanation
-    print("\n5. Key Methodological Differences:")
-    print("\n   GMM Approach (Original):")
-    print("     ✗ Treats each observation independently")
-    print("     ✗ No temporal modeling")
-    print("     ✗ Transition matrix calculated post-hoc")
-    print("     ✗ States assigned by clustering, not dynamics")
-
-    print("\n   True HMM (New):")
-    print("     ✓ Models temporal dependencies explicitly")
-    print("     ✓ Uses Baum-Welch for parameter learning")
-    print("     ✓ Uses Viterbi for optimal state sequences")
-    print("     ✓ Transition matrix learned during training")
-    print("     ✓ State sequences respect temporal dynamics")
-
-    print("\n" + "=" * 100)
-    print("TEST COMPLETE")
-    print("=" * 100)
-
-    print("\nNext Steps:")
-    print("1. Integrate TrueHMMDetector into MarketRegimeAnalyzer")
-    print("2. Run backtests to compare performance")
-    print("3. Update documentation with methodology comparison")
-    print("4. Add configuration option to switch between implementations")
+@pytest.fixture
+def fitted(synthetic_ohlcv):
+    df = synthetic_ohlcv(n=300)
+    return TrueHMMDetector(n_states=4, n_iter=50).fit(df), df
 
 
-if __name__ == "__main__":
-    main()
+def test_true_hmm_convergence_info_after_fit(fitted):
+    hmm, _ = fitted
+
+    info = hmm.get_training_convergence()
+
+    assert info["fitted"] is True
+    assert info["n_states"] == 4
+    assert info["n_features"] == len(hmm.feature_names) > 0
+    assert np.isfinite(info["log_likelihood"])
+
+
+def test_true_hmm_transition_matrix_is_row_stochastic(fitted):
+    hmm, _ = fitted
+
+    assert hmm.transition_matrix.shape == (4, 4)
+    np.testing.assert_allclose(hmm.transition_matrix.sum(axis=1), 1.0, atol=1e-6)
+
+
+@pytest.mark.parametrize("use_viterbi", [True, False])
+def test_true_hmm_predict_regime_returns_valid_tuple(fitted, use_viterbi):
+    hmm, df = fitted
+
+    regime, state, confidence = hmm.predict_regime(df, use_viterbi=use_viterbi)
+
+    assert isinstance(regime, MarketRegime)
+    assert 0 <= state < 4
+    assert 0.0 <= confidence <= 1.0
+
+
+def test_true_hmm_is_deterministic_for_fixed_seed(synthetic_ohlcv):
+    df = synthetic_ohlcv(n=300)
+
+    first = TrueHMMDetector(n_states=4, n_iter=50).fit(df).predict_regime(df)
+    second = TrueHMMDetector(n_states=4, n_iter=50).fit(df).predict_regime(df)
+
+    assert first[0] == second[0]
+    assert first[1] == second[1]
+    assert first[2] == pytest.approx(second[2])
+
+
+def test_true_hmm_compare_with_gmm_reports_both_predictions(fitted):
+    hmm, df = fitted
+    gmm = HiddenMarkovRegimeDetector(n_states=6).fit(df)
+
+    comparison = hmm.compare_with_gmm(df, gmm)
+
+    valid = {r.value for r in MarketRegime}
+    assert comparison["hmm_regime"] in valid
+    assert comparison["gmm_regime"] in valid
+    assert comparison["regime_agreement"] == (comparison["hmm_regime"] == comparison["gmm_regime"])
+
+
+def test_true_hmm_predict_before_fit_raises(synthetic_ohlcv):
+    with pytest.raises(ValueError, match="fitted"):
+        TrueHMMDetector(n_states=4).predict_regime(synthetic_ohlcv(n=100))
