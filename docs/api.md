@@ -187,8 +187,12 @@ Response fields: `symbols`, `timeframe`, `analyses` (list of `AnalysisResponse`)
 `diversification_benefit` (both `null` with fewer than two analyzed symbols) and
 `regime_distribution`.
 
-If **no** symbol could be analyzed the response is `503` (`"Failed to analyze any symbols"`),
-whatever the cause (e.g. every symbol unknown). Per-symbol causes are only in the server log.
+If **no** symbol could be analyzed, the response reports the most severe per-symbol cause,
+classified like the single-symbol routes (see [Errors](#errors)): provider auth failure → `502`,
+provider rate limit or outage → `503`, every symbol unknown → `400`. Server-side causes win over
+unknown symbols, so the status does not depend on symbol order. Messages are generic; per-symbol
+details are only in the server log. If some symbols succeed, the response is `200` with only
+those symbols in `analyses`.
 
 ### POST `/api/v1/position-sizing`
 
