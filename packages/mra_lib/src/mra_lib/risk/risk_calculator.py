@@ -501,6 +501,7 @@ class SimonsRiskCalculator:
         avg_loss: float | None = None,
         current_vol: float | None = None,
         historical_vol: float | None = None,
+        vol_target: float | None = 0.15,
     ) -> dict[str, float]:
         """
         Calculate comprehensive position size using all available factors.
@@ -518,7 +519,10 @@ class SimonsRiskCalculator:
             avg_win: Average win amount (optional)
             avg_loss: Average loss amount (optional)
             current_vol: Current volatility (optional)
-            historical_vol: Historical volatility (optional)
+            historical_vol: Historical volatility (optional). Only used as the
+                volatility target when ``vol_target`` is None.
+            vol_target: Annualized volatility target for the volatility step
+                (default 15%); None targets ``historical_vol`` instead
 
         Returns:
             Dictionary with various position size calculations. ``final_size``
@@ -556,13 +560,14 @@ class SimonsRiskCalculator:
                 win_rate, avg_win, avg_loss, confidence
             )
             results["kelly_optimal"] = kelly_size
-            # Kelly caps the size; zero Kelly (no edge) means no position
-            final_size = min(corr_adjusted, kelly_size)
+            # Kelly caps the size; zero Kelly (no edge) means no position.
+            # Re-apply the bounds so a tiny positive Kelly is floored consistently.
+            final_size = _bound_position(min(corr_adjusted, kelly_size))
 
         # Volatility adjustment (if volatility data available)
         if current_vol is not None and historical_vol is not None:
             final_size = SimonsRiskCalculator.calculate_volatility_adjusted_size(
-                final_size, current_vol, historical_vol
+                final_size, current_vol, historical_vol, vol_target
             )
         results["volatility_adjusted"] = final_size
         results["final_size"] = final_size

@@ -101,7 +101,7 @@ class PortfolioHMMAnalyzer:
             return []
         return [c for c in self.portfolio_data[timeframe].columns if c not in _DERIVED_COLUMNS]
 
-    def _collect_analyses(self, timeframe: str) -> dict[str, RegimeAnalysis]:
+    def collect_analyses(self, timeframe: str) -> dict[str, RegimeAnalysis]:
         """
         Run ``analyze_current_regime`` once per symbol.
 
@@ -161,7 +161,7 @@ class PortfolioHMMAnalyzer:
             raise ValueError(f"Portfolio data not available for {timeframe}")
 
         if analyses is None:
-            analyses = self._collect_analyses(timeframe)
+            analyses = self.collect_analyses(timeframe)
 
         regime_data = {
             symbol: {
@@ -206,7 +206,7 @@ class PortfolioHMMAnalyzer:
 
         try:
             if analyses is None:
-                analyses = self._collect_analyses(timeframe)
+                analyses = self.collect_analyses(timeframe)
 
             if not analyses:
                 return summary
@@ -262,33 +262,37 @@ class PortfolioHMMAnalyzer:
     @staticmethod
     def _cointegration_spread(
         price1: pd.Series, price2: pd.Series
-    ) -> tuple[pd.Series, float, float] | None:
+    ) -> tuple[pd.Series, float, float, float] | None:
         """
         Engle-Granger spread of two price series.
 
-        Regresses ``log(price1)`` on ``log(price2)`` (OLS with intercept) and
-        tests the residual for a unit root via ``statsmodels`` ``coint``.
+        Regresses ``log(price1)`` on ``log(price2)`` (OLS with intercept) over
+        all bars *except the last* and tests that in-sample residual for a unit
+        root via ``statsmodels`` ``coint``. The last bar is then scored
+        out-of-sample so a large current deviation is not absorbed into the fit.
 
         Returns:
-            ``(residual, hedge_ratio, coint_pvalue)`` or None when the series
-            are too short or contain non-positive prices.
+            ``(in_sample_residual, hedge_ratio, coint_pvalue, current_residual)``
+            or None when the series are too short or contain non-positive prices.
         """
         pair = pd.concat([price1, price2], axis=1).dropna()
         if len(pair) < _MIN_PAIR_OBSERVATIONS or (pair <= 0).to_numpy().any():
             return None
-        log1 = np.log(pair.iloc[:, 0])
-        log2 = np.log(pair.iloc[:, 1])
+        log1_all = np.log(pair.iloc[:, 0])
+        log2_all = np.log(pair.iloc[:, 1])
+        log1, log2 = log1_all.iloc[:-1], log2_all.iloc[:-1]
         if log2.std() == 0 or log1.std() == 0:
             return None
 
         hedge_ratio, intercept = np.polyfit(log2.to_numpy(), log1.to_numpy(), 1)
         residual = log1 - (intercept + hedge_ratio * log2)
+        current = float(log1_all.iloc[-1] - (intercept + hedge_ratio * log2_all.iloc[-1]))
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")  # statsmodels collinearity/convergence noise
             _, pvalue, _ = coint(log1, log2)
 
-        return residual, float(hedge_ratio), float(pvalue)
+        return residual, float(hedge_ratio), float(pvalue), current
 
     def identify_arbitrage_pairs(
         self,
@@ -338,14 +342,14 @@ class PortfolioHMMAnalyzer:
                 spread = self._cointegration_spread(prices[symbol1], prices[symbol2])
                 if spread is None:
                     continue
-                residual, hedge_ratio, pvalue = spread
+                residual, hedge_ratio, pvalue, current_resid = spread
                 if pvalue > max_pvalue:
                     continue
 
                 resid_std = residual.std()
                 if not resid_std > 0:
                     continue
-                current_zscore = float((residual.iloc[-1] - residual.mean()) / resid_std)
+                current_zscore = float((current_resid - residual.mean()) / resid_std)
                 if np.isnan(current_zscore) or abs(current_zscore) <= entry_zscore:
                     continue
 
@@ -395,7 +399,7 @@ class PortfolioHMMAnalyzer:
         print(f"Active Symbols: {len(self.analyzers)}")
 
         # Analyze each symbol once and reuse for every section of the report
-        analyses = self._collect_analyses(timeframe)
+        analyses = self.collect_analyses(timeframe)
 
         # Portfolio metrics
         summary = self.get_portfolio_regime_summary(timeframe, analyses=analyses)

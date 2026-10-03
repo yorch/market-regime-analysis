@@ -425,6 +425,15 @@ class TestAnnualization:
             a._calculate_technical_indicators(_make_ohlcv(100), "3W")
 
 
+class TestPeriodsPerYear:
+    def test_extra_intervals_supported(self):
+        from mra_lib.config.regime_tables import periods_per_year
+
+        assert periods_per_year("1wk") == 52
+        assert periods_per_year("5M") == 252 * 78
+        assert periods_per_year("1h") == periods_per_year("1H")
+
+
 class TestRegimeTablesSingleSource:
     def test_analyzer_uses_canonical_tables(self):
         a = _build_analyzer()

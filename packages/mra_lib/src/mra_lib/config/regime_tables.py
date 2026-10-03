@@ -31,9 +31,6 @@ REGIME_MULTIPLIERS: Final = MappingProxyType(
 )
 """Relative position-size multiplier per regime (read-only)."""
 
-MAX_REGIME_MULTIPLIER: Final[float] = max(REGIME_MULTIPLIERS.values())
-"""Largest multiplier in :data:`REGIME_MULTIPLIERS`, used for normalization."""
-
 REGIME_STRATEGIES: Final = MappingProxyType(
     {
         MarketRegime.BULL_TRENDING: TradingStrategy.TREND_FOLLOWING,
@@ -51,9 +48,14 @@ TRADING_DAYS_PER_YEAR: Final[int] = 252
 
 PERIODS_PER_YEAR: Final = MappingProxyType(
     {
+        "1wk": 52.0,
+        "1w": 52.0,
         "1d": float(TRADING_DAYS_PER_YEAR),
         "1h": TRADING_DAYS_PER_YEAR * 6.5,  # 6.5 regular-session hours per day
+        "30m": TRADING_DAYS_PER_YEAR * 13.0,
         "15m": TRADING_DAYS_PER_YEAR * 26.0,  # 26 fifteen-minute bars per session
+        "5m": TRADING_DAYS_PER_YEAR * 78.0,
+        "1m": TRADING_DAYS_PER_YEAR * 390.0,
     }
 )
 """Bars per year by (lower-cased) timeframe, assuming US regular trading hours."""
@@ -76,7 +78,7 @@ def periods_per_year(timeframe: str) -> float:
     Parameters
     ----------
     timeframe : str
-        One of ``1D``, ``1H`` or ``15m`` (case-insensitive).
+        e.g. ``1D``, ``1H``, ``15m`` (case-insensitive; see :data:`PERIODS_PER_YEAR`).
 
     Raises
     ------

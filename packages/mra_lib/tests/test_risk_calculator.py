@@ -726,3 +726,40 @@ class TestBacktestEngineWithLimits:
         # We verify by checking that the limits tracker has no stale positions
         # (they should be cleaned up after close).
         assert "SPY" not in limits.positions
+
+
+class TestComprehensiveRegression:
+    def test_small_kelly_floored_consistently_with_and_without_vol(self):
+        kwargs = {"win_rate": 0.51, "avg_win": 1.0, "avg_loss": 1.0}  # Kelly = 0.02 * conf
+        no_vol = SimonsRiskCalculator.calculate_comprehensive_position_size(
+            0.10, MarketRegime.BULL_TRENDING, 0.2, 1.0, **kwargs
+        )
+        with_vol = SimonsRiskCalculator.calculate_comprehensive_position_size(
+            0.10,
+            MarketRegime.BULL_TRENDING,
+            0.2,
+            1.0,
+            current_vol=0.15,
+            historical_vol=0.2,
+            **kwargs,
+        )
+        assert 0 < no_vol["kelly_optimal"] < 0.01
+        assert no_vol["final_size"] == pytest.approx(0.01)
+        assert with_vol["final_size"] == pytest.approx(no_vol["final_size"])
+
+    def test_vol_target_none_uses_historical_vol(self):
+        default = SimonsRiskCalculator.calculate_comprehensive_position_size(
+            0.10, MarketRegime.BULL_TRENDING, 1.0, 1.0, current_vol=0.30, historical_vol=0.60
+        )
+        hist = SimonsRiskCalculator.calculate_comprehensive_position_size(
+            0.10,
+            MarketRegime.BULL_TRENDING,
+            1.0,
+            1.0,
+            current_vol=0.30,
+            historical_vol=0.60,
+            vol_target=None,
+        )
+        # default: 0.13 * 0.15/0.30; vol_target=None: 0.13 * 0.60/0.30
+        assert default["final_size"] == pytest.approx(0.065)
+        assert hist["final_size"] == pytest.approx(0.26)
