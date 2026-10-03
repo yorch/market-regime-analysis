@@ -356,6 +356,25 @@ class SimonsRiskCalculator:
         return min(kelly_fraction * confidence, MAX_KELLY_FRACTION)
 
     @staticmethod
+    def regime_sizing_factors(
+        regime: MarketRegime, confidence: float, persistence: float
+    ) -> tuple[float, float, float]:
+        """
+        Return the factors ``calculate_regime_adjusted_size`` multiplies together.
+
+        Returns:
+            ``(regime_multiplier, confidence_factor, persistence_factor)`` where the
+            regime multiplier comes from ``config/regime_tables.py`` (UNKNOWN -> 0.0),
+            the confidence factor scales between 0.3 and 1.0 and the persistence
+            factor between 0.7 and 1.0.
+        """
+        return (
+            get_regime_multiplier(regime),
+            0.3 + (confidence * 0.7),
+            0.7 + (persistence * 0.3),
+        )
+
+    @staticmethod
     def calculate_regime_adjusted_size(
         base_size: float, regime: MarketRegime, confidence: float, persistence: float
     ) -> float:
@@ -386,14 +405,9 @@ class SimonsRiskCalculator:
         if not (0 <= persistence <= 1):
             raise ValueError("Persistence must be between 0 and 1")
 
-        # Canonical regime multiplier (config/regime_tables.py); UNKNOWN -> 0.0
-        base_multiplier = get_regime_multiplier(regime)
-
-        # Confidence scaling (scale between 0.3 and 1.0)
-        confidence_factor = 0.3 + (confidence * 0.7)
-
-        # Persistence adjustment (scale between 0.7 and 1.0)
-        persistence_factor = 0.7 + (persistence * 0.3)
+        base_multiplier, confidence_factor, persistence_factor = (
+            SimonsRiskCalculator.regime_sizing_factors(regime, confidence, persistence)
+        )
 
         # Combined adjustment
         total_multiplier = base_multiplier * confidence_factor * persistence_factor

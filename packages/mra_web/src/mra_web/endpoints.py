@@ -348,13 +348,20 @@ async def position_sizing(
             regime_adjusted, request.correlation
         )
 
+        regime_multiplier, confidence_factor, persistence_factor = (
+            SimonsRiskCalculator.regime_sizing_factors(
+                regime, request.confidence, request.persistence
+            )
+        )
+
         calculations = {
             "base_position_size": request.base_size,
-            "regime_multiplier": regime_adjusted / request.base_size
+            "regime_multiplier": regime_multiplier,
+            "confidence_factor": confidence_factor,
+            "persistence_factor": persistence_factor,
+            "combined_multiplier": regime_adjusted / request.base_size
             if request.base_size > 0
             else None,
-            "confidence_factor": request.confidence,
-            "persistence_factor": request.persistence,
             "correlation_adjustment": correlation_adjusted / regime_adjusted
             if regime_adjusted > 0
             else None,

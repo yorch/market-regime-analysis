@@ -249,7 +249,29 @@ class TestAnalysisEndpoints:
             json={"base_size": 0.0, "regime": "Unknown", "confidence": 0.5, "persistence": 0.5},
         )
         assert resp.status_code == 200
-        assert _strict_loads(resp.text)["calculations"]["regime_multiplier"] is None
+        calc = _strict_loads(resp.text)["calculations"]
+        assert calc["combined_multiplier"] is None
+        assert calc["regime_multiplier"] == 0.0
+
+    def test_position_sizing_reports_applied_factors(self, authed):
+        resp = authed.post(
+            "/api/v1/position-sizing",
+            json={
+                "base_size": 0.02,
+                "regime": "Bull Trending",
+                "confidence": 0.8,
+                "persistence": 0.75,
+                "correlation": 0.1,
+            },
+        )
+        assert resp.status_code == 200
+        calc = _strict_loads(resp.text)["calculations"]
+        assert calc["base_position_size"] == 0.02
+        assert calc["regime_multiplier"] == pytest.approx(1.3)
+        assert calc["confidence_factor"] == pytest.approx(0.3 + 0.7 * 0.8)
+        assert calc["persistence_factor"] == pytest.approx(0.7 + 0.3 * 0.75)
+        assert calc["combined_multiplier"] == pytest.approx(1.3 * 0.86 * 0.925)
+        assert calc["correlation_adjustment"] == pytest.approx(1.0)
 
     def test_providers(self, authed):
         resp = authed.get("/api/v1/providers")
