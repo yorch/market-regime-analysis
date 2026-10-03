@@ -99,7 +99,6 @@ class APIConfig(BaseModel):
 
     # Rate limiting
     rate_limit_per_minute: int = Field(default=60, description="Requests per minute per client")
-    rate_limit_burst: int = Field(default=10, description="Burst limit for rate limiting")
 
     # CORS settings (no origins allowed unless configured)
     cors_origins: list[str] = Field(default_factory=list, description="Allowed CORS origins")
@@ -211,7 +210,6 @@ class APIConfig(BaseModel):
             jwt_expiration_hours=int(os.getenv("JWT_EXPIRATION_HOURS", "24")),
             api_keys=_split_csv(os.getenv("API_KEYS")),
             rate_limit_per_minute=int(os.getenv("RATE_LIMIT_PER_MINUTE", "60")),
-            rate_limit_burst=int(os.getenv("RATE_LIMIT_BURST", "10")),
             cors_origins=_split_csv(os.getenv("CORS_ORIGINS")),
             cors_methods=_split_csv(os.getenv("CORS_METHODS")) or ["GET", "POST", "OPTIONS"],
             cors_headers=_split_csv(os.getenv("CORS_HEADERS"))
