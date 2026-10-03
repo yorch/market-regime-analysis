@@ -313,6 +313,12 @@ class TestFormulasAgainstHandComputed:
         assert pm.metrics["annualized_return"] == -1.0
         assert math.isfinite(pm.metrics["sharpe_ratio"])
 
+    def test_cagr_no_overflow_on_short_intraday_curve(self):
+        eq = _make_equity([100.0] + [300.0] * 10)
+        pm = PerformanceMetrics([], eq, periods_per_year=252 * 26)
+        assert pm.metrics["annualized_return"] > 0
+        assert math.isfinite(pm.metrics["annualized_return"])
+
     def test_periods_per_year_parameter(self):
         values = np.linspace(100.0, 110.0, 53)  # 52 weekly periods
         eq = _make_equity(values)

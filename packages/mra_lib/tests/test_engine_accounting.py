@@ -135,6 +135,19 @@ class TestGapAwareStops:
         assert trade["exit_regime"] == "TAKE_PROFIT"
         assert trade["exit_price"] == pytest.approx(115.0)
 
+    def test_gap_through_take_profit_fills_tp_at_open_even_if_stop_touched(self):
+        # Opens at 115 (TP at 110) then trades down to 90 (stop at 95)
+        df = _ohlcv(
+            [100.0, 100.0, 100.0],
+            opens=[100.0, 115.0, 100.0],
+            highs=[100.5, 116.0, 100.5],
+            lows=[99.5, 90.0, 99.5],
+        )
+        _, res = _run(df, ["LONG", None, None], stop=0.05, tp=0.10)
+        trade = res["trades"][0]
+        assert trade["exit_regime"] == "TAKE_PROFIT"
+        assert trade["exit_price"] == pytest.approx(115.0)
+
     def test_without_open_column_falls_back_to_level(self):
         df = _ohlcv([100.0, 82.0, 82.0], opens=[100.0, 80.0, 82.0]).drop(columns=["Open"])
         _, res = _run(df, ["LONG", None, None], stop=0.05)

@@ -19,8 +19,8 @@ import numpy as np
 import pandas as pd
 
 from mra_lib.config.enums import MarketRegime
+from mra_lib.config.regime_tables import TRADING_DAYS_PER_YEAR
 
-from .metrics import PERIODS_PER_YEAR
 from .strategy import RegimeStrategy
 from .trade_stats import PROFIT_FACTOR_CAP, compute_trade_stats, finite_profit_factor
 from .transaction_costs import EquityCostModel, TransactionCostModel
@@ -86,7 +86,7 @@ class RegimeMultiplierCalibrator:
         anchored: bool = True,
         initial_capital: float = 100000.0,
         min_trades_per_regime: int = 5,
-        periods_per_year: int = PERIODS_PER_YEAR,
+        periods_per_year: float = TRADING_DAYS_PER_YEAR,
         holdout_frac: float = 0.0,
     ) -> None:
         """

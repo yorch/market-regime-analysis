@@ -28,7 +28,8 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from .metrics import PERIODS_PER_YEAR
+from mra_lib.config.regime_tables import TRADING_DAYS_PER_YEAR
+
 from .strategy import RegimeStrategy
 from .transaction_costs import TransactionCostModel
 from .walk_forward import RegimeCache, WalkForwardValidator
@@ -93,7 +94,7 @@ class StrategyOptimizer:
         retrain_frequency: int = 20,
         holdout_frac: float = 0.0,
         cost_model: TransactionCostModel | None = None,
-        periods_per_year: int = PERIODS_PER_YEAR,
+        periods_per_year: float = TRADING_DAYS_PER_YEAR,
     ) -> None:
         """
         Initialize optimizer.

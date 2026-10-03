@@ -16,13 +16,19 @@ import math
 import numpy as np
 import pandas as pd
 
+from mra_lib.config.regime_tables import TRADING_DAYS_PER_YEAR
+
 from .trade_stats import compute_trade_stats
 
-#: Default number of return periods per year (daily bars).
-PERIODS_PER_YEAR = 252
+#: Default number of return periods per year (daily bars); see
+#: ``mra_lib.config.regime_tables.periods_per_year(timeframe)`` for intraday.
+DEFAULT_PERIODS_PER_YEAR = TRADING_DAYS_PER_YEAR
 
 #: Denominators smaller than this are treated as zero; the ratio is then 0.0.
 _EPS = 1e-12
+
+#: Cap on annualized log-growth before exponentiation (avoids OverflowError).
+_MAX_LOG_GROWTH = 700.0
 
 
 class PerformanceMetrics:
@@ -52,7 +58,7 @@ class PerformanceMetrics:
         trades: list[dict],
         equity_curve: pd.Series,
         risk_free_rate: float = 0.02,
-        periods_per_year: int = PERIODS_PER_YEAR,
+        periods_per_year: float = TRADING_DAYS_PER_YEAR,
         initial_capital: float | None = None,
     ):
         """
@@ -124,7 +130,12 @@ class PerformanceMetrics:
         total_return = end / start - 1
         n_periods = len(self._values) - 1
         years = n_periods / self.periods_per_year
-        annualized_return = -1.0 if end <= 0 else (end / start) ** (1 / years) - 1
+        if end <= 0:
+            annualized_return = -1.0
+        else:
+            # log/exp with a clamp: short intraday curves can overflow a float power
+            growth = math.log(end / start) / years
+            annualized_return = math.exp(min(growth, _MAX_LOG_GROWTH)) - 1
 
         return {
             "total_return": total_return,

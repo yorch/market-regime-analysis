@@ -11,9 +11,10 @@ import numpy as np
 import pandas as pd
 
 from mra_lib.config.enums import MarketRegime, TradingStrategy
+from mra_lib.config.regime_tables import TRADING_DAYS_PER_YEAR
 from mra_lib.risk.risk_calculator import PortfolioPositionLimits, PositionRecord
 
-from .metrics import PERIODS_PER_YEAR, PerformanceMetrics
+from .metrics import PerformanceMetrics
 from .transaction_costs import EquityCostModel, TransactionCostModel
 
 
@@ -39,7 +40,7 @@ class BacktestEngine:
         position_limits: PortfolioPositionLimits | None = None,
         symbol: str = "",
         sector: str = "",
-        periods_per_year: int = PERIODS_PER_YEAR,
+        periods_per_year: float = TRADING_DAYS_PER_YEAR,
         volume_lookback: int = 20,
     ) -> None:
         """
@@ -413,7 +414,8 @@ class BacktestEngine:
         Fills are gap-aware: if the bar opens beyond the trigger level the order
         fills at the open (a long stop fills at ``min(open, stop)``, a short stop
         at ``max(open, stop)``; take-profits likewise fill at the better open).
-        If both levels are touched in one bar the stop is assumed to fill first.
+        If the bar opens beyond either level, that order fills at the open; if
+        both levels are only touched intrabar, the stop is assumed to fill first.
         """
         if self.position is None:
             return
@@ -422,33 +424,40 @@ class BacktestEngine:
         direction = self.position["direction"]
         bar_open = float(open_) if open_ is not None and np.isfinite(open_) else None
 
+        is_long = direction == "LONG"
+        stop_price: float | None = None
+        profit_price: float | None = None
         if self.stop_loss_pct:
-            if direction == "LONG":
-                stop_price = entry_price * (1 - self.stop_loss_pct)
-                if low <= stop_price:
-                    fill = min(bar_open, stop_price) if bar_open is not None else stop_price
-                    self._close_position(date, fill, "STOP_LOSS")
-                    return
-            else:  # SHORT
-                stop_price = entry_price * (1 + self.stop_loss_pct)
-                if high >= stop_price:
-                    fill = max(bar_open, stop_price) if bar_open is not None else stop_price
-                    self._close_position(date, fill, "STOP_LOSS")
-                    return
-
+            stop_price = entry_price * (
+                1 - self.stop_loss_pct if is_long else 1 + self.stop_loss_pct
+            )
         if self.take_profit_pct:
-            if direction == "LONG":
-                profit_price = entry_price * (1 + self.take_profit_pct)
-                if high >= profit_price:
-                    fill = max(bar_open, profit_price) if bar_open is not None else profit_price
-                    self._close_position(date, fill, "TAKE_PROFIT")
-                    return
-            else:  # SHORT
-                profit_price = entry_price * (1 - self.take_profit_pct)
-                if low <= profit_price:
-                    fill = min(bar_open, profit_price) if bar_open is not None else profit_price
-                    self._close_position(date, fill, "TAKE_PROFIT")
-                    return
+            profit_price = entry_price * (
+                1 + self.take_profit_pct if is_long else 1 - self.take_profit_pct
+            )
+
+        def adverse(price: float, level: float) -> bool:
+            return price <= level if is_long else price >= level
+
+        def favorable(price: float, level: float) -> bool:
+            return price >= level if is_long else price <= level
+
+        # 1. The bar opened beyond a level: that order fills at the open first
+        if bar_open is not None:
+            if stop_price is not None and adverse(bar_open, stop_price):
+                self._close_position(date, bar_open, "STOP_LOSS")
+                return
+            if profit_price is not None and favorable(bar_open, profit_price):
+                self._close_position(date, bar_open, "TAKE_PROFIT")
+                return
+
+        # 2. Intrabar touches at the level (stop assumed to fill first if both)
+        worst, best = (low, high) if is_long else (high, low)
+        if stop_price is not None and adverse(worst, stop_price):
+            self._close_position(date, stop_price, "STOP_LOSS")
+            return
+        if profit_price is not None and favorable(best, profit_price):
+            self._close_position(date, profit_price, "TAKE_PROFIT")
 
     def _calculate_current_equity(self, current_price: float) -> float:
         """Calculate current portfolio equity."""

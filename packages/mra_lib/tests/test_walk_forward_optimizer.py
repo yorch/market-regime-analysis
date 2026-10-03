@@ -82,7 +82,12 @@ class TestRegimeDetection:
     def test_regime_cache_reused_across_strategies(self, data, monkeypatch):
         v = WalkForwardValidator(RegimeStrategy(), retrain_frequency=63, **FAST_HMM)
         cache = v.compute_regimes(data)
-        assert cache.matches(data)
+        assert cache.matches(v.cache_fingerprint(data))
+        other_data = data.copy()
+        other_data.loc[other_data.index[5], "Close"] *= 1.01
+        assert not cache.matches(v.cache_fingerprint(other_data))
+        other_settings = WalkForwardValidator(RegimeStrategy(), retrain_frequency=20, **FAST_HMM)
+        assert not cache.matches(other_settings.cache_fingerprint(data))
         assert set(cache.windows) == set(v.window_bounds(len(data)))
 
         def _no_detection(*args, **kwargs):
@@ -99,8 +104,9 @@ class TestRegimeDetection:
             assert res["n_windows"] == 3
 
     def test_mismatched_cache_ignored(self, data):
-        cache = RegimeCache(n_rows=10, first_index=None, last_index=None)
-        assert not cache.matches(data)
+        v = WalkForwardValidator(RegimeStrategy(), **FAST_HMM)
+        cache = RegimeCache(fingerprint="stale")
+        assert not cache.matches(v.cache_fingerprint(data))
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +211,7 @@ class TestOptimizer:
         monkeypatch.setattr(
             WalkForwardValidator,
             "compute_regimes",
-            lambda self, df, start_index=None: RegimeCache(len(df), df.index[0], df.index[-1]),
+            lambda self, df, start_index=None: RegimeCache(self.cache_fingerprint(df)),
         )
         seen = []
         monkeypatch.setattr(opt, "_evaluate_params", lambda p, verbose=False: seen.append(p))
@@ -222,7 +228,7 @@ class TestOptimizer:
         monkeypatch.setattr(
             WalkForwardValidator,
             "compute_regimes",
-            lambda self, df, start_index=None: RegimeCache(len(df), df.index[0], df.index[-1]),
+            lambda self, df, start_index=None: RegimeCache(self.cache_fingerprint(df)),
         )
 
         def sample(seed):
@@ -240,7 +246,7 @@ class TestOptimizer:
         monkeypatch.setattr(
             WalkForwardValidator,
             "compute_regimes",
-            lambda self, df, start_index=None: RegimeCache(len(df), df.index[0], df.index[-1]),
+            lambda self, df, start_index=None: RegimeCache(self.cache_fingerprint(df)),
         )
 
         def boom(self, *args, **kwargs):

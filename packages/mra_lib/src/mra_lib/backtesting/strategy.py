@@ -10,6 +10,7 @@ from collections.abc import Iterable
 import pandas as pd
 
 from mra_lib.config.enums import MarketRegime, TradingStrategy
+from mra_lib.config.regime_tables import REGIME_MULTIPLIERS
 
 #: Keys accepted by :meth:`RegimeStrategy.from_param_vector`.
 PARAM_KEYS = frozenset(
@@ -62,15 +63,7 @@ class RegimeStrategy:
             min_confidence: Minimum regime confidence to enter trades
             confidence_scaling: Scale position size by confidence
         """
-        self.regime_multipliers = regime_multipliers or {
-            MarketRegime.BULL_TRENDING: 1.3,
-            MarketRegime.BEAR_TRENDING: 0.7,
-            MarketRegime.MEAN_REVERTING: 1.2,
-            MarketRegime.HIGH_VOLATILITY: 0.4,
-            MarketRegime.LOW_VOLATILITY: 1.1,
-            MarketRegime.BREAKOUT: 0.9,
-            MarketRegime.UNKNOWN: 0.0,
-        }
+        self.regime_multipliers = regime_multipliers or dict(REGIME_MULTIPLIERS)
 
         self.regime_directions = regime_directions or {
             MarketRegime.BULL_TRENDING: "LONG",
@@ -129,6 +122,12 @@ class RegimeStrategy:
         directions: list[str | None] = []
         position_sizes = []
 
+        # NOTE: intentionally differs from config.regime_tables.REGIME_STRATEGIES
+        # (which maps BEAR_TRENDING -> DEFENSIVE and HIGH_VOLATILITY ->
+        # VOLATILITY_TRADING). The engine closes positions on DEFENSIVE/AVOID, so
+        # adopting the shared map would make every bear-regime short exit
+        # immediately and change backtest behavior. Unifying the maps is an open
+        # decision, kept separate from accounting fixes.
         regime_to_strategy = {
             MarketRegime.BULL_TRENDING: TradingStrategy.TREND_FOLLOWING,
             MarketRegime.BEAR_TRENDING: TradingStrategy.TREND_FOLLOWING,
@@ -199,7 +198,7 @@ class RegimeStrategy:
         that would produce identical backtests.
         """
         canon = dict(params)
-        bear_mult = canon.get("bear_mult", 0.7)
+        bear_mult = canon.get("bear_mult", REGIME_MULTIPLIERS[MarketRegime.BEAR_TRENDING])
         bear_short = canon.get("bear_short", 1)
         if not bear_short or bear_mult <= 0:
             canon["bear_mult"] = 0.0
@@ -220,13 +219,24 @@ class RegimeStrategy:
             ValueError: If ``params`` contains an unknown key
         """
         RegimeStrategy.validate_param_keys(params)
+        defaults = REGIME_MULTIPLIERS
         regime_multipliers = {
-            MarketRegime.BULL_TRENDING: params.get("bull_mult", 1.3),
-            MarketRegime.BEAR_TRENDING: params.get("bear_mult", 0.7),
-            MarketRegime.MEAN_REVERTING: params.get("mr_mult", 1.2),
+            MarketRegime.BULL_TRENDING: params.get(
+                "bull_mult", defaults[MarketRegime.BULL_TRENDING]
+            ),
+            MarketRegime.BEAR_TRENDING: params.get(
+                "bear_mult", defaults[MarketRegime.BEAR_TRENDING]
+            ),
+            MarketRegime.MEAN_REVERTING: params.get(
+                "mr_mult", defaults[MarketRegime.MEAN_REVERTING]
+            ),
+            # HIGH_VOLATILITY has no trade direction, so its multiplier is inert;
+            # 0.0 keeps the historical default for this flat parameter vector.
             MarketRegime.HIGH_VOLATILITY: params.get("hv_mult", 0.0),
-            MarketRegime.LOW_VOLATILITY: params.get("lv_mult", 1.1),
-            MarketRegime.BREAKOUT: params.get("bo_mult", 0.9),
+            MarketRegime.LOW_VOLATILITY: params.get(
+                "lv_mult", defaults[MarketRegime.LOW_VOLATILITY]
+            ),
+            MarketRegime.BREAKOUT: params.get("bo_mult", defaults[MarketRegime.BREAKOUT]),
             MarketRegime.UNKNOWN: 0.0,
         }
 

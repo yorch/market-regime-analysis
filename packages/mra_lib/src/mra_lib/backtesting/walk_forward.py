@@ -12,6 +12,7 @@ once and the resulting cache reused across many strategy evaluations (see
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import logging
 import warnings
@@ -21,15 +22,16 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
+from pandas.util import hash_pandas_object
 from scipy.special import logsumexp
-from scipy.stats import multivariate_normal
 from sklearn.exceptions import ConvergenceWarning
 
 from mra_lib.config.enums import MarketRegime
+from mra_lib.config.regime_tables import TRADING_DAYS_PER_YEAR
 from mra_lib.indicators.true_hmm_detector import TrueHMMDetector
 
 from .engine import BacktestEngine
-from .metrics import PERIODS_PER_YEAR, PerformanceMetrics
+from .metrics import PerformanceMetrics
 from .strategy import RegimeStrategy
 from .trade_stats import compute_trade_stats
 from .transaction_costs import EquityCostModel, TransactionCostModel
@@ -60,24 +62,18 @@ class RegimeCache:
 
     Keyed by ``(train_end, test_end)`` window bounds (integer positions into the
     DataFrame the cache was computed on). Valid for any strategy parameters, as
-    long as the data and HMM settings are unchanged.
+    long as the data and HMM/window settings are unchanged; ``fingerprint``
+    (see :meth:`WalkForwardValidator.cache_fingerprint`) identifies both.
     """
 
-    n_rows: int
-    first_index: object
-    last_index: object
+    fingerprint: str
     windows: dict[tuple[int, int], tuple[pd.Series, pd.Series]] = field(default_factory=dict)
     fit_count: int = 0
     refit_failures: int = 0
 
-    def matches(self, df: pd.DataFrame) -> bool:
-        """Return True if this cache was computed on (an identical-shape) ``df``."""
-        return (
-            len(df) == self.n_rows
-            and len(df) > 0
-            and df.index[0] == self.first_index
-            and df.index[-1] == self.last_index
-        )
+    def matches(self, fingerprint: str) -> bool:
+        """Return True if this cache was computed for ``fingerprint``."""
+        return self.fingerprint == fingerprint
 
 
 class WalkForwardValidator:
@@ -102,7 +98,7 @@ class WalkForwardValidator:
         test_days: int = 63,
         anchored: bool = True,
         initial_capital: float = 100000.0,
-        periods_per_year: int = PERIODS_PER_YEAR,
+        periods_per_year: float = TRADING_DAYS_PER_YEAR,
         risk_free_rate: float = 0.02,
     ) -> None:
         """
@@ -155,6 +151,26 @@ class WalkForwardValidator:
             train_end = test_end
         return windows
 
+    def cache_fingerprint(self, df: pd.DataFrame) -> str:
+        """Hash of the price data and every setting that affects regime detection."""
+        h = hashlib.sha256()
+        h.update(
+            repr(
+                (
+                    self.n_hmm_states,
+                    self.hmm_n_iter,
+                    self.retrain_frequency,
+                    self.min_train_days,
+                    self.test_days,
+                    self.anchored,
+                    len(df),
+                )
+            ).encode()
+        )
+        if len(df):
+            h.update(hash_pandas_object(df, index=True).to_numpy().tobytes())
+        return h.hexdigest()
+
     def _train_slice(self, df: pd.DataFrame, i: int) -> pd.DataFrame:
         start = 0 if self.anchored else max(0, i - self.min_train_days)
         train: pd.DataFrame = df.iloc[start:i]
@@ -197,20 +213,23 @@ class WalkForwardValidator:
         scaler = hmm.scaler
         if model is None or scaler is None:
             raise ValueError("Detector is not fitted")
+        if "Volume" in df.columns:
+            # The detector switches its volume feature on whether the *prefix*
+            # has any volume, which is not causal; only use the shared pass when
+            # every prefix in this segment takes the same branch.
+            vol_before = float(df["Volume"].iloc[:start].sum())
+            vol_all = float(df["Volume"].iloc[: end - 1].sum())
+            if (vol_before > 0) != (vol_all > 0):
+                raise ValueError("Volume feature is not prefix-stable in this segment")
 
         with _quiet_model_warnings():
             features = hmm._prepare_features(df.iloc[: end - 1])
             x = scaler.transform(features)
 
             n_states = int(model.n_components)
-            means = np.asarray(model.means_)
-            covars = np.asarray(model.covars_)
-            log_lik = np.column_stack(
-                [
-                    multivariate_normal.logpdf(x, means[s], covars[s], allow_singular=True)
-                    for s in range(n_states)
-                ]
-            ).reshape(len(x), n_states)
+            # hmmlearn's own emission densities (with its covariance handling),
+            # so the result matches predict_proba exactly
+            log_lik = np.asarray(model._compute_log_likelihood(x))
 
             with np.errstate(divide="ignore"):
                 log_start = np.log(np.asarray(model.startprob_))
@@ -243,20 +262,24 @@ class WalkForwardValidator:
         """Predict a run of bars sharing one model, verifying the fast path."""
         try:
             fast = self._filtered_segment(hmm, df, start, end)
-            # Cross-check the last bar against the detector's own prediction so a
-            # change in the detector's internals cannot silently skew results.
-            ref_regime, ref_conf = self._predict_one(hmm, df, end - 1)
-            fast_regime, fast_conf = fast[-1]
-            if fast_regime == ref_regime and abs(fast_conf - ref_conf) < 1e-6:
+            # Cross-check first, middle and last bars against the detector's own
+            # prediction so a change in its internals cannot silently skew results.
+            for i in sorted({start, (start + end - 1) // 2, end - 1}):
+                ref_regime, ref_conf = self._predict_one(hmm, df, i)
+                fast_regime, fast_conf = fast[i - start]
+                if fast_regime != ref_regime or abs(fast_conf - ref_conf) >= 1e-6:
+                    logger.warning(
+                        "Fast regime filter disagrees with detector at %s (%s/%.6f vs "
+                        "%s/%.6f); falling back to per-bar prediction",
+                        df.index[i],
+                        fast_regime,
+                        fast_conf,
+                        ref_regime,
+                        ref_conf,
+                    )
+                    break
+            else:
                 return fast
-            logger.warning(
-                "Fast regime filter disagrees with detector (%s/%.6f vs %s/%.6f); "
-                "falling back to per-bar prediction",
-                fast_regime,
-                fast_conf,
-                ref_regime,
-                ref_conf,
-            )
         except Exception as exc:
             logger.debug("Fast regime filter unavailable (%s); using per-bar prediction", exc)
         return [self._predict_one(hmm, df, i) for i in range(start, end)]
@@ -327,11 +350,7 @@ class WalkForwardValidator:
         strategy parameter sets, so the HMM is fit once per refit point rather
         than once per parameter combination.
         """
-        cache = RegimeCache(
-            n_rows=len(df),
-            first_index=df.index[0] if len(df) else None,
-            last_index=df.index[-1] if len(df) else None,
-        )
+        cache = RegimeCache(fingerprint=self.cache_fingerprint(df))
         for train_end, test_end in self.window_bounds(len(df), start_index):
             cache.windows[(train_end, test_end)] = self._detect_regimes_walk_forward(
                 df, train_end, test_end, cache
@@ -433,7 +452,7 @@ class WalkForwardValidator:
                 f"Need at least {self.min_train_days + self.test_days} bars, got {len(df)}"
             )
 
-        if regime_cache is not None and not regime_cache.matches(df):
+        if regime_cache is not None and not regime_cache.matches(self.cache_fingerprint(df)):
             logger.warning("Regime cache does not match data; recomputing regimes")
             regime_cache = None
 
