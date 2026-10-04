@@ -27,7 +27,12 @@ from mra_lib.backtesting.runner import (
     _exposure,
 )
 from mra_lib.backtesting.strategy import PARAM_KEYS
-from mra_lib.errors import InsufficientDataError, InvalidParametersError, MRAError
+from mra_lib.errors import (
+    DataLoadError,
+    InsufficientDataError,
+    InvalidParametersError,
+    MRAError,
+)
 
 # Small, fast walk-forward settings shared by the tests
 FAST = {"train_bars": 120, "test_bars": 40, "n_hmm_states": 2, "hmm_n_iter": 20}
@@ -253,6 +258,31 @@ class TestWalkForward:
         expected = sum(1 for w in report.windows if w.test_start <= mid)
         assert report.overlapping_windows == expected > 0
         assert any("NOT for the parameters" in w for w in report.warnings)
+        assert report.params_out_of_sample is False
+        assert report.sample_label == "OUT-OF-SAMPLE (regime model only)"
+        data = report.to_dict()
+        assert data["sample"] == "out-of-sample" and data["params_out_of_sample"] is False
+        assert "in-sample with respect to the parameters" in data["note"]
+
+    def test_walk_forward_no_overlap_when_selected_before(self, df):
+        sp = StrategyParams(selected_through=df.index[10])
+        report = run_backtest(df, sp, "walk-forward", **FAST)
+        assert report.overlapping_windows == 0
+        assert report.params_out_of_sample is True
+        assert report.sample_label == "OUT-OF-SAMPLE"
+
+    def test_walk_forward_tz_aware_selection_keeps_wall_time(self, df):
+        day = df.index[200]
+        sp = StrategyParams(selected_through=day.tz_localize("Asia/Tokyo"))
+        report = run_backtest(df, sp, "walk-forward", **FAST)
+        assert report.params_selected_through == day
+
+    def test_walk_forward_asset_return(self, df, wf_report):
+        closes = df["Close"]
+        expected = closes.loc[wf_report.end] / closes.loc[wf_report.start] - 1
+        assert wf_report.asset_return == pytest.approx(expected)
+        assert wf_report.to_dict()["asset_return"] == pytest.approx(expected)
+        assert "close-to-close moves between windows are excluded" in wf_report.format_report()
 
     def test_walk_forward_params_change_result(self, df, wf_report):
         report = run_backtest(df, {"base_fraction": 0.02, "max_position": 0.05}, **FAST)
@@ -281,12 +311,25 @@ class TestSimple:
         assert simple_report.to_dict()["sample"] == "in-sample"
         assert simple_report.windows == []
 
+    def test_simple_params_overlap(self, df):
+        report = run_backtest(
+            df,
+            StrategyParams(selected_through=df.index[-1]),
+            "simple",
+            n_hmm_states=2,
+            hmm_n_iter=20,
+        )
+        assert report.params_out_of_sample is False
+        assert report.sample_label == "IN-SAMPLE"
+        assert any("overlaps this period" in w for w in report.warnings)
+
     def test_simple_covers_whole_period(self, df, simple_report):
         assert simple_report.n_bars == len(df)
         assert simple_report.start == df.index[0] and simple_report.end == df.index[-1]
         bh = df["Close"].iloc[-1] / df["Close"].iloc[0] - 1
         assert simple_report.buy_hold.total_return == pytest.approx(bh)
         assert simple_report.n_fits == 1
+        assert simple_report.asset_return == pytest.approx(bh)
 
     def test_simple_metrics_consistent(self, simple_report):
         s = simple_report.strategy
@@ -313,6 +356,15 @@ class TestRunArgs:
     def test_run_unknown_mode(self, df):
         with pytest.raises(InvalidParametersError, match="Unknown mode"):
             run_backtest(df, mode="fancy")
+
+    def test_run_rejects_duplicate_index(self, df):
+        dup = pd.concat([df, df.iloc[-5:]])
+        with pytest.raises(DataLoadError, match="unique"):
+            run_backtest(dup, **FAST)
+
+    def test_run_rejects_unsorted_index(self, df):
+        with pytest.raises(DataLoadError, match="sorted"):
+            run_backtest(df.iloc[::-1], **FAST)
 
     def test_run_bad_capital(self, df):
         with pytest.raises(InvalidParametersError, match="initial_capital"):

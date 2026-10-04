@@ -34,7 +34,7 @@ import numpy as np
 import pandas as pd
 
 from mra_lib.config.regime_tables import periods_per_year as timeframe_periods_per_year
-from mra_lib.errors import InsufficientDataError, InvalidParametersError
+from mra_lib.errors import DataLoadError, InsufficientDataError, InvalidParametersError
 from mra_lib.indicators.true_hmm_detector import TrueHMMDetector
 
 from .engine import BacktestEngine
@@ -179,9 +179,13 @@ def _check_value(key: str, value: Any) -> str | None:  # noqa: PLR0911 - one ret
     if key == "min_confidence":
         return None if 0 <= v <= 1 else f"{key} must be in [0, 1], got {value!r}"
     if key == "stop_loss":
-        return None if 0 <= v < 1 else f"{key} must be in [0, 1) or null, got {value!r}"
+        return (
+            None
+            if 0 <= v < 1
+            else f"{key} must be in [0, 1) or null (0/null disables the stop), got {value!r}"
+        )
     if key == "take_profit":
-        return None if v >= 0 else f"{key} must be >= 0 or null, got {value!r}"
+        return None if v >= 0 else f"{key} must be >= 0 or null (0/null disables it), got {value!r}"
     return None  # pragma: no cover - every PARAM_KEYS entry has a rule above
 
 
@@ -411,6 +415,10 @@ class BacktestReport:
         n_fits: Successful HMM fits
         refit_failures: Failed HMM fits (the previous model was kept)
         warnings: Caveats worth showing to the user
+        asset_return: Close-to-close asset return from ``start`` to ``end``. In
+            walk-forward mode it differs from ``buy_hold.total_return``, which
+            (like the strategy) restarts at each window's first close and so
+            skips the close-to-close moves between windows.
     """
 
     symbol: str
@@ -437,11 +445,30 @@ class BacktestReport:
     n_fits: int = 0
     refit_failures: int = 0
     warnings: list[str] = field(default_factory=list)
+    asset_return: float = float("nan")
+
+    @property
+    def params_out_of_sample(self) -> bool:
+        """
+        False when the evaluated bars overlap the period the parameters were selected on.
+
+        Parameters without a recorded selection period (defaults, flat files)
+        count as out-of-sample.
+        """
+        if self.params_selected_through is None:
+            return True
+        if self.in_sample:
+            return self.start > self.params_selected_through
+        return self.overlapping_windows == 0
 
     @property
     def sample_label(self) -> str:
-        """``IN-SAMPLE`` or ``OUT-OF-SAMPLE``."""
-        return "IN-SAMPLE" if self.in_sample else "OUT-OF-SAMPLE"
+        """``IN-SAMPLE``, ``OUT-OF-SAMPLE``, or ``OUT-OF-SAMPLE (regime model only)``."""
+        if self.in_sample:
+            return "IN-SAMPLE"
+        if not self.params_out_of_sample:
+            return "OUT-OF-SAMPLE (regime model only)"
+        return "OUT-OF-SAMPLE"
 
     @property
     def sample_note(self) -> str:
@@ -450,12 +477,19 @@ class BacktestReport:
             return (
                 "The HMM was fitted on the same period it is evaluated on, so these "
                 "results are optimistic and are NOT an out-of-sample estimate "
-                "(use mode walk-forward for that)."
+                "(use walk-forward mode for that)."
             )
-        return (
+        note = (
             "Each test window's HMM was fitted only on earlier bars; window equity "
             "curves are stitched into one out-of-sample curve."
         )
+        if not self.params_out_of_sample:
+            note += (
+                f" But {self.overlapping_windows} of {len(self.windows)} windows overlap the "
+                "period the parameters were selected on, so the headline figures are "
+                "in-sample with respect to the parameters."
+            )
+        return note
 
     @property
     def excess_return(self) -> float:
@@ -486,8 +520,9 @@ class BacktestReport:
             "symbol": self.symbol,
             "timeframe": self.timeframe,
             "mode": self.mode,
-            "sample": self.sample_label.lower(),
+            "sample": "in-sample" if self.in_sample else "out-of-sample",
             "in_sample": self.in_sample,
+            "params_out_of_sample": self.params_out_of_sample,
             "note": self.sample_note,
             "period": {
                 "start": _json_value(self.start),
@@ -505,6 +540,7 @@ class BacktestReport:
             "strategy": self.strategy.to_dict(),
             "buy_hold": self.buy_hold.to_dict(),
             "excess_return": _json_value(self.excess_return),
+            "asset_return": _json_value(self.asset_return),
             "n_fits": self.n_fits,
             "refit_failures": self.refit_failures,
             "windows": [w.to_dict() for w in self.windows],
@@ -623,10 +659,16 @@ def format_backtest_report(report: BacktestReport) -> str:
         lines.append(f"{label:<26}{sv:>14}{bv:>14}")
     lines.append("-" * 54)
     lines.append(f"Excess return vs buy & hold: {report.excess_return:+.2%}")
-    lines.append(
-        "Buy & hold: fully invested over the same bars, no costs; one 'trade' per "
-        + ("test window." if report.mode == "walk-forward" else "period.")
-    )
+    if report.mode == "walk-forward":
+        lines.append(
+            "Buy & hold: fully invested over the same bars as the strategy, no costs, "
+            "restarted at each window's first close (one 'trade' per window), so the "
+            f"{max(len(report.windows) - 1, 0)} close-to-close moves between windows are "
+            f"excluded. Asset return {_fmt_date(report.start)} .. {_fmt_date(report.end)}: "
+            f"{report.asset_return:+.2%}."
+        )
+    else:
+        lines.append("Buy & hold: fully invested over the same bars, no costs (one 'trade').")
 
     if report.windows:
         lines.append("")
@@ -724,7 +766,8 @@ def _to_index_tz(ts: pd.Timestamp | None, index: pd.Index) -> pd.Timestamp | Non
         return None
     tz = getattr(index, "tz", None)
     if tz is None:
-        return ts.tz_convert(None) if ts.tzinfo is not None else ts
+        # Drop the zone but keep wall time: naive provider indexes are local dates
+        return ts.tz_localize(None) if ts.tzinfo is not None else ts
     return ts.tz_localize(tz) if ts.tzinfo is None else ts.tz_convert(tz)
 
 
@@ -918,6 +961,7 @@ def run_backtest(
         InvalidParametersError: On an unknown mode/cost model, invalid strategy
             parameters, or window settings the model cannot be fitted with.
         InsufficientDataError: If ``df`` is too short for the requested windows.
+        DataLoadError: If ``df``'s index is not unique and sorted.
     """
     if mode not in BACKTEST_MODES:
         raise InvalidParametersError(
@@ -925,6 +969,8 @@ def run_backtest(
         )
     if not initial_capital > 0:
         raise InvalidParametersError("initial_capital must be positive")
+    if not (df.index.is_unique and df.index.is_monotonic_increasing):
+        raise DataLoadError("Price data index must be unique and sorted ascending")
     if isinstance(params, StrategyParams):
         sp = params
     elif params is None:
@@ -1026,4 +1072,7 @@ def run_backtest(
         n_fits=run.n_fits,
         refit_failures=run.refit_failures,
         warnings=run.warnings,
+        asset_return=float(
+            df["Close"].loc[equity.index[-1]] / df["Close"].loc[equity.index[0]] - 1
+        ),
     )

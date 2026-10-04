@@ -112,6 +112,8 @@ class TestBacktestOutput:
         assert data["symbol"] == "SPY"
         assert data["mode"] == "walk-forward"
         assert data["sample"] == "out-of-sample" and data["in_sample"] is False
+        assert data["params_out_of_sample"] is True
+        assert "asset_return" in data
         assert data["params_source"] == "defaults"
         assert data["trades_file"] is None
         expected = {
@@ -174,6 +176,7 @@ class TestBacktestParams:
         result = _invoke(runner, *FAST_WF, "--params", str(path))
         assert result.exit_code == 0, result.output
         assert "NOT for the parameters" in result.stdout
+        assert "OUT-OF-SAMPLE (regime model only)" in result.stdout
 
     def test_backtest_params_flat_file(self, runner, tmp_path):
         path = tmp_path / "p.json"

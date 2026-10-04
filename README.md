@@ -183,9 +183,15 @@ uv run mra-optimize --mode random --symbol SPY --output best.json
 uv run mra backtest --symbol SPY --params best.json --output trades.csv
 ```
 
-When the parameters come from an `mra-optimize` file, the report warns about test windows
-that overlap the optimizer's search period. Those windows are out-of-sample for the HMM but
-not for the parameters. Only the optimizer's holdout period is out-of-sample for both.
+When the parameters come from an `mra-optimize` file and test windows overlap the
+optimizer's search period, the report is labelled `OUT-OF-SAMPLE (regime model only)` (JSON
+`params_out_of_sample: false`) and warns how many windows overlap: they are out-of-sample for
+the HMM but not for the parameters. Only the optimizer's holdout period is out-of-sample for
+both.
+
+In walk-forward mode buy-and-hold is restarted at each test window, like the strategy, so
+both cover the same bars; the report also shows the asset's plain close-to-close return over
+the whole span (`asset_return`).
 
 `--provider` and `--api-key` work before or after the subcommand
 (`mra --provider polygon current-analysis` or `mra current-analysis --provider polygon`).

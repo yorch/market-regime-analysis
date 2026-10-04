@@ -100,7 +100,9 @@ alias that emits `DeprecationWarning`).
   the same bars, per-window summaries, trades, and `to_dict()` / `format_report()`
   / `trades_frame()`. `walk-forward` is out-of-sample for the HMM; `simple` fits
   once on the whole period and is flagged `in_sample=True`. Buy-and-hold is held
-  per test window without costs, matching the validator's benchmark.
+  per test window without costs, matching the validator's benchmark (`asset_return`
+  is the plain close-to-close return); `params_out_of_sample` is False when test
+  windows overlap an `mra-optimize` search period.
   `load_strategy_params()` reads a flat parameter file or `mra-optimize` output
   and raises `InvalidParametersError` on unknown keys or bad values.
 - **Optimization honesty**: `StrategyOptimizer(..., holdout_frac=0.2)` withholds
