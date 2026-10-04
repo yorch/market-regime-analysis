@@ -24,6 +24,7 @@ from jose import JWTError, jwt
 from pydantic import BaseModel
 from starlette.requests import HTTPConnection
 
+from mra_lib.config.env_file import EnvFileError, load_env_file
 from mra_web.config import JWT_ALGORITHM, APIConfig, ConfigError, get_config
 
 # Setup logging
@@ -276,5 +277,10 @@ def mint_token_main(argv: list[str] | None = None) -> int:
 
 
 def main() -> None:
-    """Console-script wrapper for :func:`mint_token_main`."""
+    """Console-script wrapper for :func:`mint_token_main`; loads ``.env`` first."""
+    try:
+        load_env_file()
+    except EnvFileError as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(2)
     sys.exit(mint_token_main())

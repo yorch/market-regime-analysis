@@ -10,6 +10,8 @@ dependencies = [
     "numpy>=2.5.3",
     "pandas>=3.0.6",
     "polygon-api-client>=1.16.3",
+    # Only used by the explicit load_env_file() helper; importing mra_lib never reads .env
+    "python-dotenv>=1.1.0",
     "requests>=2.34.2",
     "scikit-learn>=1.9.1",
     "statsmodels>=0.15.0",

@@ -10,7 +10,10 @@ REST + WebSocket API for market regime analysis using Hidden Markov Models
 ```bash
 uv sync
 
-# Optional: data provider credentials (Yahoo Finance and mock need none)
+# Settings can live in a .env file (loaded by mra-api / mra-token / mra_web.app)...
+cp .env.example .env
+
+# ...or be exported. Optional data provider credentials (Yahoo Finance and mock need none):
 export ALPHA_VANTAGE_API_KEY=your_key_here
 export POLYGON_API_KEY=your_key_here
 export APCA_API_KEY_ID=your_key_id APCA_API_SECRET_KEY=your_secret
@@ -592,7 +595,13 @@ print(portfolio["portfolio_metrics"]["dominant_regime"])
 
 ## Configuration
 
-Read by `mra_web/config.py` (and `mra_web/server.py` for the bind options):
+Read by `mra_web/config.py` (and `mra_web/server.py` for the bind options) from the
+process environment. `mra-api`, `mra-token` and `mra_web.app` (at import, so also
+`uvicorn mra_web.app:app`) first load a `.env` file: the first one found walking up from
+the current directory, stopping below the home directory. Variables that are already set
+always win over `.env`; `MRA_ENV_FILE=/path` selects a file explicitly (missing file:
+`mra-api` refuses to start) and `MRA_NO_DOTENV=1` disables loading. The Docker image never
+contains a `.env` (see `.dockerignore`); compose passes variables explicitly.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|

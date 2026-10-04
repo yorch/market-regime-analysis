@@ -33,6 +33,7 @@ from mra_lib.backtesting import (
     StrategyOptimizer,
     WalkForwardValidator,
 )
+from mra_lib.config.env_file import EnvFileError, load_env_file
 from mra_lib.data_providers import MarketDataProvider, required_env_vars, resolve_api_key
 
 # Walk-forward settings shared by every mode
@@ -306,7 +307,16 @@ def build_output(
     return output
 
 
+def _load_env_or_exit() -> None:
+    """Load ``.env`` (see :mod:`mra_lib.config.env_file`) or exit with a clear error."""
+    try:
+        load_env_file()
+    except EnvFileError as e:
+        sys.exit(f"error: {e}")
+
+
 def main() -> None:
+    _load_env_or_exit()  # before any env read (provider API keys)
     parser = argparse.ArgumentParser(description="Optimize regime strategy parameters")
     parser.add_argument("--mode", choices=["grid", "random", "baseline"], default="grid")
     parser.add_argument("--symbol", default="SPY")

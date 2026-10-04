@@ -13,9 +13,16 @@ import sys
 
 import uvicorn
 
+from mra_lib.config.env_file import EnvFileError, load_env_file
+
 
 def main() -> None:
     """Main startup function."""
+    try:  # before the argparse defaults and APIConfig read the environment
+        load_env_file()
+    except EnvFileError as e:
+        print(f"❌ Refusing to start: {e}", file=sys.stderr)
+        sys.exit(2)
     parser = argparse.ArgumentParser(description="Market Regime Analysis API Server")
 
     parser.add_argument(
