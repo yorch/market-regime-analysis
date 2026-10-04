@@ -14,6 +14,8 @@ optimization_results.json
 
 # Environment secrets
 .env
+.env.*
+!.env.example
 
 # Caches
 .ruff_cache/

@@ -27,6 +27,7 @@ from mra_lib import (
 )
 from mra_lib.backtesting import RegimeMultiplierCalibrator
 from mra_lib.config.data_classes import RegimeAnalysis
+from mra_lib.config.env_file import EnvFileError, load_env_file
 from mra_lib.config.timeframes import (
     BARS_PER_DAY,
     DEFAULT_PERIODS,
@@ -384,6 +385,10 @@ def cli(ctx: click.Context, debug: bool, provider: str | None, api_key: str | No
     🌐 Web API: run 'uv run mra-api --dev' (docs at http://localhost:8000/docs)
     🐍 Python client example: examples/api_client.py
     """
+    try:  # before any env read ($DEFAULT_PROVIDER, provider keys, MRA_DB_PATH)
+        load_env_file()
+    except EnvFileError as e:
+        raise click.ClickException(str(e)) from e
     ctx.ensure_object(dict)
     ctx.obj["debug"] = debug
     ctx.obj["provider"] = provider

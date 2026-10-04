@@ -25,6 +25,9 @@ git clone <repository-url>
 cd market-regime-analysis
 uv sync
 
+# Optional: settings and provider keys (DEFAULT_PROVIDER, POLYGON_API_KEY, JWT_SECRET, ...)
+cp .env.example .env
+
 # Run analysis (Yahoo Finance is the default provider; no API key needed)
 uv run mra current-analysis --symbol SPY
 
@@ -36,6 +39,23 @@ just test-unit
 ```
 
 See `uv run mra --help` for all CLI commands.
+
+### Environment and `.env`
+
+Every entry point (`mra`, `mra-optimize`, `mra-api`, `mra-token`, `python -m mra_web.app`,
+`python run.py`) loads a `.env` file at startup, so `uv run ...` picks up the keys in it:
+
+- **Real environment variables always win.** `.env` only fills in variables that are not
+  already set (even to an empty value), so `export`, CI and docker compose behave as before.
+- **Which file:** the first `.env` found in the current directory or its parents, stopping
+  at the git root (so another project's `.env` is never picked up) and below your home
+  directory (`~/.env` is only used when you run from `~` itself). Outside your home
+  directory (e.g. in the Docker image) only the current directory is checked.
+- `MRA_ENV_FILE=/path/to/file` loads that file instead; it is an error if it does not exist.
+- `MRA_NO_DOTENV=1` disables loading (the test suite sets it); it also wins over `MRA_ENV_FILE`.
+- `${VAR}` in values is expanded, so single-quote values containing `$` (e.g. secrets).
+- Importing `mra_lib` never reads `.env`; library users call
+  `mra_lib.config.env_file.load_env_file()` themselves if they want it.
 
 ## Core Features
 

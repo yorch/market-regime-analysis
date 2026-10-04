@@ -12,6 +12,16 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+from mra_lib.config.env_file import EnvFileError, load_env_file
+
+# ``config`` below is read at import time, so ``python -m mra_web.app`` and
+# ``uvicorn mra_web.app:app`` load ``.env`` here (a no-op for keys already set, e.g.
+# when started by ``mra-api``, which loaded it first, or by docker compose).
+try:
+    load_env_file()
+except EnvFileError as _env_error:
+    raise SystemExit(f"Refusing to start: {_env_error}") from _env_error
+
 from mra_web import __version__
 from mra_web.config import APIConfig, config
 from mra_web.endpoints import get_metrics, health_check, router as api_router

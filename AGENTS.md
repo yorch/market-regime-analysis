@@ -134,6 +134,7 @@ market-regime-analysis/
 │   │   │   ├── config/
 │   │   │   │   ├── enums.py        # MarketRegime, TradingStrategy, DirectionalBias
 │   │   │   │   ├── data_classes.py # RegimeAnalysis dataclass
+│   │   │   │   ├── env_file.py     # load_env_file(): explicit .env loader for entry points
 │   │   │   │   ├── regime_tables.py # Shared regime multipliers / strategy / bias tables
 │   │   │   │   ├── symbols.py      # SYMBOL_PATTERN (shared by storage, CLI and API)
 │   │   │   │   └── timeframes.py   # TIMEFRAMES, DEFAULT_PERIODS, CONFIRMATION_* defaults
@@ -330,6 +331,7 @@ from .strategy import RegimeStrategy  # inside backtesting/
 
 ### Security & Configuration
 - User-facing environment variables are listed in [.env.example](.env.example) (everything there is read by code); docker compose only forwards the ones named in `docker-compose.yml`
+- `.env` loading: every entry point (`mra` group callback, `mra-optimize`/`mra-api`/`mra-token` `main()`, and `mra_web/app.py` at import because it reads `config` at import time) calls `mra_lib.config.env_file.load_env_file()` before reading env. Precedence: real environment > `.env` (never overrides). Discovery: first `.env` walking up from cwd, stopping at the git root (dir with `.git`) and below `$HOME`. `MRA_ENV_FILE=/path` forces a file (missing = error); `MRA_NO_DOTENV=1` disables it. `mra_lib` must never load `.env` as an import side effect. New entry points must call the loader before any `os.getenv`/argparse default that reads env. The root `conftest.py` sets `MRA_NO_DOTENV=1` so a developer `.env` never leaks into tests (`just` itself still exports `.env` via `set dotenv-load`)
 - Provider secrets: `ALPHA_VANTAGE_API_KEY` (or `ALPHAVANTAGE_API_KEY`), `POLYGON_API_KEY`, `APCA_API_KEY_ID` + `APCA_API_SECRET_KEY`, `TIINGO_API_KEY`
 - Web API: `ENVIRONMENT` (default `production`), `JWT_SECRET` (required outside development, 32+ chars), `API_KEYS`, `CORS_ORIGINS`, `RATE_LIMIT_PER_MINUTE`, `API_TIMEOUT`, `API_MAX_CONCURRENT_ANALYSES`, `WS_MAX_CONNECTIONS`, `WS_MAX_CONNECTIONS_PER_IP` — see [docs/api.md](docs/api.md)
 - CLI: `DEFAULT_PROVIDER`
