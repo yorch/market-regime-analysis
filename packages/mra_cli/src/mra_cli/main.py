@@ -45,6 +45,19 @@ from mra_lib.data_providers import (
 from mra_lib.data_providers.credentials import PROVIDER_ENV_PAIRS
 from mra_lib.errors import InsufficientDataError, StorageError
 from mra_lib.indicators.true_hmm_detector import TrueHMMDetector
+from mra_lib.scanner import (
+    DEFAULT_COOLDOWN_BARS,
+    DEFAULT_MIN_CONFIDENCE,
+    DEFAULT_WATCH_TIMEFRAMES,
+    AlertPolicy,
+    LogNotifier,
+    Notifier,
+    Scanner,
+    ScanReport,
+    format_scan_report,
+    notifiers_from_env,
+)
+from mra_lib.scanner.notifiers import describe_notifier
 from mra_lib.signals.confirmation import confirm_timeframes, format_confirmation_report
 from mra_lib.storage import MAX_HISTORY_LIMIT, RegimeRecord, RegimeStore, default_store
 
@@ -878,6 +891,181 @@ def continuous_monitoring(  # noqa: PLR0913, PLR0917
     )
     if successes == 0:
         raise click.ClickException("Monitoring finished without a successful iteration")
+
+
+# ── scan: scheduled watchlist scanner with regime-change alerts ──────────────
+
+
+def _split_csv(value: str, option: str) -> list[str]:
+    items = [item.strip() for item in value.split(",") if item.strip()]
+    if not items:
+        raise click.BadParameter("must list at least one value", param_hint=option)
+    return items
+
+
+def _parse_timeframes(value: str, option: str) -> tuple[str, ...]:
+    items = _split_csv(value, option)
+    unknown = [tf for tf in items if tf not in TIMEFRAMES]
+    if unknown:
+        raise click.BadParameter(
+            f"unknown timeframe(s) {', '.join(unknown)}; choose from {', '.join(TIMEFRAMES)}",
+            param_hint=option,
+        )
+    return tuple(dict.fromkeys(items))
+
+
+@cli.command()
+@click.option(
+    "--symbols", type=str, default="SPY", show_default=True, help="Comma-separated watchlist"
+)
+@click.option(
+    "--timeframes",
+    type=str,
+    default=",".join(TIMEFRAMES),
+    show_default=True,
+    help="Comma-separated timeframes to analyze",
+)
+@click.option(
+    "--interval",
+    type=click.IntRange(min=1),
+    default=3600,
+    show_default=True,
+    help="Seconds between scans",
+)
+@click.option("--once", is_flag=True, help="Run a single scan and exit")
+@click.option(
+    "--max-iterations",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Stop after this many scans (default: run until Ctrl+C / SIGTERM)",
+)
+@click.option(
+    "--watch",
+    type=str,
+    default=",".join(DEFAULT_WATCH_TIMEFRAMES),
+    show_default=True,
+    help="Comma-separated timeframes whose regime changes alert",
+)
+@click.option(
+    "--no-confirmation",
+    is_flag=True,
+    help="Alert without requiring multi-timeframe confirmation",
+)
+@click.option(
+    "--min-confidence",
+    type=float,
+    default=DEFAULT_MIN_CONFIDENCE,
+    show_default=True,
+    callback=validate_percentage,
+    help="Minimum regime confidence (0-1) for an alert",
+)
+@click.option(
+    "--cooldown-bars",
+    type=click.IntRange(min=0),
+    default=DEFAULT_COOLDOWN_BARS,
+    show_default=True,
+    help="Ignore a change when the previous regime lasted at most this many bars (0 = off)",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Log alerts only (no webhook/Telegram/Discord); records are still saved",
+)
+@provider_options
+@click.pass_context
+@handle_exceptions
+def scan(  # noqa: PLR0913, PLR0917
+    ctx: click.Context,
+    symbols: str,
+    timeframes: str,
+    interval: int,
+    once: bool,
+    max_iterations: int | None,
+    watch: str,
+    no_confirmation: bool,
+    min_confidence: float,
+    cooldown_bars: int,
+    dry_run: bool,
+    provider: str | None,
+    api_key: str | None,
+) -> None:
+    """Scan a watchlist on a schedule, record regimes, and alert on regime changes.
+
+    Every scan analyzes each symbol on each timeframe, saves the results to the
+    regime history database ($MRA_DB_PATH, see 'mra history'), computes the
+    multi-timeframe confirmation, and sends an alert when a watched timeframe's
+    regime changes on a new bar (the first scan of a symbol only records a
+    baseline).
+
+    Alerts go to the log plus every channel configured in the environment:
+    ALERT_WEBHOOK_URL, TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID, DISCORD_WEBHOOK_URL.
+    --dry-run sends alerts to the log only, but still saves records, so a change
+    seen by a dry run is not alerted again later from the same database.
+
+    Exits non-zero if every symbol failed (--once) or no scan succeeded.
+
+    \b
+    Examples:
+        uv run mra scan --provider mock --once --dry-run
+        uv run mra scan --symbols SPY,QQQ,IWM --interval 3600
+    """
+    symbol_list = _split_csv(symbols, "--symbols")
+    timeframe_list = _parse_timeframes(timeframes, "--timeframes")
+    watch_list = _parse_timeframes(watch, "--watch")
+    not_scanned = [tf for tf in watch_list if tf not in timeframe_list]
+    if not_scanned:
+        raise click.BadParameter(
+            f"{', '.join(not_scanned)} is not in --timeframes", param_hint="--watch"
+        )
+    provider_name, key = resolve_provider(ctx, provider, api_key)
+
+    notifiers: list[Notifier] = [LogNotifier()]
+    if not dry_run:
+        notifiers += notifiers_from_env()
+    policy = AlertPolicy(
+        timeframes_to_watch=watch_list,
+        require_confirmation=not no_confirmation,
+        min_confidence=min_confidence,
+        cooldown_bars=cooldown_bars,
+    )
+    store = default_store()
+    scanner = Scanner(
+        symbol_list,
+        store=store,
+        timeframes=timeframe_list,
+        provider=provider_name,
+        api_key=key,
+        notifiers=notifiers,
+        policy=policy,
+    )
+
+    limit = 1 if once else max_iterations
+    channels = ", ".join(describe_notifier(n) for n in notifiers)
+    click.echo(
+        f"Alert policy: watch {', '.join(policy.timeframes_to_watch)} | confirmation "
+        + ("off" if no_confirmation else "required")
+        + f" | min confidence {min_confidence:.0%} | cooldown {cooldown_bars} bar(s)"
+        + f"\nAlerts: {channels}{' (dry run)' if dry_run else ''} | records: {store.path}"
+        + ("" if limit == 1 else "\nPress Ctrl+C to stop")
+    )
+
+    def report(scan_report: ScanReport) -> None:
+        click.echo(format_scan_report(scan_report))
+
+    # Per-timeframe "Loading data..." progress is noise in a scanner; --debug keeps it
+    analyzer_logger = logging.getLogger("mra_lib.analyzer")
+    previous_level = analyzer_logger.level
+    if not _debug_enabled():
+        analyzer_logger.setLevel(logging.WARNING)
+    try:
+        summary = scanner.run(interval, max_iterations=limit, on_report=report)
+    finally:
+        analyzer_logger.setLevel(previous_level)
+
+    if summary.successful_iterations == 0 and summary.failed_iterations > 0:
+        raise click.ClickException(
+            "Every symbol failed" if limit == 1 else "Scanner finished without a successful scan"
+        )
 
 
 @cli.command()
