@@ -598,7 +598,7 @@ print(portfolio["portfolio_metrics"]["dominant_regime"])
 Read by `mra_web/config.py` (and `mra_web/server.py` for the bind options) from the
 process environment. `mra-api`, `mra-token` and `mra_web.app` (at import, so also
 `uvicorn mra_web.app:app`) first load a `.env` file: the first one found walking up from
-the current directory, stopping below the home directory. Variables that are already set
+the current directory, stopping at the git root and below the home directory. Variables that are already set
 always win over `.env`; `MRA_ENV_FILE=/path` selects a file explicitly (missing file:
 `mra-api` refuses to start) and `MRA_NO_DOTENV=1` disables loading. The Docker image never
 contains a `.env` (see `.dockerignore`); compose passes variables explicitly.

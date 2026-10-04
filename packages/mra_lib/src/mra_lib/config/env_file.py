@@ -12,13 +12,16 @@ Rules:
 * ``MRA_ENV_FILE=/path/to/file`` loads exactly that file (relative paths resolve
   against the current directory); a missing file is an error.
 * Otherwise the first ``.env`` found walking up from the current directory is
-  loaded. The walk stops below the user's home directory: ``~/.env`` itself is
-  only used when the current directory *is* home, and a current directory outside
-  home (e.g. ``/app`` in the Docker image) is the only place checked.
+  loaded. The walk stops at the enclosing git root (a directory containing
+  ``.git``), so it never picks up another project's ``.env``, and never goes into
+  or above the user's home directory: ``~/.env`` itself is only used when the
+  current directory *is* home, and a current directory outside home (e.g.
+  ``/app`` in the Docker image) is the only place checked.
 
 Parsing is delegated to ``python-dotenv`` (quotes, ``export`` prefixes, comments,
-multiline values and ``${VAR}`` interpolation). Values are never logged; only the
-file path and the number of variables set are, at DEBUG.
+multiline values and ``${VAR}`` interpolation, so single-quote values that contain
+``$``). Values are never logged; only the file path and the number of variables
+set are, at DEBUG.
 """
 
 import logging
@@ -61,9 +64,13 @@ def find_env_file(start: Path | None = None, *, home: Path | None = None) -> Pat
             home directory). It is only checked when ``start`` is ``home`` itself.
 
     Returns:
-        Path of the first ``.env`` file found, or ``None``.
+        Path of the first ``.env`` file found, or ``None`` (also when the current
+        directory no longer exists).
     """
-    current = (start if start is not None else Path.cwd()).resolve()
+    try:
+        current = (start if start is not None else Path.cwd()).resolve()
+    except OSError:
+        return None
     boundary = home.resolve() if home is not None else _home_dir()
 
     candidates = [current]
@@ -77,6 +84,8 @@ def find_env_file(start: Path | None = None, *, home: Path | None = None) -> Pat
         path = directory / ENV_FILE_NAME
         if path.is_file():
             return path
+        if (directory / ".git").exists():  # project root: don't leak into the parent
+            break
     return None
 
 
@@ -103,7 +112,10 @@ def load_env_file(start: Path | None = None, *, home: Path | None = None) -> Pat
     if explicit:
         path = Path(explicit).expanduser()
         if not path.is_absolute():
-            path = (start if start is not None else Path.cwd()) / path
+            try:
+                path = (start if start is not None else Path.cwd()) / path
+            except OSError as e:
+                raise EnvFileError(f"{ENV_FILE_VAR} is relative but the cwd is gone") from e
         if not path.is_file():
             raise EnvFileError(f"{ENV_FILE_VAR} points to {path}, which is not a readable file")
     else:

@@ -12,21 +12,24 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from mra_lib.config.env_file import load_env_file
+from mra_lib.config.env_file import EnvFileError, load_env_file
 
 # ``config`` below is read at import time, so ``python -m mra_web.app`` and
 # ``uvicorn mra_web.app:app`` load ``.env`` here (a no-op for keys already set, e.g.
 # when started by ``mra-api``, which loaded it first, or by docker compose).
-load_env_file()
+try:
+    load_env_file()
+except EnvFileError as _env_error:
+    raise SystemExit(f"Refusing to start: {_env_error}") from _env_error
 
-from mra_web import __version__  # noqa: E402
-from mra_web.config import APIConfig, config  # noqa: E402
-from mra_web.endpoints import get_metrics, health_check, router as api_router  # noqa: E402
-from mra_web.errors import install_error_handlers  # noqa: E402
-from mra_web.ratelimit import RateLimitMiddleware  # noqa: E402
-from mra_web.security import install_log_scrubber  # noqa: E402
-from mra_web.utils import NumpyJSONResponse, api_metrics  # noqa: E402
-from mra_web.websocket import manager, ws_router  # noqa: E402
+from mra_web import __version__
+from mra_web.config import APIConfig, config
+from mra_web.endpoints import get_metrics, health_check, router as api_router
+from mra_web.errors import install_error_handlers
+from mra_web.ratelimit import RateLimitMiddleware
+from mra_web.security import install_log_scrubber
+from mra_web.utils import NumpyJSONResponse, api_metrics
+from mra_web.websocket import manager, ws_router
 
 # Setup logging
 logging.basicConfig(

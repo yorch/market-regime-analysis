@@ -89,6 +89,27 @@ class TestDiscovery:
         env = write(outside / ".env", "MRA_T_A=here\n")
         assert find_env_file(outside, home=home) == env
 
+    def test_find_env_file_stops_at_git_root(self, project, home):
+        write(home / "code" / ".env", "MRA_T_A=other-project\n")
+        (project / ".git").mkdir()
+        sub = project / "src"
+        sub.mkdir()
+        assert find_env_file(sub, home=home) is None
+        env = write(project / ".env", "MRA_T_A=mine\n")
+        assert find_env_file(sub, home=home) == env
+
+    def test_find_env_file_git_worktree_file_is_a_root(self, project, home):
+        write(home / "code" / ".env", "MRA_T_A=main-checkout\n")
+        write(project / ".git", "gitdir: /elsewhere\n")
+        assert find_env_file(project, home=home) is None
+
+    def test_load_env_file_deleted_cwd_is_noop(self, project, home, monkeypatch):
+        def gone():
+            raise FileNotFoundError("cwd removed")
+
+        monkeypatch.setattr(Path, "cwd", staticmethod(gone))
+        assert load_env_file(home=home) is None
+
     def test_find_env_file_ignores_env_directory(self, project, home):
         (project / ".env").mkdir()
         assert find_env_file(project, home=home) is None

@@ -97,3 +97,20 @@ def test_app_module_loads_dotenv_at_import(dotenv_project):
     )
     assert out.returncode == 0, out.stderr
     assert out.stdout.split() == ["True", "9123"]
+
+
+def test_app_module_missing_explicit_env_file_exits_cleanly(dotenv_project):
+    env = {k: v for k, v in os.environ.items() if k not in CLEARED}
+    env["MRA_ENV_FILE"] = "nope.env"
+    out = subprocess.run(
+        [sys.executable, "-c", "import mra_web.app"],
+        cwd=dotenv_project,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert out.returncode == 1
+    assert "Refusing to start: MRA_ENV_FILE" in out.stderr
+    assert "Traceback" not in out.stderr
