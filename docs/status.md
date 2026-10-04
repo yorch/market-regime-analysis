@@ -83,7 +83,8 @@ Feature roadmap (none started; from the review's proposals):
 - Model persistence and loading optimized/calibrated parameters into the analysis commands
   (`mra backtest --params` already reads `mra-optimize` output).
 - Regime history store and `/regimes/{symbol}/history`.
-- Scheduled scanner with regime-change alerts.
+- ~~Scheduled scanner with regime-change alerts~~: landed (`mra scan`, `mra_lib.scanner`,
+  compose `scanner` profile). Follow-ups: email/Slack channels, history retention/pruning.
 - Backtest API endpoint (the `mra backtest` command exists; an endpoint can reuse
   `mra_lib.backtesting.run_backtest`).
 - Multi-timeframe confirmation signal; explainability (per-state feature z-scores).

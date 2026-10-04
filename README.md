@@ -183,6 +183,7 @@ uv run mra multi-symbol-analysis --symbols "SPY,QQQ,IWM"
 uv run mra position-sizing --base-size 0.02 --regime "Bull Trending" --confidence 0.8
 uv run mra export-csv --symbol SPY --filename analysis.csv
 uv run mra continuous-monitoring --symbol SPY --interval 300   # --once / --max-iterations N
+uv run mra scan --symbols SPY,QQQ --interval 3600              # scheduled scanner + alerts
 uv run mra regime-forecast --symbol SPY --steps 10
 uv run mra calibrate-multipliers --symbol SPY --method sharpe_weighted
 uv run mra backtest --symbol SPY --period 5y                   # walk-forward vs buy & hold
@@ -249,6 +250,75 @@ store = default_store()
 store.save(RegimeRecord.from_analysis(analyzer.analyze_current_regime("1D"), analyzer, "1D"))
 store.latest("SPY", "1D")
 store.history("SPY", timeframe="1D", limit=20)
+```
+
+### Scanner & alerts
+
+`mra scan` analyzes a watchlist on a schedule, saves every result to the regime history
+database, and sends an alert when a regime changes. Quick start (offline, nothing sent):
+
+```bash
+uv run mra scan --provider mock --once --dry-run
+uv run mra history --symbol SPY            # the records the scan saved
+```
+
+```text
+Alert policy: watch 1D | confirmation required | min confidence 60% | cooldown 1 bar(s)
+Alerts: log (dry run) | records: /home/me/.mra/regimes.db
+Scanner started: SPY on 1D, 1H, 15m (single scan), alerts via log
+Scan #1 (2.1s): 1 symbol(s) ok, 0 failed | 3 record(s) saved | 0 change(s) | 0 alert(s): 0 sent, 0 failed
+  SPY: 1D Mean Reverting (baseline); 1H Unknown (baseline); 15m Bull Trending (baseline); confirmation neutral primary_neutral
+Scanner finished: 1 scan(s) (1 ok, 0 failed, stopped: max_iterations) | 0 symbol failure(s) | 3 record(s) saved | 0 change(s) | 0 alert(s): 0 sent, 0 failed
+```
+
+Each scan, per symbol: read the last stored record per timeframe, analyze every timeframe,
+save the new records, compute the multi-timeframe confirmation, detect changes, alert.
+
+- **What is a change.** The stored regime differs from the new one *on a newer bar*.
+  Re-scanning the same bar is never a change, and the first observation of a
+  (symbol, timeframe) is only recorded as a baseline.
+- **Alert policy** (flags; defaults in brackets): `--watch` timeframes that may alert [`1D`];
+  confirmation required [on; `--no-confirmation` turns it off]: the multi-timeframe signal
+  must be `confirmed` and point the same way as the new regime, so changes into neutral
+  regimes (Mean Reverting, Low/High Volatility) only alert with `--no-confirmation`;
+  `--min-confidence` [0.6]; `--cooldown-bars` [1]: a change is ignored when the previous
+  regime lasted at most that many bars after a transition, so a one-bar flip-flop does not
+  alert twice. The cooldown is derived from the stored history, so a restart makes the same
+  decisions and never re-alerts.
+- **Channels.** Alerts always go to the log, plus every channel configured in the
+  environment: `ALERT_WEBHOOK_URL` (JSON `POST` of the event), `TELEGRAM_BOT_TOKEN` +
+  `TELEGRAM_CHAT_ID` (Bot API `sendMessage`), `DISCORD_WEBHOOK_URL`. URLs must be `https://`
+  (`http://localhost` for testing). Tokens and webhook URLs are never logged. Delivery uses a
+  10 s timeout and 2 retries; a failing channel is logged and counted, never fatal.
+- **`--dry-run`** sends alerts to the log only but **still saves records**: the history is
+  the scanner's state, and a change seen by a dry run will not alert again later from the
+  same database. Point `MRA_DB_PATH` elsewhere to rehearse against a production database.
+- **Loop.** Scans run on a fixed cadence (`--interval`, default 3600 s); a scan where every
+  symbol fails is retried with exponential backoff (capped at an hour). One symbol failing
+  never stops the others. Ctrl+C or SIGTERM stops after the current symbol and prints a
+  summary; `--once` exits non-zero when every symbol failed.
+
+With Docker, the optional `scanner` compose service runs the same scan against the
+`app-data` volume, so the API's history endpoint serves its records:
+
+```bash
+SCAN_SYMBOLS=SPY,QQQ,IWM SCAN_INTERVAL=3600 docker compose --profile scanner up -d
+```
+
+In Python:
+
+```python
+from mra_lib.scanner import AlertPolicy, LogNotifier, Scanner, notifiers_from_env
+from mra_lib.storage import default_store
+
+scanner = Scanner(
+    ["SPY", "QQQ"],
+    store=default_store(),
+    provider="yfinance",
+    notifiers=[LogNotifier(), *notifiers_from_env()],
+    policy=AlertPolicy(min_confidence=0.7),
+)
+report = scanner.scan_once()   # or scanner.run(interval=3600)
 ```
 
 ## Data Providers
