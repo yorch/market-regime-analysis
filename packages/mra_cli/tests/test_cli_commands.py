@@ -531,6 +531,32 @@ class TestRegimeHistory:
         records = store.history("SPY")
         assert len({(r.timeframe, r.bar_time) for r in records}) == len(records)
 
+    def test_cli_record_with_confirmation_section(self, runner, db_path):
+        from mra_lib.storage import SQLiteRegimeStore
+
+        result = runner.invoke(cli, ["current-analysis", "--provider", "mock", "--record"])
+        assert result.exit_code == 0, result.output
+        assert "MULTI-TIMEFRAME CONFIRMATION - SPY" in result.output
+        assert len(SQLiteRegimeStore(db_path).history("SPY")) == 3
+
+    def test_cli_record_without_confirmation(self, runner, db_path):
+        # Only one timeframe succeeds: no confirmation section, but it is still recorded
+        from mra_cli import main
+        from mra_lib.storage import SQLiteRegimeStore
+
+        real = main._analyze_single_timeframe
+
+        def only_daily(symbol, tf, provider, key):
+            if tf != "1D":
+                raise ConnectionError("boom")
+            return real(symbol, tf, provider, key)
+
+        with patch("mra_cli.main._analyze_single_timeframe", side_effect=only_daily):
+            result = runner.invoke(cli, ["current-analysis", "--provider", "mock", "--record"])
+        assert result.exit_code == 0, result.output
+        assert "MULTI-TIMEFRAME CONFIRMATION" not in result.output
+        assert [r.timeframe for r in SQLiteRegimeStore(db_path).history("SPY")] == ["1D"]
+
     def test_cli_record_failure_does_not_fail_analysis(self, runner):
         from mra_lib.errors import StorageError
         from mra_lib.storage import SQLiteRegimeStore
