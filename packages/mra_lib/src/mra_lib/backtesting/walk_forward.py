@@ -323,6 +323,32 @@ class WalkForwardValidator:
             pd.Series([c for _, c in results], index=test_index),
         )
 
+    def detect_regimes_in_sample(self, df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+        """
+        Fit the HMM once on all of ``df`` and label every bar (IN-SAMPLE).
+
+        Each bar ``i`` is labelled from the filtered posterior using bars before
+        ``i`` only, exactly as in walk-forward, but the model parameters were
+        estimated on the whole of ``df`` (including bars after ``i``). Results
+        built on these regimes are therefore in-sample and optimistic; use
+        :meth:`run` for out-of-sample estimates.
+
+        Args:
+            df: Full OHLCV DataFrame
+
+        Returns:
+            Tuple of (regimes, confidences) series aligned to ``df.index``.
+
+        Raises:
+            Exception: Whatever the detector raises if the fit fails.
+        """
+        hmm = self._fit_detector(df)
+        results = self._predict_segment(hmm, df, 0, len(df))
+        return (
+            pd.Series([r for r, _ in results], index=df.index),
+            pd.Series([c for _, c in results], index=df.index),
+        )
+
     def compute_regimes(self, df: pd.DataFrame, start_index: int | None = None) -> RegimeCache:
         """
         Run regime detection for every walk-forward window once.

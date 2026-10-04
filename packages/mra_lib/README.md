@@ -61,9 +61,10 @@ alias that emits `DeprecationWarning`).
 - Human-readable reports are returned as strings: `MarketRegimeAnalyzer.format_analysis_report`,
   `PortfolioHMMAnalyzer.format_portfolio_summary`, `BacktestEngine.format_results`,
   `PerformanceMetrics.format_summary`, `StrategyOptimizer.format_top_results`,
-  `CalibrationResult.format_report`. The `print_*` equivalents are deprecated.
+  `CalibrationResult.format_report`, `BacktestReport.format_report`. The `print_*`
+  equivalents are deprecated.
 - Errors derive from `mra_lib.errors.MRAError`: `DataLoadError`, `InsufficientDataError`,
-  `ModelNotFittedError` (all `ValueError`s) and the provider errors `ProviderError` →
+  `ModelNotFittedError`, `InvalidParametersError` (all `ValueError`s) and the provider errors `ProviderError` →
   `InvalidSymbolError` (`ValueError`), `AuthError` / `RateLimitError` (`ConnectionError`).
   `MarketRegimeAnalyzer` re-raises provider errors unchanged; a provider `TimeoutError`
   surfaces as `ConnectionError`. `PortfolioHMMAnalyzer` skips symbols that fail to load
@@ -94,6 +95,16 @@ alias that emits `DeprecationWarning`).
   length). A failed HMM refit keeps the previous model and logs a warning.
   `WalkForwardValidator.compute_regimes()` caches regimes per window so many
   strategy parameter sets can be evaluated without refitting the HMM.
+- **One-call backtest**: `run_backtest(df, params, mode)` (`backtesting/runner.py`)
+  returns a typed `BacktestReport`: strategy and buy-and-hold `SideMetrics` over
+  the same bars, per-window summaries, trades, and `to_dict()` / `format_report()`
+  / `trades_frame()`. `walk-forward` is out-of-sample for the HMM; `simple` fits
+  once on the whole period and is flagged `in_sample=True`. Buy-and-hold is held
+  per test window without costs, matching the validator's benchmark (`asset_return`
+  is the plain close-to-close return); `params_out_of_sample` is False when test
+  windows overlap an `mra-optimize` search period.
+  `load_strategy_params()` reads a flat parameter file or `mra-optimize` output
+  and raises `InvalidParametersError` on unknown keys or bad values.
 - **Optimization honesty**: `StrategyOptimizer(..., holdout_frac=0.2)` withholds
   the most recent bars from the search; `evaluate_holdout(params)` reports the
   chosen parameters on that untouched segment. Search results are in-sample with
