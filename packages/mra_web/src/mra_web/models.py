@@ -11,7 +11,7 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 from mra_lib.config.enums import MarketRegime
-from mra_lib.config.timeframes import TIMEFRAMES
+from mra_lib.config.timeframes import MIN_CONFIRMATION_TIMEFRAMES, TIMEFRAMES
 from mra_lib.data_providers import MarketDataProvider
 
 # Ticker symbols: letters, digits and . - ^ = (e.g. BRK.B, ^GSPC, ES=F), max 15 chars.
@@ -109,6 +109,41 @@ class CurrentAnalysisRequest(BaseRequest):
     def validate_symbol(cls, v: str) -> str:
         """Validate trading symbol format."""
         return normalize_symbol(v)
+
+
+class ConfirmationRequest(BaseRequest):
+    """Request model for the multi-timeframe confirmation endpoint."""
+
+    symbol: str = Field(description="Trading symbol (e.g., SPY, QQQ)")
+    timeframes: list[str] | None = Field(
+        default=None,
+        max_length=len(TIMEFRAMES) * 5,
+        description=f"Timeframes to analyze (at least {MIN_CONFIRMATION_TIMEFRAMES} of "
+        f"{', '.join(TIMEFRAMES)}; "
+        "default: all)",
+    )
+
+    @field_validator("symbol")
+    @classmethod
+    def validate_symbol(cls, v: str) -> str:
+        """Validate trading symbol format."""
+        return normalize_symbol(v)
+
+    @field_validator("timeframes")
+    @classmethod
+    def validate_timeframes(cls, v: list[str] | None) -> list[str] | None:
+        """Validate, de-duplicate and order (coarsest first) the requested timeframes."""
+        if v is None:
+            return None
+        invalid = [tf for tf in v if tf not in TIMEFRAMES]
+        if invalid:
+            raise ValueError(f"Timeframes must be among: {', '.join(TIMEFRAMES)}")
+        ordered = [tf for tf in TIMEFRAMES if tf in v]
+        if len(ordered) < MIN_CONFIRMATION_TIMEFRAMES:
+            raise ValueError(
+                f"At least {MIN_CONFIRMATION_TIMEFRAMES} distinct timeframes are required"
+            )
+        return ordered
 
 
 class MultiSymbolAnalysisRequest(BaseRequest):
@@ -285,6 +320,36 @@ class MultiAnalysisResponse(BaseModel):
 
     symbol: str = Field(description="Trading symbol")
     analyses: list[AnalysisResponse] = Field(description="Analysis results by timeframe")
+    analysis_timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(UTC), description="Analysis timestamp"
+    )
+
+
+class TimeframeConfirmationModel(BaseModel):
+    """Multi-timeframe confirmation signal (see ``mra_lib.signals.confirmation``)."""
+
+    direction: str = Field(description="Primary timeframe's bias: bullish, bearish or neutral")
+    agreement: float = Field(description="Confidence-weighted agreement score (0-1)")
+    confirmed: bool = Field(description="Whether the direction is confirmed")
+    primary_timeframe: str | None = Field(description="Highest available timeframe")
+    aligned_timeframes: list[str] = Field(description="Timeframes agreeing with direction")
+    conflicting_timeframes: list[str] = Field(description="Timeframes opposing direction")
+    unavailable_timeframes: list[str] = Field(
+        description="Requested timeframes that failed or are Unknown"
+    )
+    risk_timeframes: list[str] = Field(description="Timeframes in High Volatility")
+    confidence: float = Field(description="Weight-averaged confidence of aligned timeframes")
+    threshold: float = Field(description="Agreement threshold applied")
+    reason: str = Field(description="Machine-readable outcome reason")
+
+
+class ConfirmationResponse(BaseModel):
+    """Response model for the multi-timeframe confirmation endpoint."""
+
+    symbol: str = Field(description="Trading symbol")
+    timeframes: list[str] = Field(description="Requested timeframes, coarsest first")
+    analyses: list[AnalysisResponse] = Field(description="Per-timeframe analyses that succeeded")
+    confirmation: TimeframeConfirmationModel = Field(description="Confirmation signal")
     analysis_timestamp: datetime = Field(
         default_factory=lambda: datetime.now(UTC), description="Analysis timestamp"
     )

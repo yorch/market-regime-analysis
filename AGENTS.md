@@ -127,10 +127,10 @@ market-regime-analysis/
 │   │   │   ├── __init__.py         # Re-exports the public API
 │   │   │   ├── analyzer.py         # MarketRegimeAnalyzer — main orchestrator
 │   │   │   ├── config/
-│   │   │   │   ├── enums.py        # MarketRegime, TradingStrategy
+│   │   │   │   ├── enums.py        # MarketRegime, TradingStrategy, DirectionalBias
 │   │   │   │   ├── data_classes.py # RegimeAnalysis dataclass
-│   │   │   │   ├── regime_tables.py # Shared regime multipliers / strategy table
-│   │   │   │   └── timeframes.py   # TIMEFRAMES, DEFAULT_PERIODS
+│   │   │   │   ├── regime_tables.py # Shared regime multipliers / strategy / bias tables
+│   │   │   │   └── timeframes.py   # TIMEFRAMES, DEFAULT_PERIODS, CONFIRMATION_* defaults
 │   │   │   ├── errors.py           # MRAError hierarchy (DataLoadError, ProviderError, ...)
 │   │   │   ├── indicators/         # Regime model (one detector everywhere)
 │   │   │   │   ├── base.py               # RegimeDetector protocol, persistence/transition helpers
@@ -159,6 +159,8 @@ market-regime-analysis/
 │   │   │   │   └── transaction_costs.py
 │   │   │   ├── risk/
 │   │   │   │   └── risk_calculator.py  # SimonsRiskCalculator + PortfolioPositionLimits
+│   │   │   ├── signals/
+│   │   │   │   └── confirmation.py # Multi-timeframe confirmation (pure confirm_timeframes)
 │   │   │   └── portfolio/
 │   │   │       └── portfolio.py    # PortfolioHMMAnalyzer
 │   │   └── tests/
@@ -205,7 +207,8 @@ The core library (`mra_lib`) has **no dependency on UI or web frameworks**: the 
   `logging.getLogger(__name__)` with %-style args (`G` rules); the `mra_lib` package logger has a
   `NullHandler`. Frontends configure logging (`mra` shows `mra_lib` INFO records on stderr as
   plain progress lines; `mra-optimize` writes them to stdout).
-- **Reports are strings**: `format_analysis_report`, `format_portfolio_summary`,
+- **Reports are strings**: `format_analysis_report`, `format_confirmation_report`,
+  `format_portfolio_summary`,
   `format_results`, `format_summary`, `format_top_results`, `CalibrationResult.format_report`;
   frontends echo them. The old `print_*` methods are deprecated shims (`DeprecationWarning`).
 - **Typed errors** (`mra_lib/errors.py`): everything derives from `MRAError` and keeps its
@@ -245,6 +248,7 @@ from .strategy import RegimeStrategy  # inside backtesting/
 5. **Portfolio Analysis** (`portfolio/portfolio.py`): Multi-symbol regimes, returns-based correlations, Engle-Granger pairs
 6. **Risk Management** (`risk/risk_calculator.py`): Kelly Criterion-based position sizing with regime and correlation adjustments
 7. **Backtester** (`backtesting/`): Walk-forward validation, optimizer with holdout split, calibrator
+8. **Multi-timeframe confirmation** (`signals/confirmation.py`): pure `confirm_timeframes(analyses)` -> frozen `TimeframeConfirmation` (direction, agreement, confirmed, aligned/conflicting timeframes). Bias map `REGIME_BIAS` in `config/regime_tables.py`; weights/threshold (`CONFIRMATION_WEIGHTS`, `CONFIRMATION_THRESHOLD`) in `config/timeframes.py`. Used by `current-analysis` and `POST /api/v1/analysis/confirmation`
 
 ### Data Flow
 

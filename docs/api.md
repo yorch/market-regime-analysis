@@ -51,6 +51,7 @@ cannot be combined with `--workers` > 1.
 | GET | `/api/v1/metrics` | required | same as `/metrics` |
 | POST | `/api/v1/analysis/detailed` | required | `AnalysisResponse` (one timeframe) |
 | POST | `/api/v1/analysis/current` | required | `MultiAnalysisResponse` (1D, 1H, 15m) |
+| POST | `/api/v1/analysis/confirmation` | required | `ConfirmationResponse` (multi-timeframe confirmation) |
 | POST | `/api/v1/analysis/multi-symbol` | required | `PortfolioAnalysisResponse` |
 | POST | `/api/v1/position-sizing` | required | `PositionSizingResponse` |
 | GET | `/api/v1/providers` | required | `ProvidersResponse` |
@@ -167,6 +168,63 @@ curl -X POST http://localhost:8000/api/v1/analysis/current \
 ```
 
 Response: `{"symbol": "SPY", "analyses": [AnalysisResponse, ...], "analysis_timestamp": ...}`.
+
+### POST `/api/v1/analysis/confirmation`
+
+Multi-timeframe confirmation: do the timeframes agree on a direction? Same request shape as
+`/analysis/current`, plus an optional `timeframes` list (at least two distinct values from
+`1D`, `1H`, `15m`; duplicates are dropped and the list is ordered coarsest first; default:
+all three). Each timeframe is loaded and analyzed independently; a timeframe that fails is
+left out of `analyses` and counts as unavailable. If every timeframe fails, the error of
+the last failure is returned (see [Errors](#errors)).
+
+```bash
+curl -X POST http://localhost:8000/api/v1/analysis/confirmation \
+  -H "$AUTH" -H "Content-Type: application/json" \
+  -d '{"symbol": "SPY", "provider": "yfinance", "timeframes": ["1D", "1H", "15m"]}'
+```
+
+Response (`analyses` holds one `AnalysisResponse` per timeframe that succeeded):
+
+```json
+{
+  "symbol": "SPY",
+  "timeframes": ["1D", "1H", "15m"],
+  "analyses": [],
+  "confirmation": {
+    "direction": "bullish",
+    "agreement": 0.8,
+    "confirmed": true,
+    "primary_timeframe": "1D",
+    "aligned_timeframes": ["1D", "1H"],
+    "conflicting_timeframes": ["15m"],
+    "unavailable_timeframes": [],
+    "risk_timeframes": [],
+    "confidence": 1.0,
+    "threshold": 0.6,
+    "reason": "confirmed"
+  },
+  "analysis_timestamp": "2026-10-04T12:00:00Z"
+}
+```
+
+How the signal is computed (`mra_lib.signals.confirmation.confirm_timeframes`):
+
+- **Bias** per regime: Bull Trending and Breakout (the detector only labels up-trending
+  volatility expansion a breakout) are `bullish`; Bear Trending is `bearish`; Mean
+  Reverting, Low Volatility and High Volatility are `neutral`. High Volatility is also
+  listed in `risk_timeframes`. `Unknown` counts as unavailable, like a failed timeframe.
+- **`direction`** is the bias of the primary timeframe, the highest available one
+  (1D > 1H > 15m).
+- **`agreement`** = sum of `weight x confidence` over the timeframes aligned with
+  `direction`, divided by the total weight of the requested timeframes. Default weights:
+  1D 0.5, 1H 0.3, 15m 0.2 (only the requested ones are used). Unavailable timeframes keep
+  their weight in the denominator, so they lower agreement.
+- **`confirmed`** requires at least two available timeframes, a directional primary, at
+  least one lower timeframe aligned with it, and `agreement >= threshold` (0.6).
+- **`reason`**: `confirmed`, `no_timeframes`, `insufficient_timeframes`,
+  `primary_neutral`, `no_alignment` (no lower timeframe agrees) or `below_threshold`.
+- **`confidence`**: weight-averaged regime confidence of the aligned timeframes.
 
 ### POST `/api/v1/analysis/multi-symbol`
 

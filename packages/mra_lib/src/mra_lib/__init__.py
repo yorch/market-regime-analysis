@@ -17,7 +17,7 @@ from importlib.metadata import PackageNotFoundError, version as _dist_version
 
 from .analyzer import MarketRegimeAnalyzer
 from .config.data_classes import RegimeAnalysis
-from .config.enums import MarketRegime, TradingStrategy
+from .config.enums import DirectionalBias, MarketRegime, TradingStrategy
 from .errors import (
     DataLoadError,
     InsufficientDataError,
@@ -29,6 +29,12 @@ from .indicators.hmm_detector import HiddenMarkovRegimeDetector
 from .indicators.true_hmm_detector import TrueHMMDetector
 from .portfolio.portfolio import PortfolioHMMAnalyzer
 from .risk.risk_calculator import PortfolioPositionLimits, PositionRecord, SimonsRiskCalculator
+from .signals.confirmation import (
+    ConfirmationReason,
+    TimeframeConfirmation,
+    confirm_timeframes,
+    format_confirmation_report,
+)
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
@@ -38,7 +44,9 @@ except PackageNotFoundError:  # pragma: no cover - not installed (e.g. bare sour
     __version__ = "0.0.0+unknown"
 
 __all__ = [
+    "ConfirmationReason",
     "DataLoadError",
+    "DirectionalBias",
     "HiddenMarkovRegimeDetector",
     "InsufficientDataError",
     "MRAError",
@@ -51,6 +59,9 @@ __all__ = [
     "ProviderError",
     "RegimeAnalysis",
     "SimonsRiskCalculator",
+    "TimeframeConfirmation",
     "TradingStrategy",
     "TrueHMMDetector",
+    "confirm_timeframes",
+    "format_confirmation_report",
 ]

@@ -66,6 +66,11 @@ See `uv run mra --help` for all CLI commands.
 - **Daily (1D)**: Long-term regime trends (2 years of data)
 - **Hourly (1H)**: Medium-term regime shifts (6 months of data)
 - **15-Minute (15m)**: Short-term regime changes (1 month of data; Yahoo Finance only serves 60 days of 15m bars)
+- **Multi-Timeframe Confirmation**: A pure library signal (`mra_lib.confirm_timeframes`) that says
+  whether the timeframes agree: direction from the highest timeframe, a confidence-weighted
+  agreement score (1D > 1H > 15m), and `confirmed` only when a lower timeframe backs the primary
+  direction above the threshold. Shown by `current-analysis` and served at
+  `POST /api/v1/analysis/confirmation`
 
 ### Backtesting & Strategy Optimization
 
@@ -100,25 +105,26 @@ Alternatively set `API_KEYS` (comma-separated, 16+ characters each) and send one
 ### Example Output
 
 `uv run mra current-analysis --provider mock --symbol SPY` (deterministic synthetic data; the
-1D section is shown, followed by 1H and 15m sections):
+1D section is shown, followed by 1H and 15m sections and, when two or more timeframes
+succeed, a multi-timeframe confirmation section):
 
 ```text
 ================================================================================
 HMM MARKET REGIME ANALYSIS - SPY (1D)
 ================================================================================
 Current Price: $242.93
-Analysis Time: 2026-10-03 13:23:07
+Analysis Time: 2026-10-04 00:50:20
 
 📊 REGIME CLASSIFICATION:
-   Current Regime: High Volatility
-   HMM State: 2
+   Current Regime: Mean Reverting
+   HMM State: 1
    Confidence: 100.0%
-   Persistence: 45.0%
-   Transition Prob: 34.5%
+   Persistence: 40.0%
+   Transition Prob: 94.6%
 
 📈 TRADING RECOMMENDATION:
-   Strategy: Volatility Trading
-   Position Multiplier: 0.15x
+   Strategy: Mean Reversion
+   Position Multiplier: 0.46x
    Risk Level: High
 
 📡 STATISTICAL SIGNALS:
@@ -135,6 +141,31 @@ Analysis Time: 2026-10-03 13:23:07
    ATR_SUPPORT: $238.71
 ================================================================================
 ```
+
+```text
+================================================================================
+MULTI-TIMEFRAME CONFIRMATION - SPY
+================================================================================
+🧭 SIGNAL:
+   Direction: Neutral
+   Confirmed: NO (primary_neutral)
+   Agreement: 50.0% (threshold 60.0%)
+   Confidence: 100.0%
+   Primary Timeframe: 1D
+   Aligned: 1D
+   Conflicting: 15m
+   Unavailable: 1H
+
+📊 TIMEFRAMES:
+   1D: Mean Reverting (neutral, confidence 100.0%)
+   1H: Unknown (unavailable, confidence 99.3%)
+   15m: Bull Trending (bullish, confidence 100.0%)
+================================================================================
+```
+
+The 1D regime (Mean Reverting) is neutral, so nothing is confirmed (`primary_neutral`); the
+1H regime is Unknown and counts as unavailable. See [docs/api.md](docs/api.md) for how
+direction, agreement and confirmation are computed.
 
 With live data a `💰 STATISTICAL ARBITRAGE:` block appears when there are mean-reversion or
 momentum-breakdown signals. Confidence is frequently 100%: the models are overparameterized,

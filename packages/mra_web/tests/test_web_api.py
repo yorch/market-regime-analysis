@@ -110,6 +110,69 @@ class TestAnalysisEndpoints:
         assert "1D" in timeframes
         assert "1H" not in timeframes
 
+    def test_confirmation(self, authed, mock_provider):
+        resp = authed.post(
+            "/api/v1/analysis/confirmation", json={"symbol": "spy", "provider": "mock"}
+        )
+        assert resp.status_code == 200, resp.text
+        body = _strict_loads(resp.text)
+        assert body["symbol"] == "SPY"
+        assert body["timeframes"] == ["1D", "1H", "15m"]
+        assert [a["timeframe"] for a in body["analyses"]] == ["1D", "1H", "15m"]
+        conf = body["confirmation"]
+        assert set(conf) == {
+            "direction",
+            "agreement",
+            "confirmed",
+            "primary_timeframe",
+            "aligned_timeframes",
+            "conflicting_timeframes",
+            "unavailable_timeframes",
+            "risk_timeframes",
+            "confidence",
+            "threshold",
+            "reason",
+        }
+        assert conf["direction"] in {"bullish", "bearish", "neutral"}
+        assert 0.0 <= conf["agreement"] <= 1.0
+        assert isinstance(conf["confirmed"], bool)
+
+    def test_confirmation_matches_library(self, authed, mock_provider):
+        from mra_lib import MarketRegimeAnalyzer, confirm_timeframes
+
+        analyses = {
+            tf: MarketRegimeAnalyzer(
+                "SPY", periods={tf: p}, provider_flag="mock"
+            ).analyze_current_regime(tf)
+            for tf, p in (("1D", "2y"), ("15m", "1mo"))
+        }
+        expected = confirm_timeframes(analyses, weights={"1D": 0.5, "15m": 0.2}).to_dict()
+        resp = authed.post(
+            "/api/v1/analysis/confirmation",
+            json={"symbol": "SPY", "provider": "mock", "timeframes": ["15m", "1D", "1D"]},
+        )
+        assert resp.status_code == 200, resp.text
+        body = _strict_loads(resp.text)
+        assert body["timeframes"] == ["1D", "15m"]  # ordered and de-duplicated
+        assert body["confirmation"] == expected
+
+    def test_confirmation_tolerates_failing_timeframe(self, authed, mock_provider, monkeypatch):
+        original = MockDataProvider.fetch
+
+        def flaky(self, symbol, period, interval):
+            if interval == "1h":
+                raise ConnectionError("1h feed down")
+            return original(self, symbol, period, interval)
+
+        monkeypatch.setattr(MockDataProvider, "fetch", flaky)
+        resp = authed.post(
+            "/api/v1/analysis/confirmation", json={"symbol": "SPY", "provider": "mock"}
+        )
+        assert resp.status_code == 200, resp.text
+        body = _strict_loads(resp.text)
+        assert "1H" not in [a["timeframe"] for a in body["analyses"]]
+        assert "1H" in body["confirmation"]["unavailable_timeframes"]
+
     def test_multi_symbol(self, authed, mock_provider, monkeypatch):
         original = MockDataProvider.fetch
 
@@ -388,6 +451,58 @@ class TestErrorEnvelope:
         resp = authed.post(
             "/api/v1/analysis/detailed",
             json={"symbol": "SPY", "timeframe": "1D", "provider": "mock"},
+        )
+        _assert_envelope(resp, 400, "BAD_REQUEST")
+
+    def test_confirmation_requires_auth(self, client):
+        resp = client.post(
+            "/api/v1/analysis/confirmation", json={"symbol": "SPY", "provider": "mock"}
+        )
+        _assert_envelope(resp, 401, "UNAUTHORIZED")
+
+    def test_confirmation_accepts_api_key(self, client, api_key_headers, mock_provider):
+        resp = client.post(
+            "/api/v1/analysis/confirmation",
+            json={"symbol": "SPY", "provider": "mock", "timeframes": ["1D", "1H"]},
+            headers=api_key_headers,
+        )
+        assert resp.status_code == 200, resp.text
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"symbol": "SPY", "provider": "mock", "timeframes": ["1D"]},
+            {"symbol": "SPY", "provider": "mock", "timeframes": ["1D", "1D"]},
+            {"symbol": "SPY", "provider": "mock", "timeframes": ["1D", "1W"]},
+            {"symbol": "SPY", "provider": "mock", "timeframes": []},
+            {"symbol": "=CMD", "provider": "mock"},
+            {"symbol": "SPY", "provider": "nope"},
+            {"provider": "mock"},
+        ],
+    )
+    def test_confirmation_validation(self, authed, mock_provider, payload):
+        resp = authed.post("/api/v1/analysis/confirmation", json=payload)
+        _assert_envelope(resp, 422, "VALIDATION_ERROR")
+
+    def test_confirmation_all_failed_is_generic(self, authed, monkeypatch):
+        from mra_web import endpoints
+
+        class Failing:
+            def __init__(self, *a, **k):
+                raise ConnectionError("down apikey=LEAKED123456")
+
+        monkeypatch.setattr(endpoints, "MarketRegimeAnalyzer", Failing)
+        resp = authed.post(
+            "/api/v1/analysis/confirmation", json={"symbol": "SPY", "provider": "yfinance"}
+        )
+        body = _assert_envelope(resp, 503, "SERVICE_UNAVAILABLE")
+        assert "LEAKED" not in resp.text
+        assert body["message"] == "Data provider unavailable"
+
+    def test_confirmation_no_data_is_400(self, authed, mock_provider, monkeypatch):
+        monkeypatch.setattr(MockDataProvider, "fetch", lambda *a, **k: pd.DataFrame())
+        resp = authed.post(
+            "/api/v1/analysis/confirmation", json={"symbol": "SPY", "provider": "mock"}
         )
         _assert_envelope(resp, 400, "BAD_REQUEST")
 
