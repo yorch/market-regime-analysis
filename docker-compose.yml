@@ -56,6 +56,62 @@ services:
         reservations:
           memory: 128M
 
+  # Optional scheduled scanner: records regimes for a watchlist and sends
+  # regime-change alerts. Not started by a plain `docker compose up`; enable it with
+  #   docker compose --profile scanner up -d
+  # It shares the app-data volume (MRA_DB_PATH) with `api`, so
+  # GET /api/v1/regimes/{symbol}/history serves the scanner's records.
+  scanner:
+    build: .
+    image: market-regime-analysis
+    profiles: ["scanner"]
+    restart: unless-stopped
+    entrypoint: ["mra"]
+    command:
+      - scan
+      - --symbols
+      - "${SCAN_SYMBOLS:-SPY,QQQ,IWM}"
+      - --timeframes
+      - "${SCAN_TIMEFRAMES:-1D,1H,15m}"
+      - --interval
+      - "${SCAN_INTERVAL:-3600}"
+      - --watch
+      - "${SCAN_WATCH:-1D}"
+      - --min-confidence
+      - "${SCAN_MIN_CONFIDENCE:-0.6}"
+    # The image's HEALTHCHECK probes the API port, which the scanner does not serve
+    healthcheck:
+      disable: true
+    environment:
+      # Provider for the scan (yfinance needs no key)
+      DEFAULT_PROVIDER: "${SCAN_PROVIDER:-yfinance}"
+
+      # ── Data provider credentials ──────────────────────────────────────
+      ALPHA_VANTAGE_API_KEY: "${ALPHA_VANTAGE_API_KEY:-}"
+      POLYGON_API_KEY: "${POLYGON_API_KEY:-}"
+      APCA_API_KEY_ID: "${APCA_API_KEY_ID:-}"
+      APCA_API_SECRET_KEY: "${APCA_API_SECRET_KEY:-}"
+      ALPACA_DATA_FEED: "${ALPACA_DATA_FEED:-}"
+      TIINGO_API_KEY: "${TIINGO_API_KEY:-}"
+
+      # ── Alert channels (each is enabled only when set) ─────────────────
+      ALERT_WEBHOOK_URL: "${ALERT_WEBHOOK_URL:-}"
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
+      DISCORD_WEBHOOK_URL: "${DISCORD_WEBHOOK_URL:-}"
+
+      # ── Regime history (same database as the api service) ──────────────
+      MRA_DB_PATH: "/home/mra/.mra/regimes.db"
+    volumes:
+      - app-cache:/home/mra/.cache
+      - app-data:/home/mra/.mra
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 128M
+
 volumes:
   app-cache:
   app-data:

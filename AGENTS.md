@@ -60,6 +60,7 @@ uv run mra multi-symbol-analysis --symbols "SPY,QQQ,IWM" --timeframe 1D
 uv run mra position-sizing --base-size 0.02 --regime "Bull Trending" --confidence 0.8
 uv run mra export-csv --symbol SPY --filename analysis.csv
 uv run mra continuous-monitoring --symbol SPY --interval 300   # --once / --max-iterations N
+uv run mra scan --symbols SPY,QQQ --interval 3600              # scanner + alerts; --once --dry-run
 uv run mra regime-forecast --symbol SPY --steps 10 --timeframe 1D
 uv run mra calibrate-multipliers --symbol SPY --method sharpe_weighted
 uv run mra backtest --symbol SPY --mode walk-forward --params best.json --output trades.csv
@@ -115,6 +116,7 @@ just docker-build    # Build image (docker compose build)
 just docker-up       # Start detached (needs JWT_SECRET in .env)
 just docker-health   # GET /health
 just docker-down     # Stop
+docker compose --profile scanner up -d   # also start the optional scanner service
 ```
 
 ## Architecture Overview
@@ -135,7 +137,8 @@ market-regime-analysis/
 │   │   │   │   ├── regime_tables.py # Shared regime multipliers / strategy / bias tables
 │   │   │   │   ├── symbols.py      # SYMBOL_PATTERN (shared by storage, CLI and API)
 │   │   │   │   └── timeframes.py   # TIMEFRAMES, DEFAULT_PERIODS, CONFIRMATION_* defaults
-│   │   │   ├── errors.py           # MRAError hierarchy (DataLoadError, ProviderError, StorageError, ...)
+│   │   │   ├── errors.py           # MRAError hierarchy (DataLoadError, ProviderError, StorageError, NotifierError, ...)
+│   │   │   ├── scheduling.py       # run_periodic: monotonic cadence, backoff, SIGINT/SIGTERM stop
 │   │   │   ├── indicators/         # Regime model (one detector everywhere)
 │   │   │   │   ├── base.py               # RegimeDetector protocol, persistence/transition helpers
 │   │   │   │   ├── features.py           # Causal, scale-free feature helpers + build_hmm_features
@@ -168,6 +171,11 @@ market-regime-analysis/
 │   │   │   │   └── confirmation.py # Multi-timeframe confirmation (pure confirm_timeframes)
 │   │   │   ├── portfolio/
 │   │   │   │   └── portfolio.py    # PortfolioHMMAnalyzer
+│   │   │   ├── scanner/            # Scheduled watchlist scanner + regime-change alerts
+│   │   │   │   ├── detection.py    # Pure detect_change(), AlertPolicy, cooldown from history
+│   │   │   │   ├── events.py       # RegimeChangeEvent (frozen; to_dict, format_message)
+│   │   │   │   ├── notifiers.py    # Notifier protocol; Log/Webhook/Telegram/Discord; notifiers_from_env
+│   │   │   │   └── scanner.py      # Scanner (scan_once, run), ScanReport, ScanSummary
 │   │   │   └── storage/            # Regime history (stdlib sqlite3)
 │   │   │       ├── records.py      # RegimeRecord (frozen), RegimeStore protocol
 │   │   │       └── sqlite_store.py # SQLiteRegimeStore, default_store() ($MRA_DB_PATH)
@@ -257,7 +265,8 @@ from .strategy import RegimeStrategy  # inside backtesting/
 6. **Risk Management** (`risk/risk_calculator.py`): Kelly Criterion-based position sizing with regime and correlation adjustments
 7. **Backtester** (`backtesting/`): Walk-forward validation, optimizer with holdout split, calibrator
 8. **Multi-timeframe confirmation** (`signals/confirmation.py`): pure `confirm_timeframes(analyses)` -> frozen `TimeframeConfirmation` (direction, agreement, confirmed, aligned/conflicting timeframes). Bias map `REGIME_BIAS` in `config/regime_tables.py`; weights/threshold (`CONFIRMATION_WEIGHTS`, `CONFIRMATION_THRESHOLD`) in `config/timeframes.py`. Used by `current-analysis` and `POST /api/v1/analysis/confirmation`
-9. **Regime history** (`storage/`): `RegimeRecord.from_analysis(analysis, analyzer, timeframe)` and `SQLiteRegimeStore` (`save` upserts on (symbol, timeframe, bar_time), `latest`, `history` newest-first with a 1000-record cap, `symbols`). Schema versioned via `PRAGMA user_version`, WAL mode, a connection per operation (`:memory:` uses one locked connection). `default_store()` reads `MRA_DB_PATH` (default `~/.mra/regimes.db`, parent dir `0700`). Written by `mra current-analysis --record` (and the planned scanner); read by `mra history` and `GET /api/v1/regimes/{symbol}/history`. Analysis endpoints never write to it
+9. **Regime history** (`storage/`): `RegimeRecord.from_analysis(analysis, analyzer, timeframe)` and `SQLiteRegimeStore` (`save` upserts on (symbol, timeframe, bar_time), `latest`, `history` newest-first with a 1000-record cap, `symbols`). Schema versioned via `PRAGMA user_version`, WAL mode, a connection per operation (`:memory:` uses one locked connection). `default_store()` reads `MRA_DB_PATH` (default `~/.mra/regimes.db`, parent dir `0700`). Written by `mra current-analysis --record` and `mra scan`; read by `mra history` and `GET /api/v1/regimes/{symbol}/history`. Analysis endpoints never write to it
+10. **Scanner** (`scanner/`): `Scanner(symbols, store=..., notifiers=..., policy=AlertPolicy())`. `scan_once()` per symbol: read `latest()` per timeframe *before* saving, analyze each timeframe (own analyzer, isolated), save records, `confirm_timeframes`, `detect_change` (pure), send `RegimeChangeEvent`s. A change = different regime on a *newer* `bar_time`; first observation = baseline; a re-scan of a stored bar is compared with the newest record *before* it and is a change only if it differs from that and from the stored same-bar record (`replaced`), so a forming bar that flips alerts once and is never lost to the upsert; stale (older) bars are not saved. Policy defaults: watch `1D`, confirmation required (confirmed + direction matches the new regime's bias), `min_confidence` 0.6, `cooldown_bars` 1 (derived from stored history, so restarts don't re-alert). A timeframe whose save failed is not checked for changes; alerts are at most once (saved before sent). `run()` uses `scheduling.run_periodic` (also behind `run_continuous_monitoring`): monotonic cadence, backoff when every symbol fails, first SIGINT/SIGTERM stops after the current symbol. Notifier errors are logged (secrets masked via `mask_secrets`) and counted, never raised; notifiers never log or raise with webhook URLs / bot tokens. CLI: `mra scan` (`--dry-run` = log channel only, records still saved). Compose: `scanner` service under `profiles: ["scanner"]`, shares `app-data` with `api`
 
 ### Data Flow
 
@@ -324,6 +333,7 @@ from .strategy import RegimeStrategy  # inside backtesting/
 - Provider secrets: `ALPHA_VANTAGE_API_KEY` (or `ALPHAVANTAGE_API_KEY`), `POLYGON_API_KEY`, `APCA_API_KEY_ID` + `APCA_API_SECRET_KEY`, `TIINGO_API_KEY`
 - Web API: `ENVIRONMENT` (default `production`), `JWT_SECRET` (required outside development, 32+ chars), `API_KEYS`, `CORS_ORIGINS`, `RATE_LIMIT_PER_MINUTE`, `API_TIMEOUT`, `API_MAX_CONCURRENT_ANALYSES`, `WS_MAX_CONNECTIONS`, `WS_MAX_CONNECTIONS_PER_IP` — see [docs/api.md](docs/api.md)
 - CLI: `DEFAULT_PROVIDER`
+- Scanner alerts (secrets; never logged, scrubbed by `mra_web.security` too): `ALERT_WEBHOOK_URL`, `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`, `DISCORD_WEBHOOK_URL` (https only; http allowed for localhost). Compose-only scanner settings: `SCAN_SYMBOLS`, `SCAN_TIMEFRAMES`, `SCAN_INTERVAL`, `SCAN_WATCH`, `SCAN_MIN_CONFIDENCE`, `SCAN_PROVIDER`
 - Regime history (CLI and web): `MRA_DB_PATH` (default `~/.mra/regimes.db`; compose: `/home/mra/.mra/regimes.db` on the `app-data` volume)
 - Avoid `--api-key` in shell history; use `export VAR=...` or `.env`
 - Never return exception text to API clients (it can carry provider keys); map errors in `endpoints.classify_exception`

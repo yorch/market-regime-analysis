@@ -617,6 +617,27 @@ Data provider credentials: `ALPHA_VANTAGE_API_KEY` (or `ALPHAVANTAGE_API_KEY`),
 `ALPHA_VANTAGE_PREMIUM`, `POLYGON_API_KEY`, `APCA_API_KEY_ID` + `APCA_API_SECRET_KEY`,
 `ALPACA_DATA_FEED` (`iex` or `sip`), `TIINGO_API_KEY`. See [`.env.example`](../.env.example).
 
+The scanner (`mra scan`, compose service `scanner`) writes to the same `MRA_DB_PATH`
+database, so `GET /api/v1/regimes/{symbol}/history` serves its records. Its alert
+channels are read by the scanner only (the API never sends alerts); each is enabled
+only when its variables are set:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ALERT_WEBHOOK_URL` | unset | Generic webhook; receives each alert event as a JSON `POST` |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | unset | Telegram Bot API `sendMessage` (both required) |
+| `DISCORD_WEBHOOK_URL` | unset | Discord channel webhook (`content` + embed) |
+| `SCAN_SYMBOLS` | `SPY,QQQ,IWM` | compose only: `--symbols` of the scanner service |
+| `SCAN_TIMEFRAMES` | `1D,1H,15m` | compose only: `--timeframes` |
+| `SCAN_INTERVAL` | `3600` | compose only: seconds between scans |
+| `SCAN_WATCH` | `1D` | compose only: timeframes whose changes alert |
+| `SCAN_MIN_CONFIDENCE` | `0.6` | compose only: minimum regime confidence for an alert |
+| `SCAN_PROVIDER` | `yfinance` | compose only: data provider (sets `DEFAULT_PROVIDER`) |
+
+Alert URLs must be `https://` (`http://` only for localhost). The webhook URLs and the bot
+token are secrets: the scanner never logs them or puts them in error messages, and the
+API's log scrubber also redacts their values if they are set in its environment.
+
 | Provider | API key | Client-side limit (`rate_limit_per_minute`) |
 |----------|---------|---------------------------------------------|
 | `yfinance` | no | 60 req/min |
@@ -647,6 +668,9 @@ docker run -p 127.0.0.1:8000:8000 \
 # compose keeps the regime history database on the app-data volume
 # (MRA_DB_PATH=/home/mra/.mra/regimes.db); with plain docker add
 #   -v mra-data:/home/mra/.mra
+
+# optional scheduled scanner (shares app-data with api; see "Scanner & alerts" in README)
+docker compose --profile scanner up -d
 
 # the image also contains the CLI and the token minter
 docker run --rm --entrypoint mra market-regime-analysis --provider mock current-analysis

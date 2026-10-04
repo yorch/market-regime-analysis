@@ -6,7 +6,6 @@ regime detection and trading analysis.
 """
 
 import logging
-import time
 import warnings
 from collections.abc import Callable
 from datetime import datetime
@@ -40,6 +39,7 @@ from mra_lib.indicators.features import (
     volume_ratio,
 )
 from mra_lib.indicators.true_hmm_detector import TrueHMMDetector
+from mra_lib.scheduling import StopToken, interruptible_sleep, run_periodic
 
 logger = logging.getLogger(__name__)
 
@@ -820,97 +820,53 @@ class MarketRegimeAnalyzer:
             Number of successful iterations
         """
         import gc
-        import signal
-        import threading
 
         log = logger
-        # A plain flag: setting a threading.Event from a signal handler can deadlock if the
-        # signal lands while the main thread holds the Event's internal lock
-        stop = {"requested": False}
-        previous_handler: Any = None
-        install_handler = threading.current_thread() is threading.main_thread()
-        if install_handler:
+        stop = StopToken()
 
-            def _on_sigterm(signum: int, frame: Any) -> None:
-                _ = signum, frame
-                log.info("SIGTERM received, stopping monitoring")
-                stop["requested"] = True
+        def refresh(iteration: int) -> bool:
+            log.info("Refresh #%d at %s", iteration, datetime.now().isoformat(timespec="seconds"))
+            try:
+                # The constructor already loaded fresh data for the first pass
+                if iteration > 1 or not self.data:
+                    self._load_data()
+                    self._calculate_indicators()
+                    self._train_hmm_models()
 
-            previous_handler = signal.signal(signal.SIGTERM, _on_sigterm)
+                analyzed = 0
+                for timeframe in self.periods:
+                    try:
+                        analysis = self.analyze_current_regime(timeframe)
+                        if on_update is None:
+                            log.info("%s", self.format_analysis_report(timeframe, analysis))
+                        else:
+                            on_update(timeframe, analysis)
+                        analyzed += 1
+                    except Exception as e:  # noqa: BLE001 - other timeframes still report
+                        log.warning("Analysis failed for %s %s: %s", self.symbol, timeframe, e)
+                if analyzed == 0:
+                    raise RuntimeError("no timeframe could be analyzed")
+                return True
+            finally:
+                gc.collect()
 
         log.info("Starting continuous monitoring of %s (every %ss)", self.symbol, interval)
-        successes = 0
-        failures = 0
-        iteration = 0
-        next_tick = time.monotonic()
-
-        try:
-            while not stop["requested"]:
-                iteration += 1
-                log.info(
-                    "Refresh #%d at %s", iteration, datetime.now().isoformat(timespec="seconds")
-                )
-                try:
-                    # The constructor already loaded fresh data for the first pass
-                    if iteration > 1 or not self.data:
-                        self._load_data()
-                        self._calculate_indicators()
-                        self._train_hmm_models()
-
-                    analyzed = 0
-                    for timeframe in self.periods:
-                        try:
-                            analysis = self.analyze_current_regime(timeframe)
-                            if on_update is None:
-                                log.info("%s", self.format_analysis_report(timeframe, analysis))
-                            else:
-                                on_update(timeframe, analysis)
-                            analyzed += 1
-                        except Exception as e:  # noqa: BLE001 - other timeframes still report
-                            log.warning("Analysis failed for %s %s: %s", self.symbol, timeframe, e)
-                    if analyzed == 0:
-                        raise RuntimeError("no timeframe could be analyzed")
-
-                    successes += 1
-                    failures = 0
-                    next_tick += interval
-                    now = time.monotonic()
-                    while next_tick <= now:  # Skip ticks missed by a slow refresh
-                        next_tick += interval
-                    delay = next_tick - now
-                except Exception as e:  # noqa: BLE001 - resilient loop: log, back off, retry
-                    failures += 1
-                    delay = min(max(max_backoff, interval), interval * 2 ** (failures - 1))
-                    log.error(
-                        "Monitoring iteration %d failed (%d in a row): %s; retrying in %.0fs",
-                        iteration,
-                        failures,
-                        e,
-                        delay,
-                    )
-                    next_tick = time.monotonic() + delay
-
-                gc.collect()
-                if max_iterations is not None and iteration >= max_iterations:
-                    break
-                self._monitor_sleep(delay, stop)
-        except KeyboardInterrupt:
-            log.info("Monitoring stopped by user")
-        finally:
-            if install_handler and previous_handler is not None:
-                signal.signal(signal.SIGTERM, previous_handler)
-
-        return successes
+        result = run_periodic(
+            refresh,
+            interval,
+            max_iterations=max_iterations,
+            max_backoff=max_backoff,
+            stop=stop,
+            sleep=lambda delay: self._monitor_sleep(delay, stop),
+            name="Monitoring",
+            log=log,
+        )
+        return result.successes
 
     @staticmethod
-    def _monitor_sleep(delay: float, stop: dict[str, bool]) -> None:
+    def _monitor_sleep(delay: float, stop: StopToken) -> None:
         """Sleep ``delay`` seconds in short slices so a stop request is honored promptly."""
-        deadline = time.monotonic() + delay
-        while not stop["requested"]:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return
-            time.sleep(min(1.0, remaining))
+        interruptible_sleep(delay, stop)
 
     def build_export_dataframe(self) -> pd.DataFrame:
         """
