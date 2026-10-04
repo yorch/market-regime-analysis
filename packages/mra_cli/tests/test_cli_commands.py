@@ -1,6 +1,7 @@
 """End-to-end CLI tests using the offline ``mock`` provider (no network, no keys)."""
 
 import os
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -490,3 +491,108 @@ def test_cli_export_csv_with_no_data_fails(runner, tmp_path):
         )
     assert result.exit_code == 1
     assert "No analysis data to export" in result.output
+
+
+class TestRegimeHistory:
+    """``current-analysis --record`` and ``history`` against a temp database."""
+
+    @pytest.fixture(autouse=True)
+    def db_path(self, tmp_path, monkeypatch) -> Path:
+        path = tmp_path / "mra" / "regimes.db"
+        monkeypatch.setenv("MRA_DB_PATH", str(path))
+        return path
+
+    def test_cli_current_analysis_without_record_writes_nothing(self, runner, db_path):
+        result = runner.invoke(cli, ["current-analysis", "--provider", "mock"])
+        assert result.exit_code == 0, result.output
+        assert not db_path.exists()
+
+    def test_cli_current_analysis_record_saves_each_timeframe(self, runner, db_path):
+        from mra_lib.config.timeframes import TIMEFRAMES
+        from mra_lib.storage import SQLiteRegimeStore
+
+        result = runner.invoke(
+            cli, ["current-analysis", "--provider", "mock", "--symbol", "spy", "--record"]
+        )
+        assert result.exit_code == 0, result.output
+        assert f"Recorded {len(TIMEFRAMES)} analysis record(s)" in result.output
+
+        store = SQLiteRegimeStore(db_path)
+        records = store.history("SPY")
+        assert sorted(r.timeframe for r in records) == sorted(TIMEFRAMES)
+        assert {r.provider for r in records} == {"mock"}
+        assert store.symbols() == ["SPY"]
+
+        # Re-running upserts on (timeframe, bar_time) instead of duplicating
+        result = runner.invoke(
+            cli, ["current-analysis", "--provider", "mock", "--symbol", "SPY", "--record"]
+        )
+        assert result.exit_code == 0, result.output
+        records = store.history("SPY")
+        assert len({(r.timeframe, r.bar_time) for r in records}) == len(records)
+
+    def test_cli_record_failure_does_not_fail_analysis(self, runner):
+        from mra_lib.errors import StorageError
+        from mra_lib.storage import SQLiteRegimeStore
+
+        with patch.object(SQLiteRegimeStore, "save", side_effect=StorageError("disk full")):
+            result = runner.invoke(cli, ["current-analysis", "--provider", "mock", "--record"])
+        assert result.exit_code == 0, result.output
+        assert "Could not record 1D analysis" in result.stderr
+        assert "Recorded" not in result.output
+
+    def test_cli_history_empty(self, runner):
+        result = runner.invoke(cli, ["history", "--symbol", "SPY"])
+        assert result.exit_code == 0, result.output
+        assert "No recorded regime history for SPY" in result.output
+
+    def test_cli_history_table_and_json(self, runner):
+        import json
+
+        from mra_lib.storage import RegimeRecord, default_store
+
+        store = default_store()
+        for day in (1, 2, 3):
+            store.save(
+                RegimeRecord(
+                    symbol="SPY",
+                    timeframe="1D",
+                    bar_time=datetime(2026, 1, day),
+                    regime="Bull Trending",
+                    confidence=0.75,
+                    persistence=0.5,
+                    transition_probability=0.9,
+                    recommended_strategy="Trend Following",
+                    provider="mock",
+                    close=100.0 + day,
+                )
+            )
+
+        result = runner.invoke(cli, ["history", "--symbol", "spy", "--timeframe", "1D"])
+        assert result.exit_code == 0, result.output
+        assert "Regime history for SPY (1D)" in result.output
+        lines = [line for line in result.output.splitlines() if line.startswith("2026-")]
+        assert [line[:10] for line in lines] == ["2026-01-03", "2026-01-02", "2026-01-01"]
+        assert "Bull Trending" in lines[0]
+        assert "103.00" in lines[0]
+
+        result = runner.invoke(cli, ["history", "--symbol", "SPY", "--limit", "2", "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.stdout)
+        assert [d["bar_time"] for d in data] == ["2026-01-03T00:00:00", "2026-01-02T00:00:00"]
+        assert data[0]["regime"] == "Bull Trending"
+        assert data[0]["close"] == 103.0
+        assert data[0]["recorded_at"].endswith("+00:00")
+
+    def test_cli_history_validates_options(self, runner):
+        assert runner.invoke(cli, ["history", "--limit", "0"]).exit_code == 2
+        assert runner.invoke(cli, ["history", "--timeframe", "4H"]).exit_code == 2
+        assert runner.invoke(cli, ["history", "--symbol", " "]).exit_code == 2
+
+    def test_cli_history_storage_error_exits_nonzero(self, runner, tmp_path, monkeypatch):
+        blocker = tmp_path / "file"
+        blocker.write_text("x")
+        monkeypatch.setenv("MRA_DB_PATH", str(blocker / "regimes.db"))
+        result = runner.invoke(cli, ["history"])
+        assert result.exit_code == 1
+        assert "Storage error" in result.output

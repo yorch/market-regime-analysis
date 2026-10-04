@@ -37,6 +37,9 @@ services:
       APCA_API_SECRET_KEY: "${APCA_API_SECRET_KEY:-}"
       ALPACA_DATA_FEED: "${ALPACA_DATA_FEED:-}"
       TIINGO_API_KEY: "${TIINGO_API_KEY:-}"
+
+      # ── Regime history (SQLite, on the app-data volume) ────────────────
+      MRA_DB_PATH: "/home/mra/.mra/regimes.db"
     ports:
       # Published on the host's loopback only; put a TLS reverse proxy in front
       # (or change the bind address) to expose it beyond this machine.
@@ -44,6 +47,8 @@ services:
     volumes:
       # Provider caches (e.g. yfinance timezone cache) survive restarts
       - app-cache:/home/mra/.cache
+      # Regime history database (MRA_DB_PATH) survives restarts and rebuilds
+      - app-data:/home/mra/.mra
     deploy:
       resources:
         limits:
@@ -53,3 +58,4 @@ services:
 
 volumes:
   app-cache:
+  app-data:

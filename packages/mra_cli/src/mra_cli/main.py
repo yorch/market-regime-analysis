@@ -43,9 +43,10 @@ from mra_lib.data_providers import (
     resolve_api_key,
 )
 from mra_lib.data_providers.credentials import PROVIDER_ENV_PAIRS
-from mra_lib.errors import InsufficientDataError
+from mra_lib.errors import InsufficientDataError, StorageError
 from mra_lib.indicators.true_hmm_detector import TrueHMMDetector
 from mra_lib.signals.confirmation import confirm_timeframes, format_confirmation_report
+from mra_lib.storage import MAX_HISTORY_LIMIT, RegimeRecord, RegimeStore, default_store
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -182,6 +183,8 @@ def handle_exceptions(func: F) -> F:
                 label = "⏳ Rate limited"
             elif isinstance(e, InvalidSymbolError):
                 label = "❓ Unknown symbol / no data"
+            elif isinstance(e, StorageError) and not isinstance(e, ValueError):
+                label = "🗄️  Storage error"
             elif isinstance(e, ValueError):
                 label = "❌ Invalid input"
             elif isinstance(e, ConnectionError):
@@ -408,18 +411,48 @@ def detailed_analysis(
     click.echo(f"   Strategy: {analysis.recommended_strategy.value}")
 
 
+def _record_analyses(
+    store: RegimeStore, analyses: list[tuple[str, MarketRegimeAnalyzer, RegimeAnalysis]]
+) -> int:
+    """Save one regime record per analyzed timeframe; report failures without raising.
+
+    Returns:
+        The number of records saved.
+    """
+    saved = 0
+    for tf, analyzer, analysis in analyses:
+        try:
+            store.save(RegimeRecord.from_analysis(analysis, analyzer, tf))
+            saved += 1
+        except Exception as e:
+            if _debug_enabled():
+                raise
+            logging.getLogger(__name__).warning("Recording %s failed", tf, exc_info=True)
+            click.echo(f"⚠️  Could not record {tf} analysis: {e}", err=True)
+    return saved
+
+
 @cli.command()
 @click.option("--symbol", type=str, default="SPY", help="Trading symbol")
+@click.option(
+    "--record/--no-record",
+    default=False,
+    help="Save each timeframe's regime to the history database ($MRA_DB_PATH)",
+)
 @provider_options
 @click.pass_context
 @handle_exceptions
 def current_analysis(
-    ctx: click.Context, symbol: str, provider: str | None, api_key: str | None
+    ctx: click.Context, symbol: str, record: bool, provider: str | None, api_key: str | None
 ) -> None:
     """Run current HMM regime analysis for all timeframes.
 
     Each timeframe is loaded and analyzed independently, so one failing timeframe
     does not hide the others. Exits non-zero only if every timeframe fails.
+
+    With --record, one record per analyzed timeframe is saved to the regime
+    history database (see 'mra history'); a failed save is reported but does
+    not fail the command.
     """
     provider_name, key = resolve_provider(ctx, provider, api_key)
     click.echo(f"\nAnalyzing {symbol} on {', '.join(TIMEFRAMES)} with {provider_name}...")
@@ -440,6 +473,7 @@ def current_analysis(
 
     failed = 0
     succeeded: dict[str, RegimeAnalysis] = {}
+    to_record: list[tuple[str, MarketRegimeAnalyzer, RegimeAnalysis]] = []
     for tf in TIMEFRAMES:
         result = results[tf]
         if isinstance(result, Exception):
@@ -448,7 +482,14 @@ def current_analysis(
         else:
             analyzer, analysis = result
             succeeded[tf] = analysis
+            to_record.append((tf, analyzer, analysis))
             print_regime_report(symbol, tf, analysis, _last_close(analyzer, tf))
+
+    if record and to_record:
+        store = default_store()
+        saved = _record_analyses(store, to_record)
+        if saved:
+            click.echo(f"\n🗄️  Recorded {saved} analysis record(s) to {store.path}")
 
     if failed == len(TIMEFRAMES):
         raise click.ClickException(f"Analysis failed for every timeframe of {symbol}")
@@ -457,6 +498,75 @@ def current_analysis(
     if len(succeeded) >= MIN_CONFIRMATION_TIMEFRAMES:
         confirmation = confirm_timeframes(succeeded)
         click.echo(format_confirmation_report(confirmation, symbol, succeeded))
+
+
+def _record_to_dict(rec: RegimeRecord) -> dict[str, Any]:
+    return {
+        "symbol": rec.symbol,
+        "timeframe": rec.timeframe,
+        "bar_time": rec.bar_time.isoformat(),
+        "recorded_at": rec.recorded_at.isoformat(),
+        "regime": rec.regime,
+        "confidence": rec.confidence,
+        "persistence": rec.persistence,
+        "transition_probability": rec.transition_probability,
+        "recommended_strategy": rec.recommended_strategy,
+        "close": rec.close,
+        "provider": rec.provider,
+    }
+
+
+@cli.command()
+@click.option("--symbol", type=str, default="SPY", help="Trading symbol")
+@click.option(
+    "--timeframe", type=TIMEFRAME_CHOICE, default=None, help="Only this timeframe (default: all)"
+)
+@click.option(
+    "--limit",
+    type=click.IntRange(1, MAX_HISTORY_LIMIT),
+    default=20,
+    show_default=True,
+    help="Maximum number of records (newest first)",
+)
+@click.option(
+    "--json", "as_json", is_flag=True, default=False, help="Print JSON instead of a table"
+)
+@handle_exceptions
+def history(symbol: str, timeframe: str | None, limit: int, as_json: bool) -> None:
+    """Show recorded regime history for a symbol, newest bar first.
+
+    Records are written by 'mra current-analysis --record' to the database at
+    $MRA_DB_PATH (default ~/.mra/regimes.db).
+    """
+    import json  # noqa: PLC0415
+
+    if not symbol.strip():
+        raise click.BadParameter("Symbol cannot be empty", param_hint="--symbol")
+    records = default_store().history(symbol, timeframe=timeframe, limit=limit)
+
+    if as_json:
+        click.echo(json.dumps(_json_safe([_record_to_dict(r) for r in records]), allow_nan=False))
+        return
+
+    scope = f"{symbol.strip().upper()} ({timeframe or 'all timeframes'})"
+    if not records:
+        click.echo(f"No recorded regime history for {scope}.")
+        return
+
+    click.echo(f"Regime history for {scope}, newest first:")
+    header = (
+        f"{'Bar time (UTC)':<20} {'TF':<4} {'Regime':<16} {'Conf':>6} {'Pers':>6} "
+        f"{'Strategy':<22} {'Close':>10}"
+    )
+    click.echo(header)
+    click.echo("-" * len(header))
+    for rec in records:
+        close = f"{rec.close:.2f}" if rec.close is not None else "-"
+        click.echo(
+            f"{rec.bar_time.strftime('%Y-%m-%d %H:%M'):<20} {rec.timeframe:<4} "
+            f"{rec.regime:<16} {rec.confidence:>6.1%} {rec.persistence:>6.1%} "
+            f"{rec.recommended_strategy:<22} {close:>10}"
+        )
 
 
 _NON_INTERACTIVE_BACKENDS = {"agg", "pdf", "ps", "svg", "pgf", "cairo", "template"}

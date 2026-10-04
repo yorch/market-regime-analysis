@@ -50,10 +50,11 @@ FROM python:3.13-slim AS runtime
 
 WORKDIR /app
 
-# Non-root user. Pre-create the cache dir so a named volume mounted there is
-# initialised with uid 1000 ownership instead of root.
+# Non-root user. Pre-create the cache and regime-history dirs so named volumes
+# mounted there are initialised with uid 1000 ownership instead of root.
 RUN useradd -m -u 1000 mra \
     && mkdir -p /home/mra/.cache \
+    && mkdir -p -m 700 /home/mra/.mra \
     && chown -R mra:mra /home/mra
 
 # Copy only the virtual environment from builder (no uv, no source, no build artifacts)

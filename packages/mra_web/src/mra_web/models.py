@@ -397,6 +397,32 @@ class PositionSizingResponse(BaseModel):
     )
 
 
+class RegimeRecordResponse(BaseModel):
+    """One recorded regime classification."""
+
+    symbol: str = Field(description="Trading symbol")
+    timeframe: str = Field(description="Analysis timeframe")
+    bar_time: datetime = Field(description="Timestamp of the last bar analyzed (UTC)")
+    recorded_at: datetime = Field(description="When the record was written (UTC)")
+    regime: str = Field(description="Detected market regime")
+    confidence: float = Field(description="Confidence in regime detection (0-1)")
+    persistence: float = Field(description="Regime persistence score (0-1)")
+    transition_probability: float = Field(description="Regime transition probability")
+    recommended_strategy: str = Field(description="Recommended trading strategy")
+    close: float | None = Field(default=None, description="Close of the last bar analyzed")
+    provider: str = Field(description="Data provider the bars came from")
+
+
+class RegimeHistoryResponse(BaseModel):
+    """Response model for the regime history endpoint."""
+
+    symbol: str = Field(description="Trading symbol")
+    timeframe: str | None = Field(default=None, description="Timeframe filter (null = all)")
+    limit: int = Field(description="Effective record limit (after capping)")
+    count: int = Field(description="Number of records returned")
+    records: list[RegimeRecordResponse] = Field(description="Records, newest bar first")
+
+
 class ProviderInfo(BaseModel):
     """Provider information model."""
 
