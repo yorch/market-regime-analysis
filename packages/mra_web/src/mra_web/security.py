@@ -13,6 +13,7 @@ import os
 import re
 
 from mra_lib.data_providers.credentials import PROVIDER_ENV_PAIRS, PROVIDER_ENV_VARS
+from mra_lib.scanner.notifiers import ALERT_SECRET_ENV_VARS
 
 REDACTED = "***"
 
@@ -31,7 +32,7 @@ _MIN_LITERAL_LENGTH = 8
 
 def _literal_secrets() -> list[str]:
     """Return configured secret values that must never appear in logs."""
-    names = {"JWT_SECRET", "API_KEYS"}
+    names = {"JWT_SECRET", "API_KEYS", *ALERT_SECRET_ENV_VARS}
     for env_vars in PROVIDER_ENV_VARS.values():
         names.update(env_vars)
     for pair in PROVIDER_ENV_PAIRS.values():

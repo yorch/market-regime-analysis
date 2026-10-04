@@ -450,6 +450,13 @@ class TestScrubbing:
         assert "polygon-secret-value" not in scrub_secrets("error polygon-secret-value here")
         assert JWT_SECRET not in scrub_secrets(f"x {JWT_SECRET} y")
 
+    def test_scrubs_alert_channel_secrets(self, monkeypatch):
+        hook = "https://hooks.example.com/services/T0/B0/alertsecret"
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", hook)
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456789:telegram-bot-token-value")
+        text = scrub_secrets(f"post {hook} failed; bot123456789:telegram-bot-token-value")
+        assert "alertsecret" not in text and "telegram-bot-token-value" not in text
+
     def test_filter_scrubs_message_and_traceback(self):
         record = logging.LogRecord(
             "t", logging.ERROR, __file__, 1, "failed %s", ("apikey=ABCDEF123456",), None

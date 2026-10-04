@@ -21,6 +21,8 @@ propagate unchanged, so callers can map them directly (no cause-chain walking).
     ├── InvalidParametersError (ValueError) bad user-supplied parameters (e.g. strategy)
     ├── StorageError                        the regime store could not be read/written
     │   └── StorageInputError (ValueError)  invalid record or query argument
+    ├── NotifierError                       an alert could not be delivered
+    │   └── NotifierConfigError (ValueError) invalid notifier configuration (URL, token)
     └── ProviderError                       raised by data providers
         ├── InvalidSymbolError (ValueError)
         ├── AuthError (ConnectionError)
@@ -56,6 +58,17 @@ class StorageInputError(StorageError, ValueError):
     """A record or query argument passed to the regime store is invalid."""
 
 
+class NotifierError(MRAError):
+    """An alert notifier failed to deliver a message.
+
+    Messages never contain the notifier's URL, token or other secrets.
+    """
+
+
+class NotifierConfigError(NotifierError, ValueError):
+    """A notifier is misconfigured (e.g. a non-https URL or an incomplete credential pair)."""
+
+
 class ProviderError(MRAError):
     """Marker base for errors raised by data providers."""
 
@@ -80,6 +93,8 @@ __all__ = [
     "InvalidSymbolError",
     "MRAError",
     "ModelNotFittedError",
+    "NotifierConfigError",
+    "NotifierError",
     "ProviderError",
     "RateLimitError",
     "StorageError",
