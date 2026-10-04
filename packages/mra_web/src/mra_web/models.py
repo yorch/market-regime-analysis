@@ -11,12 +11,10 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 from mra_lib.config.enums import MarketRegime
+from mra_lib.config.symbols import SYMBOL_PATTERN
 from mra_lib.config.timeframes import MIN_CONFIRMATION_TIMEFRAMES, TIMEFRAMES
 from mra_lib.data_providers import MarketDataProvider
 
-# Ticker symbols: letters, digits and . - ^ = (e.g. BRK.B, ^GSPC, ES=F), max 15 chars.
-# The first character may not be '.', '-' or '=' (avoids CSV formula injection too).
-SYMBOL_PATTERN = re.compile(r"^[A-Z0-9^][A-Z0-9.\-^=]{0,14}$")
 MAX_SYMBOLS = 20
 
 # Optional download filename for CSV export (never used as a server path).
@@ -395,6 +393,37 @@ class PositionSizingResponse(BaseModel):
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(UTC), description="Calculation timestamp"
     )
+
+
+class RegimeRecordResponse(BaseModel):
+    """One recorded regime classification."""
+
+    symbol: str = Field(description="Trading symbol")
+    timeframe: str = Field(description="Analysis timeframe")
+    bar_time: datetime = Field(
+        description=(
+            "Timestamp of the last bar analyzed, without offset: UTC for intraday bars, "
+            "the session date at 00:00 for daily bars"
+        )
+    )
+    recorded_at: datetime = Field(description="When the record was written (UTC)")
+    regime: str = Field(description="Detected market regime")
+    confidence: float = Field(description="Confidence in regime detection (0-1)")
+    persistence: float = Field(description="Regime persistence score (0-1)")
+    transition_probability: float = Field(description="Regime transition probability")
+    recommended_strategy: str = Field(description="Recommended trading strategy")
+    close: float | None = Field(default=None, description="Close of the last bar analyzed")
+    provider: str = Field(description="Data provider the bars came from")
+
+
+class RegimeHistoryResponse(BaseModel):
+    """Response model for the regime history endpoint."""
+
+    symbol: str = Field(description="Trading symbol")
+    timeframe: str | None = Field(default=None, description="Timeframe filter (null = all)")
+    limit: int = Field(description="Effective record limit (after capping)")
+    count: int = Field(description="Number of records returned")
+    records: list[RegimeRecordResponse] = Field(description="Records, newest bar first")
 
 
 class ProviderInfo(BaseModel):

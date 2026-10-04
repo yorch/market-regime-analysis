@@ -175,6 +175,8 @@ so treat it as uncalibrated (see [docs/status.md](docs/status.md)).
 
 ```bash
 uv run mra current-analysis --symbol SPY
+uv run mra current-analysis --symbol SPY --record             # also save to the history DB
+uv run mra history --symbol SPY --timeframe 1D --limit 20     # --json for machine output
 uv run mra detailed-analysis --symbol SPY --timeframe 1D
 uv run mra generate-charts --symbol SPY --timeframe 1D --days 60 --output spy.png
 uv run mra multi-symbol-analysis --symbols "SPY,QQQ,IWM"
@@ -230,6 +232,24 @@ The default provider is `yfinance`; set `DEFAULT_PROVIDER` to change it. API key
 checked by commands that fetch data, so `--help`, `list-providers`, and `position-sizing`
 never need one. Commands exit non-zero when the analysis, chart, or export fails (for
 `current-analysis`, when every timeframe fails); add `--debug` for a full traceback.
+
+### Regime history
+
+`current-analysis --record` saves one record per analyzed timeframe (regime, confidence,
+persistence, transition probability, strategy, last close, provider, keyed by the last bar's
+timestamp) to a SQLite database at `MRA_DB_PATH` (default `~/.mra/regimes.db`). Re-analyzing
+the same bar replaces its record. A failed save is reported but does not fail the analysis.
+`mra history` prints the records newest first, and the API serves them at
+`GET /api/v1/regimes/{symbol}/history` (see [docs/api.md](docs/api.md)). In Python:
+
+```python
+from mra_lib.storage import RegimeRecord, default_store
+
+store = default_store()
+store.save(RegimeRecord.from_analysis(analyzer.analyze_current_regime("1D"), analyzer, "1D"))
+store.latest("SPY", "1D")
+store.history("SPY", timeframe="1D", limit=20)
+```
 
 ## Data Providers
 

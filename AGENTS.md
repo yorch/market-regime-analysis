@@ -52,6 +52,8 @@ The CLI uses Click. `--provider` / `--api-key` may be given before or after the 
 
 ```bash
 uv run mra current-analysis --symbol SPY --provider alphavantage
+uv run mra current-analysis --symbol SPY --record   # also save to the regime history DB
+uv run mra history --symbol SPY --timeframe 1D --limit 20 [--json]
 uv run mra detailed-analysis --symbol SPY --timeframe 1D
 uv run mra generate-charts --symbol SPY --timeframe 1D --days 60 --output spy.png
 uv run mra multi-symbol-analysis --symbols "SPY,QQQ,IWM" --timeframe 1D
@@ -131,8 +133,9 @@ market-regime-analysis/
 │   │   │   │   ├── enums.py        # MarketRegime, TradingStrategy, DirectionalBias
 │   │   │   │   ├── data_classes.py # RegimeAnalysis dataclass
 │   │   │   │   ├── regime_tables.py # Shared regime multipliers / strategy / bias tables
+│   │   │   │   ├── symbols.py      # SYMBOL_PATTERN (shared by storage, CLI and API)
 │   │   │   │   └── timeframes.py   # TIMEFRAMES, DEFAULT_PERIODS, CONFIRMATION_* defaults
-│   │   │   ├── errors.py           # MRAError hierarchy (DataLoadError, ProviderError, ...)
+│   │   │   ├── errors.py           # MRAError hierarchy (DataLoadError, ProviderError, StorageError, ...)
 │   │   │   ├── indicators/         # Regime model (one detector everywhere)
 │   │   │   │   ├── base.py               # RegimeDetector protocol, persistence/transition helpers
 │   │   │   │   ├── features.py           # Causal, scale-free feature helpers + build_hmm_features
@@ -163,8 +166,11 @@ market-regime-analysis/
 │   │   │   │   └── risk_calculator.py  # SimonsRiskCalculator + PortfolioPositionLimits
 │   │   │   ├── signals/
 │   │   │   │   └── confirmation.py # Multi-timeframe confirmation (pure confirm_timeframes)
-│   │   │   └── portfolio/
-│   │   │       └── portfolio.py    # PortfolioHMMAnalyzer
+│   │   │   ├── portfolio/
+│   │   │   │   └── portfolio.py    # PortfolioHMMAnalyzer
+│   │   │   └── storage/            # Regime history (stdlib sqlite3)
+│   │   │       ├── records.py      # RegimeRecord (frozen), RegimeStore protocol
+│   │   │       └── sqlite_store.py # SQLiteRegimeStore, default_store() ($MRA_DB_PATH)
 │   │   └── tests/
 │   ├── mra_cli/
 │   │   ├── pyproject.toml
@@ -251,6 +257,7 @@ from .strategy import RegimeStrategy  # inside backtesting/
 6. **Risk Management** (`risk/risk_calculator.py`): Kelly Criterion-based position sizing with regime and correlation adjustments
 7. **Backtester** (`backtesting/`): Walk-forward validation, optimizer with holdout split, calibrator
 8. **Multi-timeframe confirmation** (`signals/confirmation.py`): pure `confirm_timeframes(analyses)` -> frozen `TimeframeConfirmation` (direction, agreement, confirmed, aligned/conflicting timeframes). Bias map `REGIME_BIAS` in `config/regime_tables.py`; weights/threshold (`CONFIRMATION_WEIGHTS`, `CONFIRMATION_THRESHOLD`) in `config/timeframes.py`. Used by `current-analysis` and `POST /api/v1/analysis/confirmation`
+9. **Regime history** (`storage/`): `RegimeRecord.from_analysis(analysis, analyzer, timeframe)` and `SQLiteRegimeStore` (`save` upserts on (symbol, timeframe, bar_time), `latest`, `history` newest-first with a 1000-record cap, `symbols`). Schema versioned via `PRAGMA user_version`, WAL mode, a connection per operation (`:memory:` uses one locked connection). `default_store()` reads `MRA_DB_PATH` (default `~/.mra/regimes.db`, parent dir `0700`). Written by `mra current-analysis --record` (and the planned scanner); read by `mra history` and `GET /api/v1/regimes/{symbol}/history`. Analysis endpoints never write to it
 
 ### Data Flow
 
@@ -317,6 +324,7 @@ from .strategy import RegimeStrategy  # inside backtesting/
 - Provider secrets: `ALPHA_VANTAGE_API_KEY` (or `ALPHAVANTAGE_API_KEY`), `POLYGON_API_KEY`, `APCA_API_KEY_ID` + `APCA_API_SECRET_KEY`, `TIINGO_API_KEY`
 - Web API: `ENVIRONMENT` (default `production`), `JWT_SECRET` (required outside development, 32+ chars), `API_KEYS`, `CORS_ORIGINS`, `RATE_LIMIT_PER_MINUTE`, `API_TIMEOUT`, `API_MAX_CONCURRENT_ANALYSES`, `WS_MAX_CONNECTIONS`, `WS_MAX_CONNECTIONS_PER_IP` — see [docs/api.md](docs/api.md)
 - CLI: `DEFAULT_PROVIDER`
+- Regime history (CLI and web): `MRA_DB_PATH` (default `~/.mra/regimes.db`; compose: `/home/mra/.mra/regimes.db` on the `app-data` volume)
 - Avoid `--api-key` in shell history; use `export VAR=...` or `.env`
 - Never return exception text to API clients (it can carry provider keys); map errors in `endpoints.classify_exception`
 

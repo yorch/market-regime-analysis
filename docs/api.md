@@ -55,6 +55,7 @@ cannot be combined with `--workers` > 1.
 | POST | `/api/v1/analysis/multi-symbol` | required | `PortfolioAnalysisResponse` |
 | POST | `/api/v1/position-sizing` | required | `PositionSizingResponse` |
 | GET | `/api/v1/providers` | required | `ProvidersResponse` |
+| GET | `/api/v1/regimes/{symbol}/history` | required | `RegimeHistoryResponse` (recorded regimes) |
 | POST | `/api/v1/charts/generate` | required | `image/png` |
 | POST | `/api/v1/export/csv` | required | `text/csv` |
 | GET | `/ws/monitoring/status` | required | active WebSocket connections |
@@ -347,6 +348,60 @@ regime_persistence, transition_probability, strategy, position_multiplier, risk_
 arbitrage_count, signal_count, rsi, macd, volatility, atr_percent, price_zscore, autocorr_1`,
 then one `level_<name>` column per key level.
 
+### GET `/api/v1/regimes/{symbol}/history`
+
+Recorded regime history for a symbol from the SQLite database at `MRA_DB_PATH`, newest bar
+first. This endpoint only reads: records are written by `mra current-analysis --record` (and,
+in a follow-up, the scheduled scanner). The analysis endpoints do **not** write to the store.
+
+| Query parameter | Default | Description |
+|-----------------|---------|-------------|
+| `timeframe` | all | `1D`, `1H` or `15m` |
+| `since` / `until` | none | Inclusive bounds on `bar_time`, ISO 8601; values without an offset are UTC |
+| `limit` | `100` | Maximum records (`>= 1`); larger values are capped at `1000` (the response's `limit` shows the effective value) |
+
+The symbol follows the same rules as the analysis endpoints (normalized to upper case). An
+invalid symbol, timeframe, limit or date, or `since` after `until`, returns `422`
+(`VALIDATION_ERROR`). An unknown symbol returns `200` with an empty `records` list. If the
+database cannot be opened or read, the response is `503` with the generic message
+`Regime history unavailable`.
+
+```bash
+curl -H "$AUTH" "http://localhost:8000/api/v1/regimes/SPY/history?timeframe=1D&limit=2"
+```
+
+```json
+{
+  "symbol": "SPY",
+  "timeframe": "1D",
+  "limit": 2,
+  "count": 2,
+  "records": [
+    {
+      "symbol": "SPY",
+      "timeframe": "1D",
+      "bar_time": "2026-01-06T00:00:00",
+      "recorded_at": "2026-01-06T21:05:12.345678Z",
+      "regime": "Bull Trending",
+      "confidence": 0.91,
+      "persistence": 0.8,
+      "transition_probability": 0.95,
+      "recommended_strategy": "Trend Following",
+      "close": 598.12,
+      "provider": "yfinance"
+    }
+  ]
+}
+```
+
+`bar_time` is the timestamp of the last bar analyzed, without an offset (the provider
+contract): UTC for intraday bars, and the exchange session date at `00:00` for daily bars, so
+a daily bar's `bar_time` is a date, not a UTC instant. `since`/`until` are compared against
+these values after converting any offset to UTC (use plain dates such as `2026-01-02` to filter
+daily bars). `recorded_at` is when the record was written (UTC). This route reads the database
+in the thread pool without taking an analysis slot; a query slower than 30 s returns `504`. Records are unique per
+(`symbol`, `timeframe`, `bar_time`): re-analyzing the same bar replaces the earlier record.
+
 ### Metrics
 
 `GET /metrics` and `GET /api/v1/metrics` are the same handler and return:
@@ -396,7 +451,7 @@ failure, or unexpected exception — uses one envelope:
 | 429 | `RATE_LIMITED` | Rate limit exceeded; `details.retry_after` and a `Retry-After` header |
 | 500 | `INTERNAL_SERVER_ERROR` | Unexpected failure |
 | 502 | `HTTP_502` | The data provider rejected the server's provider credentials |
-| 503 | `SERVICE_UNAVAILABLE` | Provider unreachable, provider rate limit (`Retry-After: 60`), server busy (`Retry-After: 5`, see `API_MAX_CONCURRENT_ANALYSES`), or nothing could be analyzed/exported |
+| 503 | `SERVICE_UNAVAILABLE` | Provider unreachable, provider rate limit (`Retry-After: 60`), server busy (`Retry-After: 5`, see `API_MAX_CONCURRENT_ANALYSES`), nothing could be analyzed/exported, or the regime history database is unavailable |
 | 504 | `TIMEOUT` | Analysis exceeded `API_TIMEOUT` seconds |
 
 Provider failures are classified by the root cause, wherever it is in the exception chain
@@ -554,6 +609,7 @@ Read by `mra_web/config.py` (and `mra_web/server.py` for the bind options):
 | `API_TIMEOUT` | `300` | Seconds an analysis may run before the request gets `504` |
 | `API_MAX_CONCURRENT_ANALYSES` | `4` | Analyses running at once per process (HTTP + WebSocket) |
 | `WS_MAX_CONNECTIONS` / `WS_MAX_CONNECTIONS_PER_IP` | `100` / `5` | WebSocket caps per process |
+| `MRA_DB_PATH` | `~/.mra/regimes.db` | SQLite regime history database (parent dir created `0700`); docker compose uses `/home/mra/.mra/regimes.db` on the `app-data` volume |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
 | `DEBUG` | `false` | Only reported by `/debug/config` (`--dev` sets it) |
 
@@ -587,6 +643,10 @@ docker build -t market-regime-analysis .
 docker run -p 127.0.0.1:8000:8000 \
   -e JWT_SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')" \
   market-regime-analysis
+
+# compose keeps the regime history database on the app-data volume
+# (MRA_DB_PATH=/home/mra/.mra/regimes.db); with plain docker add
+#   -v mra-data:/home/mra/.mra
 
 # the image also contains the CLI and the token minter
 docker run --rm --entrypoint mra market-regime-analysis --provider mock current-analysis

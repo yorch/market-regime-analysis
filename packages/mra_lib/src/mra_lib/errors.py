@@ -19,6 +19,8 @@ propagate unchanged, so callers can map them directly (no cause-chain walking).
     ├── InsufficientDataError (ValueError)  not enough data for the operation
     ├── ModelNotFittedError (ValueError)    no fitted model for the request
     ├── InvalidParametersError (ValueError) bad user-supplied parameters (e.g. strategy)
+    ├── StorageError                        the regime store could not be read/written
+    │   └── StorageInputError (ValueError)  invalid record or query argument
     └── ProviderError                       raised by data providers
         ├── InvalidSymbolError (ValueError)
         ├── AuthError (ConnectionError)
@@ -44,6 +46,14 @@ class ModelNotFittedError(MRAError, ValueError):
 
 class InvalidParametersError(MRAError, ValueError):
     """User-supplied parameters (e.g. a strategy parameter file) are invalid."""
+
+
+class StorageError(MRAError):
+    """The regime history store could not be opened, read, or written."""
+
+
+class StorageInputError(StorageError, ValueError):
+    """A record or query argument passed to the regime store is invalid."""
 
 
 class ProviderError(MRAError):
@@ -72,4 +82,6 @@ __all__ = [
     "ModelNotFittedError",
     "ProviderError",
     "RateLimitError",
+    "StorageError",
+    "StorageInputError",
 ]

@@ -5,15 +5,19 @@ This module implements all REST endpoints matching CLI functionality. Blocking
 analysis work runs in Starlette's thread pool with a timeout (``API_TIMEOUT``).
 """
 
+import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from datetime import UTC, datetime
+from typing import Annotated, Any
 
 import numpy as np
 import pandas as pd
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
+from fastapi.concurrency import run_in_threadpool
+from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError as PydanticValidationError
 
 from mra_lib import MarketRegimeAnalyzer, PortfolioHMMAnalyzer, SimonsRiskCalculator
@@ -26,7 +30,9 @@ from mra_lib.data_providers import (
     MarketDataProvider,
     RateLimitError,
 )
+from mra_lib.errors import StorageError
 from mra_lib.signals.confirmation import confirm_timeframes
+from mra_lib.storage import MAX_HISTORY_LIMIT, RegimeRecord, default_store
 
 from . import __version__
 from .auth import User, authenticate_request
@@ -45,7 +51,10 @@ from .models import (
     PositionSizingResponse,
     ProviderInfo,
     ProvidersResponse,
+    RegimeHistoryResponse,
+    RegimeRecordResponse,
     TimeframeConfirmationModel,
+    normalize_symbol,
 )
 from .utils import (
     api_metrics,
@@ -70,6 +79,13 @@ router = APIRouter(prefix="/api/v1", tags=["analysis"])
 # provider errors can embed request URLs that carry API keys.
 INVALID_INPUT_DETAIL = "Invalid input or no data available for the requested symbol"
 PROVIDER_UNAVAILABLE_DETAIL = "Data provider unavailable"
+HISTORY_UNAVAILABLE_DETAIL = "Regime history unavailable"
+
+# Regime history query limits (the store caps at MAX_HISTORY_LIMIT too)
+HISTORY_DEFAULT_LIMIT = 100
+HISTORY_MAX_LIMIT = MAX_HISTORY_LIMIT
+# Seconds a history query may take before the request gets 504
+HISTORY_TIMEOUT_SECONDS = 30.0
 
 
 PROVIDER_RETRY_AFTER_SECONDS = 60
@@ -98,6 +114,9 @@ def classify_exception(exc: Exception) -> HTTPException:  # noqa: PLR0911
             detail="Data provider rate limit reached",
             headers={"Retry-After": str(PROVIDER_RETRY_AFTER_SECONDS)},
         )
+    if isinstance(exc, StorageError) and not isinstance(exc, ValueError):
+        # The history database could not be opened or read: server-side problem.
+        return HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=HISTORY_UNAVAILABLE_DETAIL)
     if isinstance(exc, ConnectionError | TimeoutError):
         return HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, detail=PROVIDER_UNAVAILABLE_DETAIL
@@ -540,6 +559,113 @@ async def export_csv(
                 "Content-Disposition": f'attachment; filename="{filename}"',
                 "X-Record-Count": str(record_count),
             },
+        )
+
+
+def _query_error(loc: tuple[str, str], msg: str) -> RequestValidationError:
+    """A 422 for one invalid path/query parameter (rendered by the error envelope)."""
+    return RequestValidationError([{"loc": loc, "msg": msg, "type": "value_error"}])
+
+
+def _naive_utc_bound(name: str, value: datetime | None) -> datetime | None:
+    """Convert a ``since``/``until`` bound to naive UTC (naive input is taken as UTC).
+
+    Raises:
+        RequestValidationError: If the value overflows when converted to UTC.
+    """
+    if value is None or value.tzinfo is None:
+        return value
+    try:
+        return value.astimezone(UTC).replace(tzinfo=None)
+    except (OverflowError, ValueError) as e:
+        raise _query_error(("query", name), "Datetime is out of range") from e
+
+
+def _record_response(rec: RegimeRecord) -> RegimeRecordResponse:
+    return RegimeRecordResponse(
+        symbol=rec.symbol,
+        timeframe=rec.timeframe,
+        # Naive on purpose: UTC for intraday bars, the session date at 00:00 for
+        # daily bars (provider contract), so no offset is claimed.
+        bar_time=rec.bar_time,
+        recorded_at=rec.recorded_at,
+        regime=rec.regime,
+        confidence=rec.confidence,
+        persistence=rec.persistence,
+        transition_probability=rec.transition_probability,
+        recommended_strategy=rec.recommended_strategy,
+        close=rec.close,
+        provider=rec.provider,
+    )
+
+
+@router.get("/regimes/{symbol}/history", response_model=RegimeHistoryResponse)
+async def regime_history(
+    symbol: str,
+    background_tasks: BackgroundTasks,
+    timeframe: Annotated[
+        str | None, Query(description=f"Only this timeframe ({', '.join(TIMEFRAMES)})")
+    ] = None,
+    since: Annotated[
+        datetime | None, Query(description="Inclusive lower bound on bar time (ISO 8601)")
+    ] = None,
+    until: Annotated[
+        datetime | None, Query(description="Inclusive upper bound on bar time (ISO 8601)")
+    ] = None,
+    limit: Annotated[
+        int, Query(ge=1, description=f"Maximum records (capped at {HISTORY_MAX_LIMIT})")
+    ] = HISTORY_DEFAULT_LIMIT,
+    current_user: User = Depends(authenticate_request),  # noqa: B008
+) -> RegimeHistoryResponse:
+    """
+    Recorded regime history for a symbol, newest bar first.
+
+    Reads the regime history database (``MRA_DB_PATH``); records are written by
+    ``mra current-analysis --record`` (and the scanner), never by the analysis
+    endpoints. Naive ``since``/``until`` values are taken as UTC. ``bar_time``
+    is returned without an offset: UTC for intraday bars, the session date at
+    00:00 for daily bars. An unknown symbol returns an empty list.
+    """
+    try:
+        sym = normalize_symbol(symbol)
+    except ValueError as e:
+        raise _query_error(("path", "symbol"), str(e)) from e
+    if timeframe is not None and timeframe not in TIMEFRAMES:
+        raise _query_error(
+            ("query", "timeframe"), f"Timeframe must be one of: {', '.join(TIMEFRAMES)}"
+        )
+    since_utc = _naive_utc_bound("since", since)
+    until_utc = _naive_utc_bound("until", until)
+    if since_utc is not None and until_utc is not None and since_utc > until_utc:
+        raise _query_error(("query", "since"), "since must not be after until")
+    effective_limit = min(limit, HISTORY_MAX_LIMIT)
+
+    payload = {"symbol": sym, "timeframe": timeframe, "limit": effective_limit}
+    async with _tracked("/regimes/history", background_tasks, payload, HISTORY_UNAVAILABLE_DETAIL):
+        store = default_store()
+        # A short SQLite read: run it in the thread pool directly rather than via
+        # run_in_thread, so it neither waits for nor consumes an analysis slot.
+        try:
+            async with asyncio.timeout(HISTORY_TIMEOUT_SECONDS):
+                records = await run_in_threadpool(
+                    store.history,
+                    sym,
+                    timeframe=timeframe,
+                    since=since_utc,
+                    until=until_utc,
+                    limit=effective_limit,
+                )
+        except TimeoutError as e:
+            logger.warning("Regime history query timed out")
+            raise HTTPException(
+                status.HTTP_504_GATEWAY_TIMEOUT, detail="Regime history query timed out"
+            ) from e
+        return RegimeHistoryResponse(
+            symbol=sym,
+            timeframe=timeframe,
+            limit=effective_limit,
+            count=len(records),
+            records=[_record_response(r) for r in records],
         )
 
 
