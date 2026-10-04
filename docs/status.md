@@ -78,18 +78,58 @@ Next:
 - Deflated Sharpe / multiple-testing correction in the optimizer.
 - Bar-by-bar regime attribution in the calibrator.
 
-Feature roadmap (none started; from the review's proposals):
+Feature roadmap (from the review's proposals):
 
+- Landed: regime history store and `GET /api/v1/regimes/{symbol}/history` (#29),
+  multi-timeframe confirmation signal (#28), `mra backtest` vs buy-and-hold (#30), scheduled
+  scanner with regime-change alerts (`mra scan`, `mra_lib.scanner`, compose `scanner`
+  profile, #32). Scanner follow-ups: email/Slack channels, history retention/pruning.
 - Model persistence and loading optimized/calibrated parameters into the analysis commands
   (`mra backtest --params` already reads `mra-optimize` output).
-- Regime history store and `/regimes/{symbol}/history`.
-- ~~Scheduled scanner with regime-change alerts~~: landed (`mra scan`, `mra_lib.scanner`,
-  compose `scanner` profile). Follow-ups: email/Slack channels, history retention/pruning.
-- Backtest API endpoint (the `mra backtest` command exists; an endpoint can reuse
-  `mra_lib.backtesting.run_backtest`).
-- Multi-timeframe confirmation signal; explainability (per-state feature z-scores).
+- Backtest API endpoint (can reuse `mra_lib.backtesting.run_backtest`).
+- Explainability (per-state feature z-scores).
 - Provider infrastructure: on-disk cache, `start`/`end` ranges; more providers (crypto, FRED).
 - Regime-conditioned allocation and a paper-trading loop with a drawdown kill switch.
+
+### Ideas backlog
+
+Unimplemented ideas carried over from the January 2026 planning documents (the original
+PR #2 branch), roughly in priority order. The strategy has no demonstrated edge, so the
+first two items come first.
+
+1. **Alternative strategies.** Only `RegimeStrategy` exists; add a small strategy interface
+   so these can be backtested side by side with `mra backtest`:
+   - *Regime as a risk overlay on buy-and-hold* — stay long, cut exposure in High Volatility
+     (and raise it in Low Volatility). The simplest candidate and the most likely to help
+     risk-adjusted returns.
+   - *Regime-transition trading* — act on regime changes rather than regimes.
+   - *Mean reversion within a regime* — enter on price z-score < −2 in Mean Reverting, exit
+     at z = 0 or on a regime change.
+   - *Volatility breakout* — Low → High Volatility transition plus a price breakout.
+   - *Multi-timeframe alignment* — trade only when `confirm_timeframes` (#28) agrees.
+   - *Pairs with a regime filter* — trade cointegrated pairs only when their regimes align.
+2. **Robustness testing.** Monte Carlo / bootstrap confidence intervals on window returns,
+   parameter-sensitivity sweeps, and in-sample vs out-of-sample degradation tracking
+   (complements the deflated Sharpe item above).
+3. **Multi-symbol validation.** Run the walk-forward backtest over a universe (SPY, QQQ, IWM,
+   DIA; XLF, XLE, XLK, XLV; TLT, IEF; GLD, USO; EFA, EEM) and report per-symbol and
+   aggregate results.
+4. **Risk controls.** Drawdown-scaled sizing (e.g. −5% → size ×0.9, −10% → ×0.75,
+   −15% → ×0.5) and a max-drawdown kill switch; VaR / CVaR; a correlation-with-open-positions
+   limit in `PortfolioPositionLimits`.
+5. **Data quality.** OHLC sanity checks for every provider (only Polygon has them), gap and
+   stale-bar (zero-volume) detection, return/volume outlier flags, split detection,
+   cross-provider comparison, and a per-dataset quality score.
+6. **Model persistence and versioning** (save/load a fitted detector with its scaler, state
+   map, training range and library version).
+7. **Pairs trading depth.** Half-life / Ornstein-Uhlenbeck filter, Johansen test for
+   baskets, Kalman-filter dynamic hedge ratios.
+8. **Hurst exponent feature** — a cheap, scale-free trending vs mean-reverting signal that fits
+   the #26 feature set.
+9. **Trading operations** (once paper trading exists): P&L tracking, trade log / audit trail,
+   large-loss and drawdown alerts, dashboard.
+10. **Write-ups.** Methodology document and per-strategy tearsheets (`mra backtest` output
+    covers part of a tearsheet).
 
 ## Historical Notes
 
