@@ -76,7 +76,11 @@ trend second:
   :data:`RISK_REGIMES` instead of being forced into a direction.
 - ``UNKNOWN``: neutral here for completeness, but the confirmation signal
   treats an UNKNOWN timeframe as *unavailable* (like a missing one), not as a
-  neutral vote.
+  neutral vote. UNKNOWN can come from a successful fit -- it is the decision
+  tree's "no rule matched" fallback (and also non-finite state summaries) -- so
+  it means "no interpretable read", which the signal handles like missing data:
+  it keeps its weight in the agreement denominator and is skipped when picking
+  the primary timeframe.
 """
 
 RISK_REGIMES: Final[frozenset[MarketRegime]] = frozenset({MarketRegime.HIGH_VOLATILITY})

@@ -218,7 +218,7 @@ def test_confirmation_single_classified_plus_unknown_is_insufficient():
     assert c.confirmed is False
 
 
-def test_confirmation_low_confidence_falls_below_threshold():
+def test_confirmation_threshold_boundary_with_confidence():
     c = confirm_timeframes(_stack(d=(BULL, 0.6), h=(BULL, 0.6), m=(BULL, 0.6)))
     assert c.agreement == pytest.approx(0.6)
     assert c.confirmed is True  # exactly at threshold confirms
@@ -283,6 +283,7 @@ def test_confirmation_subset_weights():
         {},
         {"1W": 1.0},
         {"1D": "0.5"},
+        {"1D": True, "1H": 0.5},
     ],
 )
 def test_confirmation_invalid_weights_raise(weights):
@@ -290,7 +291,7 @@ def test_confirmation_invalid_weights_raise(weights):
         confirm_timeframes(_stack(d=BULL, h=BULL), weights=weights)
 
 
-@pytest.mark.parametrize("threshold", [0.0, -0.1, 1.01, math.nan, "0.6"])
+@pytest.mark.parametrize("threshold", [0.0, -0.1, 1.01, math.nan, "0.6", True])
 def test_confirmation_invalid_threshold_raises(threshold):
     with pytest.raises(ValueError, match="threshold"):
         confirm_timeframes(_stack(d=BULL, h=BULL), threshold=threshold)
@@ -320,6 +321,30 @@ def test_confirmation_is_frozen_and_json_safe():
     assert data["reason"] == "confirmed"
     assert data["risk_timeframes"] == ["15m"]
     assert set(data) == {f.name for f in dataclasses.fields(c)}
+
+
+def test_confirmation_breakout_primary_is_bullish():
+    c = confirm_timeframes(_stack(d=BREAK, h=BULL, m=MEAN))
+    assert c.direction is DirectionalBias.BULLISH
+    assert c.aligned_timeframes == ("1D", "1H")
+    assert c.confirmed is True
+
+
+def test_confirmation_subset_weights_renormalize():
+    # Documented caveat: a subset of the weights renormalizes, so the default
+    # "1D alone never confirms" guarantee only holds for the full default set.
+    c = confirm_timeframes(_stack(d=BULL, h=(BULL, 0.0)), weights={"1D": 0.5, "1H": 0.3})
+    assert c.agreement == pytest.approx(0.625)
+    full = confirm_timeframes(_stack(d=BULL, h=(BULL, 0.0)))
+    assert full.agreement == pytest.approx(0.5)
+    assert full.confirmed is False
+
+
+def test_confirmation_neutral_direction_agreement_is_neutral_consensus():
+    c = confirm_timeframes(_stack(d=MEAN, h=BEAR, m=LOW))
+    assert c.agreement == pytest.approx(0.7)
+    assert c.confirmed is False
+    assert c.conflicting_timeframes == ("1H",)
 
 
 def test_confirmation_custom_bias_map():

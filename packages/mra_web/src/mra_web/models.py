@@ -329,13 +329,16 @@ class TimeframeConfirmationModel(BaseModel):
     """Multi-timeframe confirmation signal (see ``mra_lib.signals.confirmation``)."""
 
     direction: str = Field(description="Primary timeframe's bias: bullish, bearish or neutral")
-    agreement: float = Field(description="Confidence-weighted agreement score (0-1)")
+    agreement: float = Field(
+        description="Confidence-weighted agreement with direction (0-1); for a neutral "
+        "direction it measures neutral consensus, so use `confirmed` as the signal"
+    )
     confirmed: bool = Field(description="Whether the direction is confirmed")
     primary_timeframe: str | None = Field(description="Highest available timeframe")
     aligned_timeframes: list[str] = Field(description="Timeframes agreeing with direction")
     conflicting_timeframes: list[str] = Field(description="Timeframes opposing direction")
     unavailable_timeframes: list[str] = Field(
-        description="Requested timeframes that failed or are Unknown"
+        description="Timeframes that failed, were not requested, or are Unknown"
     )
     risk_timeframes: list[str] = Field(description="Timeframes in High Volatility")
     confidence: float = Field(description="Weight-averaged confidence of aligned timeframes")

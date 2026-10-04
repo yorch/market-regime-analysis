@@ -175,8 +175,11 @@ Multi-timeframe confirmation: do the timeframes agree on a direction? Same reque
 `/analysis/current`, plus an optional `timeframes` list (at least two distinct values from
 `1D`, `1H`, `15m`; duplicates are dropped and the list is ordered coarsest first; default:
 all three). Each timeframe is loaded and analyzed independently; a timeframe that fails is
-left out of `analyses` and counts as unavailable. If every timeframe fails, the error of
-the last failure is returned (see [Errors](#errors)).
+left out of `analyses` and counts as unavailable. The signal always uses the full default
+weights (as the CLI does), so timeframes left out of `timeframes` also count as
+unavailable: a subset saves provider calls but cannot loosen the rules (e.g. `["1H",
+"15m"]` can never be confirmed). If every timeframe fails, the error of the last failure
+is returned (see [Errors](#errors)).
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/analysis/confirmation \
@@ -213,13 +216,17 @@ How the signal is computed (`mra_lib.signals.confirmation.confirm_timeframes`):
 - **Bias** per regime: Bull Trending and Breakout (the detector only labels up-trending
   volatility expansion a breakout) are `bullish`; Bear Trending is `bearish`; Mean
   Reverting, Low Volatility and High Volatility are `neutral`. High Volatility is also
-  listed in `risk_timeframes`. `Unknown` counts as unavailable, like a failed timeframe.
+  listed in `risk_timeframes`. `Unknown` (the detector's "no rule matched" fallback, which
+  can come with high confidence) gives no directional read and counts as unavailable, like
+  a failed timeframe.
 - **`direction`** is the bias of the primary timeframe, the highest available one
   (1D > 1H > 15m).
 - **`agreement`** = sum of `weight x confidence` over the timeframes aligned with
-  `direction`, divided by the total weight of the requested timeframes. Default weights:
-  1D 0.5, 1H 0.3, 15m 0.2 (only the requested ones are used). Unavailable timeframes keep
-  their weight in the denominator, so they lower agreement.
+  `direction`, divided by the total weight (1D 0.5 + 1H 0.3 + 15m 0.2). Unavailable
+  timeframes keep their weight in the denominator, so they lower agreement. With these
+  defaults 1D alone never reaches the threshold, nor do 1H + 15m without 1D. When
+  `direction` is `neutral`, `agreement` measures neutral consensus; use `confirmed` as the
+  signal.
 - **`confirmed`** requires at least two available timeframes, a directional primary, at
   least one lower timeframe aligned with it, and `agreement >= threshold` (0.6).
 - **`reason`**: `confirmed`, `no_timeframes`, `insufficient_timeframes`,

@@ -146,7 +146,9 @@ class TestAnalysisEndpoints:
             ).analyze_current_regime(tf)
             for tf, p in (("1D", "2y"), ("15m", "1mo"))
         }
-        expected = confirm_timeframes(analyses, weights={"1D": 0.5, "15m": 0.2}).to_dict()
+        # Full default weights: the unrequested 1H counts as unavailable
+        expected = confirm_timeframes(analyses).to_dict()
+        assert expected["unavailable_timeframes"] == ["1H"]
         resp = authed.post(
             "/api/v1/analysis/confirmation",
             json={"symbol": "SPY", "provider": "mock", "timeframes": ["15m", "1D", "1D"]},
@@ -170,8 +172,44 @@ class TestAnalysisEndpoints:
         )
         assert resp.status_code == 200, resp.text
         body = _strict_loads(resp.text)
-        assert "1H" not in [a["timeframe"] for a in body["analyses"]]
+        assert [a["timeframe"] for a in body["analyses"]] == ["1D", "15m"]  # coarsest first
         assert "1H" in body["confirmation"]["unavailable_timeframes"]
+
+    def test_confirmation_subset_cannot_loosen_rules(self, authed, mock_provider, monkeypatch):
+        from mra_web import endpoints
+
+        bull = RegimeAnalysis(
+            current_regime=MarketRegime.BULL_TRENDING,
+            hmm_state=0,
+            transition_probability=0.5,
+            regime_persistence=0.5,
+            recommended_strategy=TradingStrategy.TREND_FOLLOWING,
+            position_sizing_multiplier=0.1,
+            risk_level="Low",
+            arbitrage_opportunities=[],
+            statistical_signals=[],
+            key_levels={},
+            regime_confidence=1.0,
+        )
+
+        class Stub:
+            def __init__(self, *a, **k):
+                pass
+
+            def analyze_current_regime(self, timeframe):
+                return bull
+
+        monkeypatch.setattr(endpoints, "MarketRegimeAnalyzer", Stub)
+        resp = authed.post(
+            "/api/v1/analysis/confirmation",
+            json={"symbol": "SPY", "provider": "mock", "timeframes": ["1H", "15m"]},
+        )
+        assert resp.status_code == 200, resp.text
+        conf = _strict_loads(resp.text)["confirmation"]
+        assert conf["unavailable_timeframes"] == ["1D"]
+        assert conf["agreement"] == pytest.approx(0.5)
+        assert conf["confirmed"] is False
+        assert conf["reason"] == "below_threshold"
 
     def test_multi_symbol(self, authed, mock_provider, monkeypatch):
         original = MockDataProvider.fetch

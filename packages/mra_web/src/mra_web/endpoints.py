@@ -19,7 +19,7 @@ from pydantic import ValidationError as PydanticValidationError
 from mra_lib import MarketRegimeAnalyzer, PortfolioHMMAnalyzer, SimonsRiskCalculator
 from mra_lib.config.data_classes import RegimeAnalysis
 from mra_lib.config.enums import MarketRegime
-from mra_lib.config.timeframes import CONFIRMATION_WEIGHTS, TIMEFRAMES
+from mra_lib.config.timeframes import TIMEFRAMES
 from mra_lib.data_providers import (
     AuthError,
     InvalidSymbolError,
@@ -230,8 +230,9 @@ async def confirmation_analysis(
     Multi-timeframe confirmation: do the requested timeframes agree on a direction?
 
     Each requested timeframe (default: all) is loaded and analyzed independently;
-    failed timeframes count as unavailable. Weights are the defaults restricted to
-    the requested timeframes, so a subset request is scored on its own.
+    failed timeframes count as unavailable. The signal always uses the full default
+    weights (like the CLI), so timeframes left out of the request also count as
+    unavailable: a subset only saves provider calls, it cannot loosen the rules.
     """
     async with _tracked(
         "/analysis/confirmation", background_tasks, request.model_dump(), "Analysis failed"
@@ -256,9 +257,7 @@ async def confirmation_analysis(
             return analyses
 
         analyses = await run_in_thread(run_analysis)
-        confirmation = confirm_timeframes(
-            analyses, weights={tf: CONFIRMATION_WEIGHTS[tf] for tf in timeframes}
-        )
+        confirmation = confirm_timeframes(analyses)
         return ConfirmationResponse(
             symbol=request.symbol,
             timeframes=timeframes,

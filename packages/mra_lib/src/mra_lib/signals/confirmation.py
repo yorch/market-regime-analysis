@@ -50,6 +50,7 @@ from mra_lib.config.timeframes import (
     MIN_CONFIRMATION_TIMEFRAMES,
     TIMEFRAMES,
 )
+from mra_lib.errors import MRAError
 
 if TYPE_CHECKING:
     from mra_lib.analyzer import MarketRegimeAnalyzer
@@ -97,14 +98,18 @@ class TimeframeConfirmation:
     Attributes:
         direction: The primary timeframe's bias (NEUTRAL if none is available).
         agreement: Confidence-weighted share (0-1) of the total configured weight
-            that agrees with ``direction``.
+            that agrees with ``direction``. For a NEUTRAL direction this measures
+            *neutral* consensus (how much of the stack also has no direction), so
+            use ``confirmed``, not ``agreement`` alone, as the trade signal.
         confirmed: Whether the direction is confirmed (always False for NEUTRAL).
         primary_timeframe: Highest available timeframe, or None if none is available.
         aligned_timeframes: Available timeframes whose bias equals ``direction``
             (includes the primary).
         conflicting_timeframes: Timeframes with the opposite bias; for a NEUTRAL
             direction, every directional timeframe.
-        unavailable_timeframes: Configured timeframes that are missing or UNKNOWN.
+        unavailable_timeframes: Configured timeframes that are missing or UNKNOWN
+            (UNKNOWN is the detector's "no rule matched" fallback, so it gives no
+            directional read and is handled like missing data).
         risk_timeframes: Available timeframes in an elevated-risk regime
             (``RISK_REGIMES``, i.e. High Volatility).
         confidence: Weight-averaged regime confidence (0-1) of the aligned
@@ -153,7 +158,7 @@ def _validated_weights(weights: Mapping[str, float]) -> dict[str, float]:
     if unknown:
         raise ValueError(f"Unknown timeframe(s) in weights: {unknown}; expected {list(TIMEFRAMES)}")
     for tf, w in weights.items():
-        if not isinstance(w, int | float) or not math.isfinite(w) or w < 0:
+        if isinstance(w, bool) or not isinstance(w, int | float) or not math.isfinite(w) or w < 0:
             raise ValueError(f"Weight for {tf} must be a finite number >= 0, got {w!r}")
     active = {tf: float(weights[tf]) for tf in TIMEFRAMES if weights.get(tf, 0) > 0}
     if not active:
@@ -205,7 +210,8 @@ def confirm_timeframes(
     """
     active = _validated_weights(weights)
     if (
-        not isinstance(threshold, int | float)
+        isinstance(threshold, bool)
+        or not isinstance(threshold, int | float)
         or not math.isfinite(threshold)
         or not 0 < threshold <= 1
     ):
@@ -279,7 +285,8 @@ def confirm_analyzer_timeframes(
     Convenience wrapper: it runs :meth:`MarketRegimeAnalyzer.analyze_current_regime`
     on already-loaded data (no data is fetched and no analyzer is built). A
     timeframe that is not loaded or cannot be analyzed (``ValueError``, including
-    ``ModelNotFittedError``) is left out and counts as unavailable.
+    ``ModelNotFittedError``, or any other ``MRAError``) is left out and counts as
+    unavailable; other exceptions propagate.
 
     Args:
         analyzer: An initialized analyzer.
@@ -299,7 +306,7 @@ def confirm_analyzer_timeframes(
     for tf in timeframes:
         try:
             analyses[tf] = analyzer.analyze_current_regime(tf)
-        except ValueError:
+        except (MRAError, ValueError):
             continue
     return analyses, confirm_timeframes(analyses, **kwargs)
 

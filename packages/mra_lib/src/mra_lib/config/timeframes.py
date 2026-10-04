@@ -31,10 +31,13 @@ BARS_PER_DAY: dict[str, int] = {
 CONFIRMATION_WEIGHTS: Final = MappingProxyType({"1D": 0.5, "1H": 0.3, "15m": 0.2})
 """Per-timeframe weight in the agreement score (read-only); higher timeframes dominate.
 
-1D (0.5) weighs as much as 1H and 15m combined. With the default threshold, 1D alone
-(at most 0.5) never confirms, so a 1D signal needs a lower timeframe to agree; and
-1H + 15m without 1D (at most 0.5) never confirm either. Weights need not sum to 1:
-agreement is normalized by their total."""
+1D (0.5) weighs as much as 1H and 15m combined. With these weights and the default
+threshold, 1D alone (at most 0.5) never confirms, so a 1D signal needs a lower
+timeframe to agree; and 1H + 15m without 1D (at most 0.5) never confirm either. These
+guarantees hold only for the full default set: a caller passing a *subset* of the
+weights renormalizes them (e.g. ``{"1D": 0.5, "1H": 0.3}`` lets 1D reach 0.625). The
+CLI and API always pass the full set. Weights need not sum to 1: agreement is
+normalized by their total."""
 
 CONFIRMATION_THRESHOLD: Final[float] = 0.6
 """Minimum agreement score (0-1) for a directional signal to count as confirmed."""
