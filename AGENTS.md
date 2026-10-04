@@ -133,6 +133,7 @@ market-regime-analysis/
 │   │   │   │   ├── enums.py        # MarketRegime, TradingStrategy, DirectionalBias
 │   │   │   │   ├── data_classes.py # RegimeAnalysis dataclass
 │   │   │   │   ├── regime_tables.py # Shared regime multipliers / strategy / bias tables
+│   │   │   │   ├── symbols.py      # SYMBOL_PATTERN (shared by storage, CLI and API)
 │   │   │   │   └── timeframes.py   # TIMEFRAMES, DEFAULT_PERIODS, CONFIRMATION_* defaults
 │   │   │   ├── errors.py           # MRAError hierarchy (DataLoadError, ProviderError, StorageError, ...)
 │   │   │   ├── indicators/         # Regime model (one detector everywhere)
