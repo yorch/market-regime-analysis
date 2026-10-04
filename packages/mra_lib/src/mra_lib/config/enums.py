@@ -5,7 +5,7 @@ This module defines the core enumerations used throughout the market regime
 analysis system, including market regimes and trading strategies.
 """
 
-from enum import Enum
+from enum import Enum, StrEnum
 
 
 class MarketRegime(Enum):
@@ -40,3 +40,15 @@ class TradingStrategy(Enum):
     VOLATILITY_TRADING = "Volatility Trading"
     DEFENSIVE = "Defensive"
     AVOID = "Avoid Trading"
+
+
+class DirectionalBias(StrEnum):
+    """
+    Directional read of a market regime, used by multi-timeframe confirmation.
+
+    See :data:`mra_lib.config.regime_tables.REGIME_BIAS` for the regime -> bias map.
+    """
+
+    BULLISH = "bullish"
+    BEARISH = "bearish"
+    NEUTRAL = "neutral"

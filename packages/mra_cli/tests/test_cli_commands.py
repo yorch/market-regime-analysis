@@ -103,6 +103,46 @@ class TestAnalysisCommands:
         for tf in ("1D", "1H", "15m"):
             assert f"SPY ({tf})" in result.output
 
+    def test_cli_current_analysis_prints_confirmation(self, runner):
+        result = runner.invoke(cli, ["current-analysis", "--provider", "mock"])
+        assert result.exit_code == 0, result.output
+        assert "MULTI-TIMEFRAME CONFIRMATION - SPY" in result.output
+        assert "Direction:" in result.output
+        assert "Agreement:" in result.output
+        # The section comes after every per-timeframe report
+        assert result.output.index("MULTI-TIMEFRAME") > result.output.index("SPY (15m)")
+
+    def test_cli_current_analysis_confirmation_needs_two_timeframes(self, runner):
+        from mra_cli import main
+
+        real = main._analyze_single_timeframe
+
+        def only_daily(symbol, tf, provider, key):
+            if tf != "1D":
+                raise ConnectionError("boom")
+            return real(symbol, tf, provider, key)
+
+        with patch("mra_cli.main._analyze_single_timeframe", side_effect=only_daily):
+            result = runner.invoke(cli, ["current-analysis", "--provider", "mock"])
+        assert result.exit_code == 0, result.output
+        assert "MULTI-TIMEFRAME CONFIRMATION" not in result.output
+
+    def test_cli_current_analysis_confirmation_with_partial_failure(self, runner):
+        from mra_cli import main
+
+        real = main._analyze_single_timeframe
+
+        def flaky(symbol, tf, provider, key):
+            if tf == "1H":
+                raise ConnectionError("boom")
+            return real(symbol, tf, provider, key)
+
+        with patch("mra_cli.main._analyze_single_timeframe", side_effect=flaky):
+            result = runner.invoke(cli, ["current-analysis", "--provider", "mock"])
+        assert result.exit_code == 0, result.output
+        assert "MULTI-TIMEFRAME CONFIRMATION" in result.output
+        assert "Unavailable: 1H" in result.output
+
     def test_cli_current_analysis_analyzes_once_per_timeframe(self, runner):
         from mra_lib import MarketRegimeAnalyzer
 

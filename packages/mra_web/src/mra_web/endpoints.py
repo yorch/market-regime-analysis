@@ -26,11 +26,14 @@ from mra_lib.data_providers import (
     MarketDataProvider,
     RateLimitError,
 )
+from mra_lib.signals.confirmation import confirm_timeframes
 
 from . import __version__
 from .auth import User, authenticate_request
 from .models import (
     AnalysisResponse,
+    ConfirmationRequest,
+    ConfirmationResponse,
     CurrentAnalysisRequest,
     DetailedAnalysisRequest,
     ExportCSVRequest,
@@ -42,6 +45,7 @@ from .models import (
     PositionSizingResponse,
     ProviderInfo,
     ProvidersResponse,
+    TimeframeConfirmationModel,
 )
 from .utils import (
     api_metrics,
@@ -214,6 +218,55 @@ async def current_analysis(
 
         analyses = await run_in_thread(run_analysis)
         return MultiAnalysisResponse(symbol=request.symbol, analyses=analyses)
+
+
+@router.post("/analysis/confirmation", response_model=ConfirmationResponse)
+async def confirmation_analysis(
+    request: ConfirmationRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(authenticate_request),  # noqa: B008
+) -> ConfirmationResponse:
+    """
+    Multi-timeframe confirmation: do the requested timeframes agree on a direction?
+
+    Each requested timeframe (default: all) is loaded and analyzed independently;
+    failed timeframes count as unavailable. The signal always uses the full default
+    weights (like the CLI), so timeframes left out of the request also count as
+    unavailable: a subset only saves provider calls, it cannot loosen the rules.
+    """
+    async with _tracked(
+        "/analysis/confirmation", background_tasks, request.model_dump(), "Analysis failed"
+    ):
+        validated_api_key = validate_api_key(request.provider, request.api_key)
+        timeframes = request.timeframes or list(TIMEFRAMES)
+
+        def run_analysis() -> dict[str, RegimeAnalysis]:
+            analyses: dict[str, RegimeAnalysis] = {}
+            last_error: Exception | None = None
+            for timeframe in timeframes:
+                try:
+                    analyzer = _analyzer(
+                        request.symbol, request.provider, validated_api_key, timeframe
+                    )
+                    analyses[timeframe] = analyzer.analyze_current_regime(timeframe)
+                except Exception as e:
+                    last_error = e
+                    logger.warning("Failed to analyze timeframe %s", timeframe, exc_info=True)
+            if not analyses and last_error is not None:
+                raise last_error  # every timeframe failed: report the real cause
+            return analyses
+
+        analyses = await run_in_thread(run_analysis)
+        confirmation = confirm_timeframes(analyses)
+        return ConfirmationResponse(
+            symbol=request.symbol,
+            timeframes=timeframes,
+            analyses=[
+                convert_regime_analysis_to_response(analysis, request.symbol, tf)
+                for tf, analysis in analyses.items()
+            ],
+            confirmation=TimeframeConfirmationModel(**confirmation.to_dict()),
+        )
 
 
 def correlations_to_dict(

@@ -30,6 +30,7 @@ from mra_lib.config.data_classes import RegimeAnalysis
 from mra_lib.config.timeframes import (
     BARS_PER_DAY,
     DEFAULT_PERIODS,
+    MIN_CONFIRMATION_TIMEFRAMES,
     TIMEFRAME_INTERVALS,
     TIMEFRAMES,
 )
@@ -44,6 +45,7 @@ from mra_lib.data_providers import (
 from mra_lib.data_providers.credentials import PROVIDER_ENV_PAIRS
 from mra_lib.errors import InsufficientDataError
 from mra_lib.indicators.true_hmm_detector import TrueHMMDetector
+from mra_lib.signals.confirmation import confirm_timeframes, format_confirmation_report
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -437,6 +439,7 @@ def current_analysis(
                 results[tf] = e
 
     failed = 0
+    succeeded: dict[str, RegimeAnalysis] = {}
     for tf in TIMEFRAMES:
         result = results[tf]
         if isinstance(result, Exception):
@@ -444,10 +447,16 @@ def current_analysis(
             click.echo(f"\n❌ Error analyzing {tf}: {result}", err=True)
         else:
             analyzer, analysis = result
+            succeeded[tf] = analysis
             print_regime_report(symbol, tf, analysis, _last_close(analyzer, tf))
 
     if failed == len(TIMEFRAMES):
         raise click.ClickException(f"Analysis failed for every timeframe of {symbol}")
+
+    # Multi-timeframe confirmation: only meaningful with two or more timeframes
+    if len(succeeded) >= MIN_CONFIRMATION_TIMEFRAMES:
+        confirmation = confirm_timeframes(succeeded)
+        click.echo(format_confirmation_report(confirmation, symbol, succeeded))
 
 
 _NON_INTERACTIVE_BACKENDS = {"agg", "pdf", "ps", "svg", "pgf", "cairo", "template"}
