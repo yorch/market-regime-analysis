@@ -60,6 +60,7 @@ uv run mra export-csv --symbol SPY --filename analysis.csv
 uv run mra continuous-monitoring --symbol SPY --interval 300   # --once / --max-iterations N
 uv run mra regime-forecast --symbol SPY --steps 10 --timeframe 1D
 uv run mra calibrate-multipliers --symbol SPY --method sharpe_weighted
+uv run mra backtest --symbol SPY --mode walk-forward --params best.json --output trades.csv
 uv run mra list-providers
 uv run mra start-api --dev
 ```
@@ -153,6 +154,7 @@ market-regime-analysis/
 │   │   │   │   ├── strategy.py     # RegimeStrategy
 │   │   │   │   ├── walk_forward.py # WalkForwardValidator
 │   │   │   │   ├── optimizer.py    # StrategyOptimizer
+│   │   │   │   ├── runner.py       # run_backtest -> BacktestReport (`mra backtest`)
 │   │   │   │   ├── metrics.py      # PerformanceMetrics
 │   │   │   │   ├── trade_stats.py  # Shared trade statistics
 │   │   │   │   ├── calibrator.py   # RegimeMultiplierCalibrator

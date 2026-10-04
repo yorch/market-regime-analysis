@@ -973,5 +973,175 @@ def calibrate_multipliers(  # noqa: PLR0913, PLR0917
         click.echo(f"\nResults saved to {output}")
 
 
+# ---------------------------------------------------------------------------
+# backtest
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.option("--symbol", type=str, default="SPY", help="Trading symbol")
+@click.option("--timeframe", type=TIMEFRAME_CHOICE, default="1D", help="Timeframe")
+@click.option(
+    "--period",
+    type=str,
+    default=None,
+    help="History to load, e.g. 2y, 5y, max (default: 5y for 1D, the timeframe default otherwise)",
+)
+@click.option(
+    "--mode",
+    type=click.Choice(["walk-forward", "simple"]),
+    default="walk-forward",
+    show_default=True,
+    help="walk-forward: out-of-sample (HMM refit on past data only); "
+    "simple: one HMM fit on the whole period (IN-SAMPLE, optimistic)",
+)
+@click.option(
+    "--params",
+    "params_file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="JSON strategy parameters: a flat object or an mra-optimize output file "
+    "(best_params). Default: built-in defaults",
+)
+@click.option(
+    "--capital",
+    type=click.FloatRange(min=0, min_open=True),
+    default=100000.0,
+    show_default=True,
+    help="Initial capital",
+)
+@click.option(
+    "--cost-model",
+    type=click.Choice(["equity", "retail", "futures", "hft", "none"]),
+    default="equity",
+    show_default=True,
+    help="Transaction cost preset",
+)
+@click.option(
+    "--train-bars",
+    type=click.IntRange(min=1),
+    default=252,
+    show_default=True,
+    help="Walk-forward minimum training window (bars)",
+)
+@click.option(
+    "--test-bars",
+    type=click.IntRange(min=1),
+    default=63,
+    show_default=True,
+    help="Walk-forward test window (bars)",
+)
+@click.option(
+    "--retrain-every",
+    type=click.IntRange(min=1),
+    default=20,
+    show_default=True,
+    help="Bars between HMM refits inside a walk-forward test window",
+)
+@click.option(
+    "--n-states", type=click.IntRange(2, 12), default=4, show_default=True, help="HMM states"
+)
+@click.option("--json", "json_out", is_flag=True, help="Print the report as a JSON object")
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(dir_okay=False, writable=True, path_type=Path),
+    default=None,
+    help="Write the trades to this CSV file",
+)
+@provider_options
+@click.pass_context
+@handle_exceptions
+def backtest(  # noqa: PLR0913, PLR0917
+    ctx: click.Context,
+    symbol: str,
+    timeframe: str,
+    period: str | None,
+    mode: str,
+    params_file: Path | None,
+    capital: float,
+    cost_model: str,
+    train_bars: int,
+    test_bars: int,
+    retrain_every: int,
+    n_states: int,
+    json_out: bool,
+    output: Path | None,
+    provider: str | None,
+    api_key: str | None,
+) -> None:
+    """Backtest one strategy parameter set against buy-and-hold.
+
+    \b
+    walk-forward (default) reports stitched OUT-OF-SAMPLE metrics: each test
+    window's HMM is fitted only on earlier bars. simple fits once on the whole
+    period and is labelled IN-SAMPLE. HMM defaults match mra-optimize, so its
+    output file can be passed straight to --params.
+
+    \b
+    Examples:
+        mra backtest --provider mock --symbol SPY
+        mra backtest --symbol SPY --params optimization_results.json
+        mra backtest --symbol QQQ --mode simple --json
+    """
+    import json  # noqa: PLC0415
+
+    from mra_lib.backtesting import load_strategy_params, run_backtest  # noqa: PLC0415
+    from mra_lib.errors import InvalidParametersError  # noqa: PLC0415
+
+    try:
+        params = load_strategy_params(params_file) if params_file is not None else None
+    except InvalidParametersError as e:
+        raise click.ClickException(f"--params {params_file}: {e}") from e
+
+    provider_name, key = resolve_provider(ctx, provider, api_key)
+    period = period or ("5y" if timeframe == "1D" else DEFAULT_PERIODS[timeframe])
+    click.echo(
+        f"Fetching {period} of {timeframe} data for {symbol} via {provider_name}...",
+        err=json_out,
+    )
+    data_provider = MarketDataProvider.create_provider(provider_name, api_key=key)
+    df = data_provider.fetch(symbol, period, TIMEFRAME_INTERVALS[timeframe])
+    click.echo(f"Running {mode} backtest on {len(df)} bars...", err=json_out)
+
+    try:
+        report = run_backtest(
+            df,
+            params,
+            mode,
+            symbol=symbol,
+            timeframe=timeframe,
+            initial_capital=capital,
+            cost_model=cost_model,
+            train_bars=train_bars,
+            test_bars=test_bars,
+            retrain_frequency=retrain_every,
+            n_hmm_states=n_states,
+            verbose=not json_out,
+        )
+    except InsufficientDataError as e:
+        hint = (
+            "load more history (--period) or shrink --train-bars/--test-bars"
+            if mode == "walk-forward"
+            else "load more history (--period) or use fewer --n-states"
+        )
+        raise click.ClickException(f"Insufficient data for {symbol}: {e}. Try to {hint}.") from e
+    except InvalidParametersError as e:
+        raise click.ClickException(str(e)) from e
+
+    if output is not None:
+        report.trades_frame().to_csv(output, index=False)
+
+    if json_out:
+        payload = report.to_dict()
+        payload["trades_file"] = str(output) if output is not None else None
+        click.echo(json.dumps(payload, indent=2, allow_nan=False))
+        return
+
+    click.echo(report.format_report())
+    if output is not None:
+        click.echo(f"✓ {len(report.trades)} trades written to {output}")
+
+
 if __name__ == "__main__":
     cli()

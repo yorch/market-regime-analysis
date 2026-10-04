@@ -152,10 +152,40 @@ uv run mra export-csv --symbol SPY --filename analysis.csv
 uv run mra continuous-monitoring --symbol SPY --interval 300   # --once / --max-iterations N
 uv run mra regime-forecast --symbol SPY --steps 10
 uv run mra calibrate-multipliers --symbol SPY --method sharpe_weighted
+uv run mra backtest --symbol SPY --period 5y                   # walk-forward vs buy & hold
 uv run mra list-providers
 uv run mra start-api --dev                                     # binds 127.0.0.1 by default
 uv run mra-optimize --mode grid --symbol SPY --provider yfinance
 ```
+
+### Backtesting a parameter set
+
+`mra backtest` evaluates one set of `RegimeStrategy` parameters and prints total return,
+CAGR, Sharpe, Sortino, Calmar, max drawdown (and its duration), win rate, profit factor,
+trades, time in market and average exposure next to buy-and-hold over the same bars.
+
+- `--mode walk-forward` (default) refits the HMM on past data only and stitches the test
+  windows into one **out-of-sample** curve, with a per-window table and the HMM refit count
+  and failures. Tune the windows with `--train-bars`, `--test-bars` and `--retrain-every`.
+- `--mode simple` fits the HMM once on the whole period. The output is labelled
+  **IN-SAMPLE** because the model has seen every bar it trades.
+- `--params file.json` takes a flat parameter object (`{"bull_mult": 1.5, "stop_loss": 0.03}`)
+  or the file `mra-optimize` writes (its `best_params` are used). Unknown keys and bad
+  values are rejected with a message. Without `--params` the defaults are used.
+- `--json` prints a JSON object instead of the text report; `--output trades.csv` writes
+  the trades. `--cost-model` picks `equity` (default), `retail`, `futures`, `hft` or `none`.
+
+The HMM defaults (4 states, refit every 20 bars, 252/63-bar windows) match `mra-optimize`,
+so the two can be chained:
+
+```bash
+uv run mra-optimize --mode random --symbol SPY --output best.json
+uv run mra backtest --symbol SPY --params best.json --output trades.csv
+```
+
+When the parameters come from an `mra-optimize` file, the report warns about test windows
+that overlap the optimizer's search period. Those windows are out-of-sample for the HMM but
+not for the parameters. Only the optimizer's holdout period is out-of-sample for both.
 
 `--provider` and `--api-key` work before or after the subcommand
 (`mra --provider polygon current-analysis` or `mra current-analysis --provider polygon`).

@@ -18,6 +18,7 @@ propagate unchanged, so callers can map them directly (no cause-chain walking).
     ├── DataLoadError (ValueError)          data could not be loaded/validated
     ├── InsufficientDataError (ValueError)  not enough data for the operation
     ├── ModelNotFittedError (ValueError)    no fitted model for the request
+    ├── InvalidParametersError (ValueError) bad user-supplied parameters (e.g. strategy)
     └── ProviderError                       raised by data providers
         ├── InvalidSymbolError (ValueError)
         ├── AuthError (ConnectionError)
@@ -41,6 +42,10 @@ class ModelNotFittedError(MRAError, ValueError):
     """No fitted model is available for the requested timeframe or operation."""
 
 
+class InvalidParametersError(MRAError, ValueError):
+    """User-supplied parameters (e.g. a strategy parameter file) are invalid."""
+
+
 class ProviderError(MRAError):
     """Marker base for errors raised by data providers."""
 
@@ -61,6 +66,7 @@ __all__ = [
     "AuthError",
     "DataLoadError",
     "InsufficientDataError",
+    "InvalidParametersError",
     "InvalidSymbolError",
     "MRAError",
     "ModelNotFittedError",

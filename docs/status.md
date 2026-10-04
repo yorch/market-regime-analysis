@@ -80,10 +80,12 @@ Next:
 
 Feature roadmap (none started; from the review's proposals):
 
-- Model persistence and loading optimized/calibrated parameters (`--params file.json`).
+- Model persistence and loading optimized/calibrated parameters into the analysis commands
+  (`mra backtest --params` already reads `mra-optimize` output).
 - Regime history store and `/regimes/{symbol}/history`.
 - Scheduled scanner with regime-change alerts.
-- `mra backtest` command / backtest endpoint with a buy-and-hold benchmark.
+- Backtest API endpoint (the `mra backtest` command exists; an endpoint can reuse
+  `mra_lib.backtesting.run_backtest`).
 - Multi-timeframe confirmation signal; explainability (per-state feature z-scores).
 - Provider infrastructure: on-disk cache, `start`/`end` ranges; more providers (crypto, FRED).
 - Regime-conditioned allocation and a paper-trading loop with a drawdown kill switch.
