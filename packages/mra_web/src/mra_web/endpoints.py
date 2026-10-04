@@ -5,6 +5,7 @@ This module implements all REST endpoints matching CLI functionality. Blocking
 analysis work runs in Starlette's thread pool with a timeout (``API_TIMEOUT``).
 """
 
+import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -15,6 +16,7 @@ from typing import Annotated, Any
 import numpy as np
 import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError as PydanticValidationError
 
@@ -565,11 +567,27 @@ def _query_error(loc: tuple[str, str], msg: str) -> RequestValidationError:
     return RequestValidationError([{"loc": loc, "msg": msg, "type": "value_error"}])
 
 
+def _naive_utc_bound(name: str, value: datetime | None) -> datetime | None:
+    """Convert a ``since``/``until`` bound to naive UTC (naive input is taken as UTC).
+
+    Raises:
+        RequestValidationError: If the value overflows when converted to UTC.
+    """
+    if value is None or value.tzinfo is None:
+        return value
+    try:
+        return value.astimezone(UTC).replace(tzinfo=None)
+    except (OverflowError, ValueError) as e:
+        raise _query_error(("query", name), "Datetime is out of range") from e
+
+
 def _record_response(rec: RegimeRecord) -> RegimeRecordResponse:
     return RegimeRecordResponse(
         symbol=rec.symbol,
         timeframe=rec.timeframe,
-        bar_time=rec.bar_time.replace(tzinfo=UTC),  # stored tz-naive UTC
+        # Naive on purpose: UTC for intraday bars, the session date at 00:00 for
+        # daily bars (provider contract), so no offset is claimed.
+        bar_time=rec.bar_time,
         recorded_at=rec.recorded_at,
         regime=rec.regime,
         confidence=rec.confidence,
@@ -604,8 +622,9 @@ async def regime_history(
 
     Reads the regime history database (``MRA_DB_PATH``); records are written by
     ``mra current-analysis --record`` (and the scanner), never by the analysis
-    endpoints. Naive ``since``/``until`` values are taken as UTC. An unknown
-    symbol returns an empty list.
+    endpoints. Naive ``since``/``until`` values are taken as UTC. ``bar_time``
+    is returned without an offset: UTC for intraday bars, the session date at
+    00:00 for daily bars. An unknown symbol returns an empty list.
     """
     try:
         sym = normalize_symbol(symbol)
@@ -615,25 +634,32 @@ async def regime_history(
         raise _query_error(
             ("query", "timeframe"), f"Timeframe must be one of: {', '.join(TIMEFRAMES)}"
         )
-    if since is not None and until is not None:
-        since_utc = since.astimezone(UTC) if since.tzinfo else since.replace(tzinfo=UTC)
-        until_utc = until.astimezone(UTC) if until.tzinfo else until.replace(tzinfo=UTC)
-        if since_utc > until_utc:
-            raise _query_error(("query", "since"), "since must not be after until")
+    since_utc = _naive_utc_bound("since", since)
+    until_utc = _naive_utc_bound("until", until)
+    if since_utc is not None and until_utc is not None and since_utc > until_utc:
+        raise _query_error(("query", "since"), "since must not be after until")
     effective_limit = min(limit, HISTORY_MAX_LIMIT)
 
     payload = {"symbol": sym, "timeframe": timeframe, "limit": effective_limit}
     async with _tracked("/regimes/history", background_tasks, payload, HISTORY_UNAVAILABLE_DETAIL):
         store = default_store()
-        records = await run_in_thread(
-            store.history,
-            sym,
-            timeframe=timeframe,
-            since=since,
-            until=until,
-            limit=effective_limit,
-            _timeout=HISTORY_TIMEOUT_SECONDS,
-        )
+        # A short SQLite read: run it in the thread pool directly rather than via
+        # run_in_thread, so it neither waits for nor consumes an analysis slot.
+        try:
+            async with asyncio.timeout(HISTORY_TIMEOUT_SECONDS):
+                records = await run_in_threadpool(
+                    store.history,
+                    sym,
+                    timeframe=timeframe,
+                    since=since_utc,
+                    until=until_utc,
+                    limit=effective_limit,
+                )
+        except TimeoutError as e:
+            logger.warning("Regime history query timed out")
+            raise HTTPException(
+                status.HTTP_504_GATEWAY_TIMEOUT, detail="Regime history query timed out"
+            ) from e
         return RegimeHistoryResponse(
             symbol=sym,
             timeframe=timeframe,

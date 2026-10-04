@@ -380,7 +380,7 @@ curl -H "$AUTH" "http://localhost:8000/api/v1/regimes/SPY/history?timeframe=1D&l
     {
       "symbol": "SPY",
       "timeframe": "1D",
-      "bar_time": "2026-01-06T00:00:00Z",
+      "bar_time": "2026-01-06T00:00:00",
       "recorded_at": "2026-01-06T21:05:12.345678Z",
       "regime": "Bull Trending",
       "confidence": 0.91,
@@ -394,8 +394,12 @@ curl -H "$AUTH" "http://localhost:8000/api/v1/regimes/SPY/history?timeframe=1D&l
 }
 ```
 
-`bar_time` is the timestamp of the last bar analyzed (UTC; daily bars are the session date at
-midnight), `recorded_at` is when the record was written. Records are unique per
+`bar_time` is the timestamp of the last bar analyzed, without an offset (the provider
+contract): UTC for intraday bars, and the exchange session date at `00:00` for daily bars, so
+a daily bar's `bar_time` is a date, not a UTC instant. `since`/`until` are compared against
+these values after converting any offset to UTC (use plain dates such as `2026-01-02` to filter
+daily bars). `recorded_at` is when the record was written (UTC). This route reads the database
+in the thread pool without taking an analysis slot; a query slower than 30 s returns `504`. Records are unique per
 (`symbol`, `timeframe`, `bar_time`): re-analyzing the same bar replaces the earlier record.
 
 ### Metrics

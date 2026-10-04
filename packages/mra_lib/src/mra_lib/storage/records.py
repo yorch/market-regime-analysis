@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 
 import pandas as pd
 
+from mra_lib.config.symbols import SYMBOL_PATTERN
 from mra_lib.errors import StorageInputError
 
 if TYPE_CHECKING:
@@ -49,19 +50,31 @@ def to_naive_utc(value: datetime) -> datetime:
     if not isinstance(value, datetime):
         raise StorageInputError(f"Expected a datetime, got {type(value).__name__}")
     if value.tzinfo is not None:
-        value = value.astimezone(UTC).replace(tzinfo=None)
+        try:
+            value = value.astimezone(UTC).replace(tzinfo=None)
+        except OverflowError as e:
+            raise StorageInputError("Datetime is out of range after conversion to UTC") from e
     return value
 
 
 def normalize_symbol(symbol: str) -> str:
-    """Strip and upper-case a ticker symbol.
+    """Strip, upper-case and validate a ticker symbol.
+
+    Uses the same format as the web API
+    (:data:`mra_lib.config.symbols.SYMBOL_PATTERN`), so every stored symbol
+    can also be queried over HTTP.
 
     Raises:
-        StorageInputError: If the symbol is not a non-empty string.
+        StorageInputError: If the symbol is empty or has an invalid format.
     """
     if not isinstance(symbol, str) or not symbol.strip():
         raise StorageInputError("Symbol must be a non-empty string")
-    return symbol.strip().upper()
+    normalized = symbol.strip().upper()
+    if not SYMBOL_PATTERN.fullmatch(normalized):
+        raise StorageInputError(
+            "Invalid symbol: use 1-15 characters (letters, digits, '.', '-', '^', '=')"
+        )
+    return normalized
 
 
 def _finite(name: str, value: float) -> float:
@@ -81,8 +94,9 @@ class RegimeRecord:
     Attributes:
         symbol: Ticker symbol, stored upper-case.
         timeframe: Analysis timeframe (e.g. ``"1D"``, ``"1H"``, ``"15m"``).
-        bar_time: Timestamp of the last bar analyzed, tz-naive UTC (the provider
-            contract); aware values are converted on construction.
+        bar_time: Timestamp of the last bar analyzed, tz-naive (the provider
+            contract): UTC for intraday bars, the session date at 00:00 for daily
+            bars. Aware values are converted to naive UTC on construction.
         regime: The :class:`~mra_lib.config.enums.MarketRegime` value string.
         confidence: Regime confidence (0-1).
         persistence: Regime persistence (0-1).

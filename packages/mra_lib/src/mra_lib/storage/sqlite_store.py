@@ -277,6 +277,8 @@ class SQLiteRegimeStore:
         except StorageError:
             raise
         except (sqlite3.Error, OSError) as e:
+            # Re-check the schema next time (e.g. the file was deleted or replaced)
+            self._initialized = False
             logger.warning("Regime store %s operation failed: %s", self.path, e)
             raise StorageError("Regime store operation failed") from e
 
@@ -415,6 +417,11 @@ def default_store() -> SQLiteRegimeStore:
     """
     path = resolve_db_path()
     if path == MEMORY_PATH:
+        logger.warning(
+            "%s=:memory: gives every default_store() call a private, empty database; "
+            "nothing is persisted or shared",
+            DB_PATH_ENV,
+        )
         return SQLiteRegimeStore(MEMORY_PATH)
     with _default_stores_lock:
         store = _default_stores.get(path)

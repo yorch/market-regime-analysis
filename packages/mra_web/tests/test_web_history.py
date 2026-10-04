@@ -86,6 +86,18 @@ class TestHistoryValidation:
         )
         _envelope(resp, 422, "VALIDATION_ERROR")
 
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {"since": "0001-01-01T00:00:00+05:00"},
+            {"until": "9999-12-31T23:59:59-05:00"},
+            {"since": "0001-01-01T00:00:00+05:00", "until": "2026-01-01T00:00:00"},
+        ],
+    )
+    def test_history_out_of_range_dates(self, client, auth_headers, db_store, params):
+        resp = client.get(URL.format("SPY"), params=params, headers=auth_headers)
+        _envelope(resp, 422, "VALIDATION_ERROR")
+
     def test_history_validation_does_not_echo_input(self, client, auth_headers, db_store):
         resp = client.get(URL.format("SPY"), params={"timeframe": "<script>"}, headers=auth_headers)
         assert "<script>" not in resp.text
@@ -117,9 +129,9 @@ class TestHistoryResults:
         assert body["count"] == 3
         records = body["records"]
         assert [r["bar_time"] for r in records] == [
-            "2026-01-07T00:00:00Z",
-            "2026-01-06T00:00:00Z",
-            "2026-01-05T00:00:00Z",
+            "2026-01-07T00:00:00",
+            "2026-01-06T00:00:00",
+            "2026-01-05T00:00:00",
         ]
         first = records[0]
         assert set(first) == {
@@ -157,6 +169,32 @@ class TestHistoryResults:
             "2026-01-07",
             "2026-01-06",
         ]
+
+    def test_history_aware_bounds_are_converted_to_utc(self, client, auth_headers, db_store):
+        for hour in range(10, 15):
+            db_store.save(_record(timeframe="1H", bar_time=datetime(2026, 1, 5, hour)))
+        # 13:00+02:00 == 11:00Z; 08:00-05:00 == 13:00Z
+        resp = client.get(
+            URL.format("SPY"),
+            params={"since": "2026-01-05T13:00:00+02:00", "until": "2026-01-05T08:00:00-05:00"},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200, resp.text
+        assert [r["bar_time"][11:13] for r in resp.json()["records"]] == ["13", "12", "11"]
+
+    def test_history_does_not_use_analysis_slots(self, client, auth_headers, db_store):
+        from mra_web import utils as utils_module
+
+        slots = utils_module.analysis_slots()
+        taken = 0
+        while slots.acquire(blocking=False):
+            taken += 1
+        try:
+            resp = client.get(URL.format("SPY"), headers=auth_headers)
+        finally:
+            for _ in range(taken):
+                slots.release()
+        assert resp.status_code == 200, resp.text
 
     def test_history_limit(self, client, auth_headers, db_store):
         for days in range(5):

@@ -1,5 +1,6 @@
 """Tests for the regime history store (``mra_lib.storage``)."""
 
+import contextlib
 import sqlite3
 import stat
 import threading
@@ -88,6 +89,9 @@ class TestRegimeRecord:
         "overrides",
         [
             {"symbol": " "},
+            {"symbol": "-SPY"},
+            {"symbol": "A" * 16},
+            {"bar_time": datetime(1, 1, 1, tzinfo=timezone(timedelta(hours=5)))},
             {"timeframe": ""},
             {"regime": ""},
             {"provider": ""},
@@ -274,6 +278,22 @@ class TestSQLiteRegimeStore:
         with pytest.raises(StorageError, match="newer"):
             SQLiteRegimeStore(store.path).symbols()
 
+    def test_store_recovers_after_database_is_deleted(self, store):
+        store.save(make_record())
+        for suffix in ("", "-wal", "-shm"):
+            Path(store.path + suffix).unlink(missing_ok=True)
+        # The first call after the swap may fail; the schema is then re-checked
+        with contextlib.suppress(StorageError):
+            store.symbols()
+        store.save(make_record(symbol="QQQ"))
+        assert store.symbols() == ["QQQ"]
+
+    def test_store_history_rejects_out_of_range_bound(self, memory_store):
+        with pytest.raises(StorageInputError):
+            memory_store.history(
+                "SPY", since=datetime(1, 1, 1, tzinfo=timezone(timedelta(hours=5)))
+            )
+
     def test_store_file_permissions(self, store):
         store.save(make_record())
         db = Path(store.path)
@@ -361,9 +381,10 @@ class TestPathResolution:
         monkeypatch.setenv(DB_PATH_ENV, "~/x/r.db")
         assert resolve_db_path() == str(tmp_path / "x" / "r.db")
 
-    def test_memory_path(self, monkeypatch):
+    def test_memory_path(self, monkeypatch, caplog):
         monkeypatch.setenv(DB_PATH_ENV, ":memory:")
         a, b = default_store(), default_store()
+        assert "nothing is persisted" in caplog.text
         assert a.is_memory
         assert a is not b
         a.save(make_record())
