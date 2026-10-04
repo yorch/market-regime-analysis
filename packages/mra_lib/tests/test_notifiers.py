@@ -145,6 +145,20 @@ class TestWebhook:
             WebhookNotifier(WEBHOOK, sleep=no_sleep).send(event)
         assert post.call_count == 1
 
+    def test_redirects_not_followed(self, event):
+        with (
+            patch(POST, return_value=response(302, None, {"Location": "http://evil"})) as post,
+            pytest.raises(NotifierError, match="HTTP 302"),
+        ):
+            WebhookNotifier(WEBHOOK, sleep=no_sleep).send(event)
+        assert post.call_args.kwargs["allow_redirects"] is False
+
+    def test_secret_masked_before_truncation(self, event):
+        body = {"error": "x" * 90 + WEBHOOK}  # the 120-char cut lands inside the URL
+        with patch(POST, return_value=response(400, body)), pytest.raises(NotifierError) as info:
+            WebhookNotifier(WEBHOOK, sleep=no_sleep).send(event)
+        assert "hooks" not in str(info.value) and "***" in str(info.value)
+
     def test_repr_hides_path(self):
         notifier = WebhookNotifier(WEBHOOK)
         assert "s3cret" not in repr(notifier) and "s3cret" not in notifier.describe()
@@ -311,6 +325,11 @@ class TestFromEnv:
 
 
 class TestSecretsNeverLogged:
+    def test_url_path_is_masked_too(self):
+        WebhookNotifier(WEBHOOK)
+        text = mask_secrets("host='hooks.example.com' url: /services/T000/B000/s3cretWebhookPath")
+        assert "s3cretWebhookPath" not in text
+
     def test_mask_secrets(self):
         TelegramNotifier(TOKEN, "1")
         WebhookNotifier(WEBHOOK)

@@ -274,9 +274,10 @@ Scanner finished: 1 scan(s) (1 ok, 0 failed, stopped: max_iterations) | 0 symbol
 Each scan, per symbol: read the last stored record per timeframe, analyze every timeframe,
 save the new records, compute the multi-timeframe confirmation, detect changes, alert.
 
-- **What is a change.** The stored regime differs from the new one *on a newer bar*.
-  Re-scanning the same bar is never a change, and the first observation of a
-  (symbol, timeframe) is only recorded as a baseline.
+- **What is a change.** The stored regime differs from the new one *on a newer bar*. The
+  first observation of a (symbol, timeframe) is only recorded as a baseline. Re-scanning a
+  stored bar never repeats an alert, but if a still-forming bar (e.g. today's daily bar,
+  scanned hourly) flips regime, it is compared with the bar before it and alerted once.
 - **Alert policy** (flags; defaults in brackets): `--watch` timeframes that may alert [`1D`];
   confirmation required [on; `--no-confirmation` turns it off]: the multi-timeframe signal
   must be `confirmed` and point the same way as the new regime, so changes into neutral

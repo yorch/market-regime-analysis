@@ -128,6 +128,29 @@ class TestClassification:
         d = detect_change(rec(BULL, 1), rec(UNKNOWN, 2), policy=NO_CONFIRM)
         assert d.suppressed is SuppressReason.UNKNOWN_REGIME
 
+    def test_rescan_flip_compares_with_the_bar_before(self):
+        # t0 Bull stored, t1 first scanned Bull (stored), t1 re-scanned as Bear
+        d = detect_change(rec(BULL, 0), rec(BEAR, 1), policy=NO_CONFIRM, replaced=rec(BULL, 1))
+        assert d.kind is ChangeKind.CHANGED and d.alert
+        assert (d.previous_regime, d.new_regime) == (BULL, BEAR)
+
+    def test_rescan_with_same_regime_as_stored_is_same_bar(self):
+        # Already evaluated (and alerted, if it was a change) on the earlier scan
+        d = detect_change(rec(BULL, 0), rec(BEAR, 1), policy=NO_CONFIRM, replaced=rec(BEAR, 1))
+        assert d.kind is ChangeKind.SAME_BAR and not d.alert
+
+    def test_rescan_flipping_back_is_not_a_change(self):
+        d = detect_change(rec(BULL, 0), rec(BULL, 1), policy=NO_CONFIRM, replaced=rec(BEAR, 1))
+        assert d.kind is ChangeKind.SAME_BAR and not d.alert
+
+    def test_rescan_of_baseline_bar(self):
+        d = detect_change(None, rec(BEAR, 1), policy=NO_CONFIRM, replaced=rec(BULL, 1))
+        assert d.kind is ChangeKind.SAME_BAR and not d.alert
+
+    def test_replaced_must_be_same_bar(self):
+        with pytest.raises(InvalidParametersError):
+            detect_change(rec(BULL, 0), rec(BEAR, 2), replaced=rec(BULL, 1))
+
     def test_mismatched_records_raise(self):
         with pytest.raises(InvalidParametersError):
             detect_change(rec(BULL, 1, symbol="QQQ"), rec(BEAR, 2))

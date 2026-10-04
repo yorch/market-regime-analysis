@@ -181,6 +181,45 @@ class TestScanOnce:
         assert report.changes == 0 and not collect.events
         assert report.results[0].decisions["1D"].kind is ChangeKind.SAME_BAR
 
+    def test_regime_flip_within_a_rescanned_bar_is_not_lost(self, store, market):
+        """t0 Bear | t1 Bear | t1 re-scanned Bull -> alert once | t1 Bull again | t2 Bull."""
+        collect = Collect()
+        scanner = make_scanner(store, market, [collect], symbols=["SPY"])
+        scanner.scan_once()
+        market.bar = 1
+        assert scanner.scan_once().results[0].decisions["1D"].kind is ChangeKind.UNCHANGED
+
+        market.set("SPY", BULL)  # the still-forming bar t1 now classifies as Bull
+        report = scanner.scan_once()
+        decision = report.results[0].decisions["1D"]
+        assert decision.alert and (decision.previous_regime, decision.new_regime) == (
+            BEAR.value,
+            BULL.value,
+        )
+        (event,) = collect.events
+        assert event.previous_bar_time == T0 and event.bar_time == T0 + timedelta(days=1)
+
+        # Re-scanning the same bar again, and the next bar, never repeat the alert
+        assert scanner.scan_once().results[0].decisions["1D"].kind is ChangeKind.SAME_BAR
+        market.bar = 2
+        assert scanner.scan_once().results[0].decisions["1D"].kind is ChangeKind.UNCHANGED
+        assert len(collect.events) == 1
+
+    def test_stale_bar_is_not_saved(self, store, market):
+        scanner = make_scanner(store, market, symbols=["SPY"])
+        market.bar = 3
+        scanner.scan_once()
+        market.bar = 1
+        market.set("SPY", BULL)
+        report = scanner.scan_once()
+        spy = report.results[0]
+        assert spy.decisions["1D"].kind is ChangeKind.STALE_BAR
+        assert spy.saved == ()
+        assert [r.bar_time for r in store.history("SPY", timeframe="1D")] == [
+            T0 + timedelta(days=3)
+        ]
+        assert "(stale bar)" in format_scan_report(report)
+
     def test_unconfirmed_change_is_suppressed(self, store, market):
         collect = Collect()
         scanner = make_scanner(store, market, [collect])

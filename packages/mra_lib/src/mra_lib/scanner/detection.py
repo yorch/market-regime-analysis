@@ -9,10 +9,15 @@ Detection rules
 ---------------
 1. **Baseline.** No previous record for (symbol, timeframe): the new record is
    the baseline. Never an alert.
-2. **Same bar.** The new record is for the same ``bar_time`` as the previous one
-   (a re-scan before the next bar closed): not a change, even if a refit moved
-   the regime. **Stale bar**: an older ``bar_time`` than the previous record
-   (e.g. a provider lagging behind): not a change either.
+2. **Same bar.** The new record is for a bar that is already stored (a re-scan
+   before the next bar closed). It is compared with the newest record *before*
+   that bar, and is a change only if its regime differs from that record *and*
+   from the stored record for the same bar (``replaced``). So re-scanning never
+   repeats an alert, but a regime that flips while the bar is still forming
+   (e.g. an hourly scan of a daily bar) is detected once instead of being lost
+   when the re-scan overwrites the stored record. **Stale bar**: an older
+   ``bar_time`` than the newest stored record (e.g. a provider lagging behind):
+   not a change, and the scanner does not save it.
 3. **Unchanged.** Newer bar, same regime: not a change.
 4. **Changed.** Newer bar, different regime: a change. It becomes an alert only
    if the :class:`AlertPolicy` allows it, checked in this order (the first
@@ -113,7 +118,10 @@ class AlertPolicy:
         cooldown_bars: Suppress a change if the previous regime lasted at most this
             many stored bars after a visible transition (``0`` disables).
         cooldown: Suppress a change if the previous regime started less than this
-            long before the new bar (``None`` disables).
+            long before the new bar (``None`` disables). At most
+            ``MAX_HISTORY_LIMIT`` (1000) stored bars are read to find the run's
+            start, so on intraday timeframes a window longer than 1000 bars is
+            effectively capped.
 
     Raises:
         InvalidParametersError: On an unknown timeframe or an out-of-range value.
@@ -256,13 +264,14 @@ def in_cooldown(
     return window is not None and window > timedelta(0) and current.bar_time - start < window
 
 
-def detect_change(  # noqa: PLR0911 - one early return per rule, in rule order
+def detect_change(  # noqa: PLR0911, PLR0912, PLR0913 - one early return per rule, in order
     previous: RegimeRecord | None,
     current: RegimeRecord,
     *,
     policy: AlertPolicy | None = None,
     confirmation: TimeframeConfirmation | None = None,
     history: Sequence[RegimeRecord] = (),
+    replaced: RegimeRecord | None = None,
 ) -> ChangeDecision:
     """Classify ``current`` against ``previous`` and decide whether to alert.
 
@@ -280,6 +289,12 @@ def detect_change(  # noqa: PLR0911 - one early return per rule, in rule order
             ``previous`` (e.g. ``store.history(symbol, timeframe,
             until=previous.bar_time, limit=policy.history_lookback)``), used for
             the cooldown. Empty means no visible transition (no cooldown).
+        replaced: For a re-scan of an already stored bar: the stored record for
+            ``current.bar_time`` (which ``current`` replaces). ``previous`` must
+            then be the newest record *older* than that bar. A re-scan is a
+            change only if ``current`` differs from both ``previous`` and
+            ``replaced``, so a regime that flips while a bar is still forming is
+            detected exactly once and never lost to the upsert.
 
     Returns:
         The decision.
@@ -289,12 +304,19 @@ def detect_change(  # noqa: PLR0911 - one early return per rule, in rule order
             (symbol, timeframe) pairs.
     """
     policy = policy if policy is not None else AlertPolicy()
+    for other in (previous, replaced):
+        if other is not None and (other.symbol, other.timeframe) != (
+            current.symbol,
+            current.timeframe,
+        ):
+            raise InvalidParametersError(
+                "previous, replaced and current records must have the same symbol and timeframe"
+            )
+    if replaced is not None and replaced.bar_time != current.bar_time:
+        raise InvalidParametersError("replaced must be the stored record for current.bar_time")
     if previous is None:
-        return ChangeDecision(ChangeKind.BASELINE, False, None, None, current.regime)
-    if (previous.symbol, previous.timeframe) != (current.symbol, current.timeframe):
-        raise InvalidParametersError(
-            "previous and current records must have the same symbol and timeframe"
-        )
+        kind = ChangeKind.BASELINE if replaced is None else ChangeKind.SAME_BAR
+        return ChangeDecision(kind, False, None, None, current.regime)
 
     def decision(kind: ChangeKind, suppressed: SuppressReason | None = None) -> ChangeDecision:
         alert = kind is ChangeKind.CHANGED and suppressed is None
@@ -304,8 +326,10 @@ def detect_change(  # noqa: PLR0911 - one early return per rule, in rule order
         return decision(ChangeKind.SAME_BAR)
     if current.bar_time < previous.bar_time:
         return decision(ChangeKind.STALE_BAR)
+    if replaced is not None and replaced.regime == current.regime:
+        return decision(ChangeKind.SAME_BAR)  # this bar's regime was already evaluated
     if current.regime == previous.regime:
-        return decision(ChangeKind.UNCHANGED)
+        return decision(ChangeKind.UNCHANGED if replaced is None else ChangeKind.SAME_BAR)
 
     changed = ChangeKind.CHANGED
     if current.timeframe not in policy.timeframes_to_watch:

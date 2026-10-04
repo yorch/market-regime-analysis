@@ -9,7 +9,9 @@ symbol, in this order:
 2. analyze each timeframe (each in its own analyzer, so one failing timeframe
    does not hide the others);
 3. save a :class:`~mra_lib.storage.RegimeRecord` for every timeframe that
-   succeeded;
+   succeeded (for a re-scan of a stored bar, the newest record *before* that bar
+   is read first, as the comparison baseline; a bar older than the newest stored
+   one is not saved);
 4. compute the multi-timeframe confirmation from the successful analyses;
 5. detect changes (:func:`~mra_lib.scanner.detection.detect_change`), reading
    the stored history for the cooldown only when a change is found;
@@ -38,7 +40,7 @@ import signal
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from mra_lib.config.data_classes import RegimeAnalysis
 from mra_lib.config.timeframes import DEFAULT_PERIODS, TIMEFRAMES
@@ -396,7 +398,11 @@ class Scanner:
         )
 
     def stop(self) -> None:
-        """Ask a running :meth:`run` / :meth:`scan_once` to stop after the current symbol."""
+        """Ask a running :meth:`run` / :meth:`scan_once` to stop after the current symbol.
+
+        The request stays set for later standalone :meth:`scan_once` calls (they
+        skip every symbol); :meth:`run` starts with a fresh stop flag.
+        """
         self._stop.request()
 
     # ── one symbol ───────────────────────────────────────────────────────
@@ -408,8 +414,29 @@ class Scanner:
                 previous[tf] = self.store.latest(symbol, tf)
             except Exception as e:  # noqa: BLE001 - isolate: skip this timeframe
                 errors[tf] = f"store read failed: {_error_text(e)}"
-                logger.warning("Scanner: reading %s %s from the store failed: %s", symbol, tf, e)
+                logger.warning(
+                    "Scanner: reading %s %s from the store failed: %s", symbol, tf, _error_text(e)
+                )
         return previous
+
+    def _references(
+        self, latest: RegimeRecord | None, current: RegimeRecord
+    ) -> tuple[RegimeRecord | None, RegimeRecord | None]:
+        """Return ``(previous, replaced)`` for :func:`detect_change`.
+
+        For a new bar, ``previous`` is the latest stored record. For a re-scan of
+        the latest stored bar, ``previous`` is the newest record *before* that bar
+        and ``replaced`` the stored record the new one overwrites.
+        """
+        if latest is None or current.bar_time > latest.bar_time:
+            return latest, None
+        older = self.store.history(
+            current.symbol,
+            timeframe=current.timeframe,
+            until=latest.bar_time - timedelta(microseconds=1),
+            limit=1,
+        )
+        return (older[0] if older else None), latest
 
     def _analyze(
         self, symbol: str, timeframes: Iterable[str], errors: dict[str, str]
@@ -437,7 +464,7 @@ class Scanner:
                 saved.append(tf)
             except Exception as e:  # noqa: BLE001 - isolate: no change detection for tf
                 errors[tf] = f"save failed: {_error_text(e)}"
-                logger.warning("Scanner: saving %s %s failed: %s", symbol, tf, e)
+                logger.warning("Scanner: saving %s %s failed: %s", symbol, tf, _error_text(e))
         return tuple(saved)
 
     def _cooldown_history(
@@ -464,7 +491,7 @@ class Scanner:
                 "evaluating without cooldown",
                 previous.symbol,
                 previous.timeframe,
-                e,
+                _error_text(e),
             )
             return ()
 
@@ -504,15 +531,32 @@ class Scanner:
             previous = self._read_previous(symbol, errors)
             # 2. Analyze (timeframes whose previous record is unknown are skipped)
             analyses, records = self._analyze(symbol, previous, errors)
-            # 3. Save
-            saved = self._save(symbol, records, errors)
+            # 3. Save (a bar older than the newest stored one is not saved: it
+            #    would rewrite the history the cooldown reads)
+            decisions: dict[str, ChangeDecision] = {}
+            refs: dict[str, tuple[RegimeRecord | None, RegimeRecord | None]] = {}
+            to_save: dict[str, RegimeRecord] = {}
+            for tf, current in records.items():
+                latest = previous[tf]
+                if latest is not None and current.bar_time < latest.bar_time:
+                    decisions[tf] = detect_change(latest, current, policy=self.policy)
+                    continue
+                try:
+                    refs[tf] = self._references(latest, current)
+                except Exception as e:  # noqa: BLE001 - isolate: skip this timeframe
+                    errors[tf] = f"store read failed: {_error_text(e)}"
+                    logger.warning(
+                        "Scanner: reading %s %s history failed: %s", symbol, tf, _error_text(e)
+                    )
+                    continue
+                to_save[tf] = current
+            saved = self._save(symbol, to_save, errors)
             # 4. Confirmation
             confirmation = confirm_timeframes(analyses) if analyses else None
             # 5. Detect
-            decisions: dict[str, ChangeDecision] = {}
             events: list[RegimeChangeEvent] = []
             for tf in saved:
-                prev, current = previous[tf], records[tf]
+                (prev, replaced), current = refs[tf], records[tf]
                 history = self._cooldown_history(prev, current) if prev is not None else ()
                 decision = detect_change(
                     prev,
@@ -520,6 +564,7 @@ class Scanner:
                     policy=self.policy,
                     confirmation=confirmation,
                     history=history,
+                    replaced=replaced,
                 )
                 decisions[tf] = decision
                 if decision.changed:
@@ -543,9 +588,15 @@ class Scanner:
                 s, f = self._notify(event)
                 sent += s
                 failed += f
-        except Exception as e:
-            logger.exception("Scanner: unexpected failure scanning %s", symbol)
+        except Exception as e:  # noqa: BLE001 - one symbol never stops the scan
             errors["*"] = _error_text(e)
+            # No traceback: its frames' text could carry secrets
+            logger.error(
+                "Scanner: unexpected failure scanning %s: %s: %s",
+                symbol,
+                type(e).__name__,
+                errors["*"],
+            )
             return SymbolScanResult(symbol=symbol, errors=errors)
 
         return SymbolScanResult(
@@ -640,8 +691,8 @@ class Scanner:
             if on_report is not None:
                 try:
                     on_report(report)
-                except Exception:
-                    logger.exception("Scanner: on_report callback failed")
+                except Exception as e:  # noqa: BLE001 - reporting must not break the loop
+                    logger.error("Scanner: on_report callback failed: %s", _error_text(e))
             if on_report is None:
                 logger.info("%s", format_scan_report(report, details=False))
             if report.all_failed:

@@ -96,12 +96,25 @@ _secrets_lock = threading.Lock()
 def register_secret(value: str | None) -> None:
     """Register a secret value so :func:`mask_secrets` hides it.
 
+    For a URL, its path (with and without the query) is registered too, because
+    HTTP client errors often print the path without the scheme and host.
+
     Args:
         value: The secret; empty or very short values are ignored.
     """
-    if value and len(value) >= _MIN_SECRET_LENGTH:
-        with _secrets_lock:
-            _secrets.add(value)
+    if not value or len(value) < _MIN_SECRET_LENGTH:
+        return
+    values = {value}
+    if "://" in value:
+        try:
+            parts = urlsplit(value)
+        except ValueError:
+            parts = None
+        if parts is not None:
+            path_query = parts.path + (f"?{parts.query}" if parts.query else "")
+            values.update(v for v in (parts.path, path_query) if len(v) >= _MIN_SECRET_LENGTH)
+    with _secrets_lock:
+        _secrets.update(values)
 
 
 def mask_secrets(text: str) -> str:
@@ -197,7 +210,11 @@ def post_json(  # noqa: PLR0913 - keyword-only knobs with defaults
     for attempt in range(retries + 1):
         last = attempt == retries
         try:
-            response = requests.post(url, json=dict(payload), timeout=timeout)
+            # No redirects: following one would re-send the alert to another
+            # (possibly plain-http) location, bypassing the https-only check
+            response = requests.post(
+                url, json=dict(payload), timeout=timeout, allow_redirects=False
+            )
         except requests.RequestException as e:
             failure = f"request failed ({type(e).__name__})"
             if not last:
@@ -205,9 +222,10 @@ def post_json(  # noqa: PLR0913 - keyword-only knobs with defaults
                 delay *= 2
                 continue
             break
-        if response.ok:
+        if 200 <= response.status_code < 300:  # noqa: PLR2004 - 2xx only (3xx = redirect)
             return response
-        excerpt = mask_secrets((response.text or "")[:_EXCERPT]).replace(url, _MASK)
+        # Mask before truncating, so a cut can never leave part of a secret behind
+        excerpt = mask_secrets((response.text or "").replace(url, _MASK))[:_EXCERPT]
         failure = f"HTTP {response.status_code}" + (f": {excerpt}" if excerpt else "")
         if response.status_code in _RETRYABLE_STATUS and not last:
             retry_after = response.headers.get("Retry-After", "")
@@ -409,7 +427,7 @@ class TelegramNotifier(_HttpNotifier):
         except ValueError:
             return
         if isinstance(body, dict) and body.get("ok") is False:
-            description = mask_secrets(str(body.get("description", ""))[:_EXCERPT])
+            description = mask_secrets(str(body.get("description", "")))[:_EXCERPT]
             raise NotifierError(f"Telegram delivery failed: {description or 'ok=false'}")
 
 
