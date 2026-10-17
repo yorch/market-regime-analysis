@@ -7,7 +7,7 @@ requires-python = ">=3.13"
 dependencies = [
     "hmmlearn>=0.3.3,<0.4",  # detector uses private _covars_/_compute_log_likelihood
     "matplotlib>=3.11.2",
-    "numpy>=2.5.3",
+    "numpy>=2.5.4",
     "pandas>=3.0.6",
     "polygon-api-client>=1.16.3",
     # Only used by the explicit load_env_file() helper; importing mra_lib never reads .env
