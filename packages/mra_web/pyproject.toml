@@ -6,7 +6,7 @@ requires-python = ">=3.13"
 dependencies = [
     "mra-lib",
     "fastapi>=0.142.2",
-    "numpy>=2.5.3",
+    "numpy>=2.5.4",
     "pydantic>=2.13.5",
     "python-jose[cryptography]>=3.5.0",
     # [standard] provides the `websockets` implementation used by the WebSocket routes
